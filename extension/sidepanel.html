@@ -31,6 +31,7 @@
   <!-- 已读取内容详情：点击状态条展开，再次点击折叠 -->
   <div id="ctx-detail" class="ctx-detail">
     <div class="ctx-detail-meta"><span id="ctx-detail-url"></span></div>
+    <div id="ctx-detail-outline" class="ctx-detail-outline" hidden></div>
     <div id="ctx-detail-text" class="ctx-detail-text"></div>
   </div>
 
@@ -76,12 +77,17 @@
         <input id="cfg-mask" type="checkbox" checked>
         发送前脱敏（身份证 / 银行卡 / 手机号）
       </label>
+      <label class="cfg-switch">
+        <input id="cfg-vision" type="checkbox">
+        模型支持视觉（启用截图工具）
+      </label>
+      <p class="cfg-hint">截图内容无法脱敏，请确认页面可发送后再开启；模型不支持图片输入时请保持关闭。</p>
       <div class="settings-actions">
         <button id="btn-test" class="ghost-btn" type="button">测试连接</button>
         <button id="btn-save" class="primary-btn" type="button">保存</button>
       </div>
       <div id="test-result" class="test-result"></div>
-      <div class="credit settings-credit">Titanium v0.1.0 · Design by Xujl</div>
+      <div class="credit settings-credit">Titanium v0.2.0 · Design by Xujl</div>
     </div>
   </aside>
 
