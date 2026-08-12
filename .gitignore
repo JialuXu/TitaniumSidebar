@@ -1,0 +1,5 @@
+# macOS 系统文件
+.DS_Store
+
+# 内部方案文档，不公开
+CLAUDE.md
