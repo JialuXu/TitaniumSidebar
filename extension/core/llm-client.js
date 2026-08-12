@@ -34,14 +34,17 @@ function buildHeaders(config) {
 }
 
 /**
- * 流式对话（异步生成器）。用法：
- *   for await (const delta of streamChat(config, messages, signal)) { ... }
+ * 流式对话（异步生成器），yield 结构化事件：
+ *   { type: 'delta', text }                          —— 正文增量（choices[0].delta.content）
+ *   { type: 'tool_calls', calls: [{ id, name, arguments }] }
+ *     —— 模型请求调用工具；流式分片已拼装完整，arguments 为 JSON 字符串，
+ *        该事件最多出现一次且出现后流即结束
  * @param {{ baseUrl: string, model: string, apiKey?: string }} config
- * @param {Array<{ role: string, content: string }>} messages OpenAI 格式消息数组
- * @param {AbortSignal} [signal] 外壳持有对应 AbortController 实现「停止生成」
- * @yields {string} 每个内容增量（choices[0].delta.content）
+ * @param {Array<object>} messages OpenAI 格式消息数组（可含 tool_calls / role:'tool' / 多模态 content）
+ * @param {{ signal?: AbortSignal, tools?: Array<object> }} [options]
+ *   signal 外壳持有对应 AbortController 实现「停止生成」；tools 为 OpenAI 工具定义，缺省不带
  */
-export async function* streamChat(config, messages, signal) {
+export async function* streamChat(config, messages, { signal, tools } = {}) {
   if (!config || !config.baseUrl || !config.model) throw new LlmError('badconfig');
 
   let resp;
@@ -49,7 +52,12 @@ export async function* streamChat(config, messages, signal) {
     resp = await fetch(chatUrl(config.baseUrl), {
       method: 'POST',
       headers: buildHeaders(config),
-      body: JSON.stringify({ model: config.model, messages, stream: true }),
+      body: JSON.stringify({
+        model: config.model,
+        messages,
+        stream: true,
+        ...(tools && tools.length ? { tools } : {}),
+      }),
       signal,
     });
   } catch (err) {
@@ -65,6 +73,9 @@ export async function* streamChat(config, messages, signal) {
   const decoder = new TextDecoder();
   let buf = '';
   let cleanEnd = false; // 是否见到 [DONE] 或 finish_reason，用于识别服务端提前断流
+  // 流式 tool_calls 分片累积槽：以分片的 index 为下标，id 赋值、name/arguments 字符串累加。
+  // 不能假设一个 chunk 到齐——不同实现（DeepSeek/各网关）的分片粒度不一。
+  const pending = [];
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -88,9 +99,26 @@ export async function* streamChat(config, messages, signal) {
         }
         const choice = parsed.choices && parsed.choices[0];
         if (!choice) continue;
-        if (choice.finish_reason) cleanEnd = true; // 兼容不发 [DONE] 的网关
-        const delta = choice.delta && choice.delta.content;
-        if (delta) yield delta;
+        const delta = choice.delta || {};
+        if (Array.isArray(delta.tool_calls)) {
+          for (const frag of delta.tool_calls) {
+            const idx = typeof frag.index === 'number' ? frag.index : 0;
+            const slot = pending[idx] || (pending[idx] = { id: '', name: '', arguments: '' });
+            if (frag.id) slot.id = frag.id;
+            if (frag.function && frag.function.name) slot.name += frag.function.name;
+            if (frag.function && frag.function.arguments) slot.arguments += frag.function.arguments;
+          }
+        }
+        if (delta.content) yield { type: 'delta', text: delta.content };
+        if (choice.finish_reason) {
+          cleanEnd = true; // 兼容不发 [DONE] 的网关
+          // 宽容处理：只要攒到了分片就交给调用方，不苛求 finish_reason === 'tool_calls'
+          //（部分网关对工具调用也报 'stop'）。交付后流即视为结束。
+          if (pending.some(Boolean)) {
+            yield { type: 'tool_calls', calls: pending.filter(Boolean) };
+            return;
+          }
+        }
       }
     }
     if (!cleanEnd) throw new LlmError('stream');
