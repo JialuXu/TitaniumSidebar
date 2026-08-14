@@ -51,29 +51,86 @@ export function formatOutline(nodes, budget = BUDGETS.outline) {
  *   [13] link "查看详情" → /order/1001
  *   [14] textbox "收货地址" 值:"北京市…"
  *   [15] button "确认"（不可用）
- *  *[16] button "展开更多"          ← * 表示上次动作后新出现
+ *  *[16] button "展开更多"                       ← * 表示上次动作后新出现
+ *   [17] checkbox（行：Slack - Set up Slack…）   ← 无名/短名控件带所在行锚点
+ *
+ * 同构折叠：role、标签、名称、禁用态**一字不差**且 ≥5 个的组（列表页每行重复的
+ * 勾选框、星标、「删除」按钮）只展开前两个作样本，其余合并为一行 refs 摘要——
+ * 它们本就靠行锚点区分，逐行列出只会挤爆预算。名称有任何差异的绝不折叠：
+ * 「第1页」「第2页」是不同的操作目标。isNew 的元素永远不折叠（那是模型在等的信号）。
  * @param {Array} elements ElementInfo 数组（已按需过滤/排序）
- * @param {{ budget?: number, total?: number }} [opts] total 为过滤前总数，用于「还有更多」提示
+ * @param {{ budget?: number, total?: number, collapse?: boolean }} [opts]
+ *   total 为过滤前总数，用于「还有更多」提示；query 过滤时应传 collapse:false（用户在钻取）
  */
-export function formatElements(elements, { budget = BUDGETS.elements, total } = {}) {
+export function formatElements(elements, { budget = BUDGETS.elements, total, collapse = true } = {}) {
   if (!elements || !elements.length) return '（没有找到可交互元素）';
-  const lines = [];
-  let used = 0;
-  let shown = 0;
-  for (const el of elements) {
+
+  const renderLine = (el) => {
     const name = el.name ? ` "${el.name}"` : '';
+    const ctx = el.context ? `（行：${el.context}）` : '';
     const href = el.href ? ` → ${el.href}` : '';
     const value = el.value ? ` 值:"${el.value}"` : '';
     const flag = el.disabled ? '（不可用）' : '';
-    const line = `${el.isNew ? '*' : ''}[${el.ref}] ${el.role}${name}${href}${value}${flag}`;
-    if (used + line.length + 1 > budget) break;
-    lines.push(line);
-    used += line.length + 1;
-    shown++;
+    return `${el.isNew ? '*' : ''}[${el.ref}] ${el.role}${name}${ctx}${href}${value}${flag}`;
+  };
+
+  // 组装条目序列：普通元素一行一条；被折叠组的隐藏成员合并为一条摘要（covers 记录代表几个元素）
+  const COLLAPSE_MIN = 5;
+  const SAMPLE = 2;
+  const entries = [];
+  let anyCollapsed = false;
+  if (collapse) {
+    const keyOf = (el) => `${el.role}|${el.tag}|${el.name || ''}|${el.disabled ? 1 : 0}`;
+    const groups = new Map();
+    for (const el of elements) {
+      const k = keyOf(el);
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(el);
+    }
+    // 决定每组隐藏哪些成员；只藏 1 个反而多占一行摘要，不划算
+    const hiddenSet = new Set();
+    const summaryByKey = new Map();
+    for (const [k, members] of groups) {
+      if (members.length < COLLAPSE_MIN) continue;
+      let sampled = 0;
+      const hidden = members.filter((el) => {
+        if (el.isNew) return false;
+        if (sampled < SAMPLE) { sampled++; return false; }
+        return true;
+      });
+      if (hidden.length < 2) continue;
+      for (const el of hidden) hiddenSet.add(el);
+      const refs = hidden.slice(0, 8).map((e) => e.ref).join('/') + (hidden.length > 8 ? '/…' : '');
+      summaryByKey.set(k, { text: `……同类还有 ${hidden.length} 个：refs ${refs}`, covers: hidden.length });
+    }
+    for (const el of elements) {
+      if (!hiddenSet.has(el)) { entries.push({ text: renderLine(el), covers: 1 }); continue; }
+      const k = keyOf(el);
+      const summary = summaryByKey.get(k);
+      if (!summary) continue; // 摘要已在该组首个隐藏成员处输出
+      summaryByKey.delete(k);
+      entries.push(summary);
+      anyCollapsed = true;
+    }
+  } else {
+    for (const el of elements) entries.push({ text: renderLine(el), covers: 1 });
+  }
+
+  const lines = [];
+  let used = 0;
+  let shown = 0;
+  for (const e of entries) {
+    if (used + e.text.length + 1 > budget) break;
+    lines.push(e.text);
+    used += e.text.length + 1;
+    shown += e.covers;
   }
   const grandTotal = typeof total === 'number' ? total : elements.length;
   if (shown < grandTotal) {
     lines.push(`……（共 ${grandTotal} 个，仅列出前 ${shown} 个）`);
+  }
+  if (anyCollapsed) {
+    lines.push('（同类元素已折叠；要定位具体某一行的控件，用 query 参数过滤元素名或行文字）');
   }
   return lines.join('\n');
 }
@@ -103,6 +160,10 @@ export function formatPageStatus(viewport, stats) {
     if (stats.tables) parts.push(`表格 ${stats.tables} 个（可用 extract_table 按序号完整提取）`);
     if (stats.iframes) parts.push(`内嵌框架 ${stats.iframes} 个（跨文档内容读取不到）`);
     if (parts.length) lines.push('页面统计：' + parts.join(' · '));
+    // 编号名额耗尽必须说出来——静默截断会让模型把「没编上号」当成「不存在」
+    if (stats.elementsTruncated) {
+      lines.push('注意：可交互元素数量超出编号上限，元素列表不完整（部分元素没有编号）。');
+    }
   }
   return lines.join('\n');
 }
@@ -125,9 +186,19 @@ export function formatPageChange(change) {
     return status ? head + '\n' + status : head;
   }
   const fresh = change.newElements || [];
-  if (!fresh.length) return '页面未跳转，也没有新增可交互元素。';
-  return `页面未跳转，新增 ${fresh.length} 个可交互元素（带 * 前缀）：\n` +
+  // 名额耗尽时「没有新增」是假象（新元素编不进号），必须区分说法——
+  // Gmail 勾选邮件后工具栏按钮找不到，根因正是这句误导性的「没有新增」
+  const truncated = change.stats && change.stats.elementsTruncated
+    ? '注意：元素编号已达上限，可能有新出现的元素未能编号。'
+    : '';
+  if (!fresh.length) {
+    return truncated
+      ? `页面未跳转，没有检测到可编号的新元素。${truncated}`
+      : '页面未跳转，也没有新增可交互元素。';
+  }
+  const head = `页面未跳转，新增 ${fresh.length} 个可交互元素（带 * 前缀）：\n` +
     formatElements(fresh, { budget: BUDGETS.newElements });
+  return truncated ? `${head}\n${truncated}` : head;
 }
 
 /**

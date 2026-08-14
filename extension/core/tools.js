@@ -301,7 +301,8 @@ export async function dispatchToolCall(call, provider) {
         const status = formatPageStatus(res.viewport, res.stats);
         const legend = res.elements.some((e) => e.isNew) ? '带 * 的元素是上次操作后新出现的。' : '';
         const head = [status, legend, header].filter(Boolean).join('\n');
-        return reply(provider.mask(head + '\n' + formatElements(res.elements, { total: res.total })));
+        // query 过滤 = 模型在钻取具体某几个元素，此时逐项列出（不折叠同构组）
+        return reply(provider.mask(head + '\n' + formatElements(res.elements, { total: res.total, collapse: !query })));
       }
 
       case 'highlight_element': {

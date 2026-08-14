@@ -243,7 +243,7 @@ async function snapshotCurrentTab() {
   const tab = await getActiveTab();
   if (!tab) return null;
   const result = await injectFunc(tab.id, snapshotPage, {
-    mode: 'full', maxTextLen: 12000, maxElements: 300,
+    mode: 'full', maxTextLen: 12000, maxElements: 1500,
   });
   if (!result || !result.ok || !result.text) return null;
   return { ...result, tabId: tab.id };
@@ -293,13 +293,13 @@ async function requireSnapshotTab() {
 // 刷新元素快照：老元素保号、新元素续编；session 过期（页面已导航）时自动全量重建
 async function refreshedElements(tab) {
   let res = await injectFunc(tab.id, snapshotPage, {
-    mode: 'elements', session: state.page.session, maxElements: 300,
+    mode: 'elements', session: state.page.session, maxElements: 1500,
   });
   if (res && res.ok === false && res.reason === 'stale') {
     // maxTextLen 给最小值：全量重建只为拿元素映射，不需要文本通道的开销。
     // inheritRefs 让指纹相同的元素继承旧编号——SPA 重渲染后模型手里的 ref 仍然有效。
     const full = await injectFunc(tab.id, snapshotPage, {
-      mode: 'full', maxTextLen: 1, maxElements: 300, inheritRefs: true,
+      mode: 'full', maxTextLen: 1, maxElements: 1500, inheritRefs: true,
     });
     if (full && full.ok) {
       state.page.session = full.session;
@@ -336,7 +336,7 @@ async function rebuildPageAfterNavigation(tab) {
     return { navigated: true, restricted: true };
   }
   const snap = await injectFunc(tab.id, snapshotPage, {
-    mode: 'full', maxTextLen: 12000, maxElements: 300,
+    mode: 'full', maxTextLen: 12000, maxElements: 1500,
   });
   if (!snap || !snap.ok) {
     state.page = { ...state.page, status: 'unreadable', tabId: tab.id, refreshRequested: true };
@@ -420,8 +420,10 @@ const provider = {
     let elements = snap.elements;
     if (scope === 'viewport') elements = elements.filter((e) => e.inViewport);
     if (query) {
+      // 元素名或行锚点命中都算——「勾选 Cursor Team 那封」靠的是行文字匹配到无名勾选框
       const q = query.toLowerCase();
-      elements = elements.filter((e) => (e.name || '').toLowerCase().includes(q));
+      elements = elements.filter((e) =>
+        (e.name || '').toLowerCase().includes(q) || (e.context || '').toLowerCase().includes(q));
     }
     return { elements, total: elements.length, viewport: snap.viewport, stats: snap.stats };
   },
