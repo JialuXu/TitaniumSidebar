@@ -70,7 +70,7 @@ const state = {
 /* ========== DOM 引用 ========== */
 const els = {};
 [
-  'btn-new-chat', 'btn-settings', 'ctx-text', 'ctx-badge', 'btn-refresh',
+  'btn-new-chat', 'btn-settings', 'context-wrap', 'ctx-text', 'ctx-badge', 'btn-refresh',
   'ctx-caret', 'ctx-detail', 'ctx-detail-url', 'ctx-detail-outline', 'ctx-detail-text',
   'chat', 'welcome', 'config-hint', 'btn-goto-settings', 'input', 'btn-send',
   'btn-plus', 'plus-menu',
@@ -153,6 +153,9 @@ function setCtxExpanded(expanded) {
 
 function updateContextBar(transient) {
   const { page } = state;
+  // 空闲态（尚未发过消息）整卡隐藏，读取中/已读取/不可读时才显示
+  els.contextWrap.hidden =
+    transient !== 'reading' && page.status !== 'ok' && page.status !== 'unreadable';
   els.ctxBadge.hidden = true;
   els.btnRefresh.hidden = true;
   els.ctxCaret.hidden = true;

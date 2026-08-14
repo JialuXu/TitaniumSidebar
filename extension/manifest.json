@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Titanium",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "网页侧边栏 AI 助手：发送消息时读取当前页面内容作为上下文，调用自行配置的 OpenAI 兼容接口流式问答；可选开启页面操作能力。Design by Xujl",
   "minimum_chrome_version": "114",
   "permissions": ["sidePanel", "scripting", "storage"],
