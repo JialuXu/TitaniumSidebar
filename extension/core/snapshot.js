@@ -29,7 +29,10 @@ export function snapshotPage(options) {
   const opts = options || {};
   const mode = opts.mode || 'full';
   const MAX_TEXT = opts.maxTextLen || 12000;
-  const MAX_ELEMENTS = opts.maxElements || 300;
+  // 元素编号上限是防失控的宽松保险丝，不是 token 预算——token 由序列化端的
+  // 字符预算与同构折叠约束。收得太紧会让增量刷新编不进新元素（动作后新出现的
+  // 按钮拿不到 ref），且必须配合把 elementsTruncated 显式告知模型。
+  const MAX_ELEMENTS = opts.maxElements || 1500;
 
   const doc = typeof document !== 'undefined' ? document : null;
   if (!doc || !doc.body) return { ok: false, reason: 'no-body' };
@@ -85,8 +88,14 @@ export function snapshotPage(options) {
   function interactiveRole(el, style, parentCursor) {
     const tag = el.tagName ? el.tagName.toUpperCase() : '';
 
-    // <label for=...> 点击会转发给关联控件，与控件本身重复；排除以免同一操作出现两个 ref
-    if (tag === 'LABEL' && el.getAttribute('for')) return null;
+    // <label> 点击会转发给关联控件（for 指向的，或内部包裹的），与控件本身重复；
+    // 排除以免同一操作出现两个 ref。antd/element-ui 的勾选框全是 label 包裹写法。
+    // 内部控件若被 display:none 隐藏则不排除——此时 label 是唯一可点的目标。
+    if (tag === 'LABEL') {
+      if (el.getAttribute('for')) return null;
+      const inner = el.querySelector ? el.querySelector('input,select,textarea,button') : null;
+      if (inner && visibleStyle(inner)) return null;
+    }
 
     const strong = (role) => ({ role, weak: false });
     if (tag === 'A') return el.hasAttribute('href') ? strong('link') : null;
@@ -155,6 +164,21 @@ export function snapshotPage(options) {
     return '';
   }
 
+  // 行锚点：无名或短名控件（列表页每行重复的勾选框、「编辑」「删除」按钮）补所在行
+  // 的文字，让模型能区分「哪一行的按钮」；也参与 list_elements 的 query 过滤。
+  // 只认语义行容器（tr/li/role=row…）；祖先文本超 300 字说明那是区块而非行，不作锚点
+  // （否则会把整个卡片/章节的正文当成锚点，纯噪声）。长名元素自身已可区分，不补。
+  function rowContext(el, ownName) {
+    if (ownName && ownName.length > 12) return null;
+    if (!el.closest) return null;
+    const row = el.closest('tr,li,[role="row"],[role="listitem"],article');
+    if (!row || row === el) return null;
+    const t = (row.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!t || t.length > 300) return null;
+    const ctx = clamp(t, 40);
+    return ctx === ownName ? null : ctx;
+  }
+
   // 表单控件当前值：密码框一律不取（隐私）；勾选类返回勾选态
   function controlValue(el, role) {
     if (role === 'checkbox' || role === 'radio' || role === 'switch') {
@@ -189,9 +213,9 @@ export function snapshotPage(options) {
       w: Math.round(rect.width), h: Math.round(rect.height),
     };
     const tag = el.tagName.toLowerCase();
-    return {
-      ref, role, tag,
-      name: accessibleName(el),
+    const name = accessibleName(el);
+    const info = {
+      ref, role, tag, name,
       href: tag === 'a' ? clamp(el.getAttribute('href') || '', 120) || null : null,
       value: controlValue(el, role),
       disabled: isDisabled(el),
@@ -200,6 +224,9 @@ export function snapshotPage(options) {
         bbox.x < win.innerWidth && bbox.y < win.innerHeight &&
         bbox.x + bbox.w > 0 && bbox.y + bbox.h > 0,
     };
+    const ctx = rowContext(el, name);
+    if (ctx) info.context = ctx;
+    return info;
   }
 
   function viewportInfo() {
