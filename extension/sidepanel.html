@@ -52,6 +52,15 @@
 
   <!-- 输入区 -->
   <footer class="composer">
+    <!-- 「+」功能菜单：菜单项由 sidepanel.js 的 COMPOSER_MENU_ITEMS 登记表渲染 -->
+    <div class="composer-tools">
+      <button id="btn-plus" class="plus-btn" type="button" title="更多功能" aria-haspopup="menu" aria-expanded="false">
+        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+          <path d="M8 3.2v9.6M3.2 8h9.6"/>
+        </svg>
+      </button>
+      <div id="plus-menu" class="plus-menu" role="menu" aria-label="更多功能"></div>
+    </div>
     <textarea id="input" rows="1" placeholder="输入问题，Enter 发送，Shift+Enter 换行"></textarea>
     <button id="btn-send" class="send-btn" type="button">发送</button>
   </footer>
@@ -82,12 +91,20 @@
         模型支持视觉（启用截图工具）
       </label>
       <p class="cfg-hint">截图内容无法脱敏，请确认页面可发送后再开启；模型不支持图片输入时请保持关闭。</p>
+      <label class="cfg-switch">
+        <input id="cfg-actions" type="checkbox">
+        允许页面操作（AI 可点击、输入、跳转页面）
+      </label>
+      <p class="cfg-hint cfg-hint-warn">
+        开启后 AI 将按你的指令自动操作当前页面，每一步都显示在对话中，可随时点「停止」。
+        请勿在处理不希望被改动的业务数据时开启。转账、提交审批等不可逆操作，AI 会先向你确认。
+      </p>
       <div class="settings-actions">
         <button id="btn-test" class="ghost-btn" type="button">测试连接</button>
         <button id="btn-save" class="primary-btn" type="button">保存</button>
       </div>
       <div id="test-result" class="test-result"></div>
-      <div class="credit settings-credit">Titanium v0.2.0 · Design by Xujl</div>
+      <div class="credit settings-credit">Titanium v0.3.0 · Design by Xujl</div>
     </div>
   </aside>
 

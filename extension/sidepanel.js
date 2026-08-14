@@ -4,7 +4,10 @@
 import { snapshotPage } from './core/snapshot.js';
 import { searchPage } from './core/search.js';
 import { highlightElement } from './core/highlight.js';
-import { buildToolDefs, dispatchToolCall, MAX_TOOL_ROUNDS } from './core/tools.js';
+import { performAction } from './core/actions.js';
+import {
+  buildToolDefs, dispatchToolCall, MAX_TOOL_ROUNDS, MAX_ACTION_ROUNDS, WRITE_TOOL_NAMES,
+} from './core/tools.js';
 import { annotateScreenshot } from './core/annotate.js';
 import { formatOutline } from './core/format.js';
 import { maskSensitive } from './core/masker.js';
@@ -25,7 +28,12 @@ const storage = {
 };
 
 /* ========== 全局状态 ========== */
-const DEFAULT_CONFIG = { baseUrl: '', model: '', apiKey: '', maskEnabled: true, visionEnabled: false };
+const DEFAULT_CONFIG = {
+  baseUrl: '', model: '', apiKey: '',
+  maskEnabled: true,
+  visionEnabled: false,
+  actionsEnabled: false, // 允许页面操作（点击/输入/跳转），默认关闭
+};
 
 function initialPage() {
   return {
@@ -36,10 +44,13 @@ function initialPage() {
     outlineText: '',         // 脱敏后的结构骨架文本（注入 prompt + 详情面板展示）
     elementCount: 0,         // 快照时的可交互元素数（状态条展示）
     session: '',             // ref 映射的会话标识，页面侧 window.__titanium 持有同名值
-    tabId: null,             // 快照来源标签页，工具调用前校验是否仍是当前激活页
+    // 工作标签页：快照来源，也是所有感知与动作的作用对象。
+    // open_tab/switch_tab 会把它转移到新标签页（并同步激活），
+    // 因此「浏览器激活页 === 工作页」这一不变式始终成立，守卫逻辑无需改动。
+    tabId: null,
     hits: null,              // 脱敏命中计数 { idCard, bankCard, phone }，未开脱敏为 null
     injected: false,         // 页面内容是否已注入过消息历史（同会话不重复注入）
-    refreshRequested: false, // 用户点了「重新读取」，下一条消息重新提取
+    refreshRequested: false, // 用户点了「重新读取」或页面已跳转，下一条消息重新提取
   };
 }
 
@@ -50,7 +61,7 @@ const state = {
   // 工具调用轮次会追加 assistant(tool_calls)/tool/截图跟随消息，`_` 前缀字段发请求前剔除。
   messages: [],
   page: initialPage(),
-  ui: { phase: 'idle', autoScroll: true, ctxExpanded: false }, // phase: idle | streaming
+  ui: { phase: 'idle', autoScroll: true, ctxExpanded: false, plusMenuOpen: false }, // phase: idle | streaming
   abortController: null,
   toolsBroken: false, // 接口不支持 tools（收到过 400/422），本会话降级纯文本；保存配置时重置
   lastCitation: '', // 点击引用徽标暂存的原文（生产版可扩展为定位高亮）
@@ -62,8 +73,9 @@ const els = {};
   'btn-new-chat', 'btn-settings', 'ctx-text', 'ctx-badge', 'btn-refresh',
   'ctx-caret', 'ctx-detail', 'ctx-detail-url', 'ctx-detail-outline', 'ctx-detail-text',
   'chat', 'welcome', 'config-hint', 'btn-goto-settings', 'input', 'btn-send',
+  'btn-plus', 'plus-menu',
   'settings-mask', 'settings', 'btn-close-settings', 'cfg-baseurl', 'cfg-model',
-  'cfg-apikey', 'cfg-mask', 'cfg-vision', 'btn-test', 'btn-save', 'test-result',
+  'cfg-apikey', 'cfg-mask', 'cfg-vision', 'cfg-actions', 'btn-test', 'btn-save', 'test-result',
 ].forEach((id) => {
   els[id.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = document.getElementById(id);
 });
@@ -89,6 +101,7 @@ function readConfigForm() {
     apiKey: els.cfgApikey.value.trim(),
     maskEnabled: els.cfgMask.checked,
     visionEnabled: els.cfgVision.checked,
+    actionsEnabled: els.cfgActions.checked,
   };
 }
 
@@ -98,6 +111,7 @@ function fillConfigForm() {
   els.cfgApikey.value = state.config.apiKey;
   els.cfgMask.checked = state.config.maskEnabled;
   els.cfgVision.checked = state.config.visionEnabled;
+  els.cfgActions.checked = state.config.actionsEnabled;
 }
 
 /* ========== 错误文案映射（外壳职责，core 只抛结构化错误） ========== */
@@ -235,6 +249,35 @@ async function snapshotCurrentTab() {
   return { ...result, tabId: tab.id };
 }
 
+// 把一次 full 快照写入 state.page（脱敏 + 命中合并）。
+// 首条消息的读取与动作导致跳转后的重建共用这一份，避免两处规则漂移。
+function applySnapshot(snap, tabId, { refreshRequested = false } = {}) {
+  // 文本与结构骨架都走文本通道，发给模型前必须一并脱敏；命中数合并计入徽标
+  const outlineRaw = formatOutline(snap.outline);
+  const maskOn = state.config.maskEnabled;
+  const textRes = maskOn ? maskSensitive(snap.text) : { text: snap.text, hits: null };
+  const outlineRes = maskOn ? maskSensitive(outlineRaw) : { text: outlineRaw, hits: null };
+  state.page = {
+    status: 'ok',
+    title: snap.title,
+    url: snap.url,
+    maskedText: textRes.text,
+    outlineText: outlineRes.text,
+    elementCount: snap.stats.totalElements,
+    session: snap.session,
+    tabId,
+    hits: textRes.hits
+      ? {
+          idCard: textRes.hits.idCard + outlineRes.hits.idCard,
+          bankCard: textRes.hits.bankCard + outlineRes.hits.bankCard,
+          phone: textRes.hits.phone + outlineRes.hits.phone,
+        }
+      : null,
+    injected: true,
+    refreshRequested,
+  };
+}
+
 /* ========== 感知工具 provider（chrome.* 接线，执行由 core/tools.js 调度） ========== */
 
 // 工具执行前置校验：当前激活标签页必须仍是快照来源页（截图截的就是激活页，必须守卫）
@@ -253,15 +296,109 @@ async function refreshedElements(tab) {
     mode: 'elements', session: state.page.session, maxElements: 300,
   });
   if (res && res.ok === false && res.reason === 'stale') {
-    // maxTextLen 给最小值：全量重建只为拿元素映射，不需要文本通道的开销
-    const full = await injectFunc(tab.id, snapshotPage, { mode: 'full', maxTextLen: 1, maxElements: 300 });
+    // maxTextLen 给最小值：全量重建只为拿元素映射，不需要文本通道的开销。
+    // inheritRefs 让指纹相同的元素继承旧编号——SPA 重渲染后模型手里的 ref 仍然有效。
+    const full = await injectFunc(tab.id, snapshotPage, {
+      mode: 'full', maxTextLen: 1, maxElements: 300, inheritRefs: true,
+    });
     if (full && full.ok) {
       state.page.session = full.session;
-      res = { ok: true, elements: full.elements, viewport: full.viewport };
+      res = { ok: true, elements: full.elements, viewport: full.viewport, stats: full.stats };
     }
   }
   if (!res || !res.ok) throw new Error('无法读取页面元素（页面可能已刷新或受限）。');
   return res;
+}
+
+/* ========== 动作后的页面变化同步 ========== */
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 轮询到标签页加载完成（导航是异步的，动作返回时新页面往往还没开始加载）
+async function waitForTabComplete(tabId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    let tab = null;
+    try { tab = await chrome.tabs.get(tabId); } catch { return null; }
+    if (tab.status === 'complete') return tab;
+    await sleep(150);
+  }
+  try { return await chrome.tabs.get(tabId); } catch { return null; }
+}
+
+// 页面已跳转：全量重建快照并整体更新 state.page。
+// 刻意置 refreshRequested——新页全文不在本回合塞给模型（回合内 token 会爆），
+// 而是复用既有的「重新读取」机制，由下一条用户消息携带。
+async function rebuildPageAfterNavigation(tab) {
+  if (!tab || !tab.id || isRestrictedUrl(tab.url)) {
+    state.page = { ...state.page, status: 'unreadable', tabId: tab && tab.id ? tab.id : state.page.tabId, refreshRequested: true };
+    updateContextBar();
+    return { navigated: true, restricted: true };
+  }
+  const snap = await injectFunc(tab.id, snapshotPage, {
+    mode: 'full', maxTextLen: 12000, maxElements: 300,
+  });
+  if (!snap || !snap.ok) {
+    state.page = { ...state.page, status: 'unreadable', tabId: tab.id, refreshRequested: true };
+    updateContextBar();
+    return { navigated: true, restricted: true };
+  }
+  applySnapshot(snap, tab.id, { refreshRequested: true });
+  updateContextBar();
+  return {
+    navigated: true, title: snap.title, url: snap.url,
+    viewport: snap.viewport, stats: snap.stats,
+  };
+}
+
+// 动作执行后感知页面变化，产出给模型的变化摘要。
+// mayNavigate：点击/回车这类可能触发跳转的动作要等加载完成，输入/选择则无需等待。
+async function syncAfterAction({ mayNavigate }) {
+  await sleep(300); // 静默期：给 SPA 重渲染或导航启动留出时间
+
+  // target=_blank 的链接与 window.open 会把激活页换成新标签页，收养它为新的工作页
+  let active = null;
+  try { [active] = await chrome.tabs.query({ active: true, currentWindow: true }); } catch { /* 忽略 */ }
+  const adopted = Boolean(active && active.id && active.id !== state.page.tabId);
+  if (adopted) state.page.tabId = active.id;
+
+  const tab = mayNavigate || adopted
+    ? await waitForTabComplete(state.page.tabId, 8000)
+    : await chrome.tabs.get(state.page.tabId).catch(() => null);
+  if (!tab) return { navigated: true, restricted: true };
+
+  if (adopted || (tab.url && tab.url !== state.page.url)) {
+    return await rebuildPageAfterNavigation(tab);
+  }
+
+  // 未跳转：增量刷新，把新出现的元素（带 * 标记）报告给模型
+  try {
+    const snap = await refreshedElements(tab);
+    return {
+      navigated: false,
+      newElements: snap.elements.filter((e) => e.isNew),
+      viewport: snap.viewport,
+      stats: snap.stats,
+    };
+  } catch {
+    return { navigated: false, newElements: [] };
+  }
+}
+
+// 导航类动作的统一收尾：等加载完成 → 全量重建 → 返回变化摘要
+async function afterNavigation(tabId) {
+  state.page.tabId = tabId;
+  await sleep(400); // 让导航真正开始，否则会读到旧页面的 complete 状态
+  const tab = await waitForTabComplete(tabId, 10000);
+  return await rebuildPageAfterNavigation(tab);
+}
+
+function requireHttpUrl(url) {
+  const target = String(url || '').trim();
+  if (!/^https?:\/\//i.test(target)) {
+    throw new Error('只支持 http/https 开头的完整网址，请检查后重试。');
+  }
+  return target;
 }
 
 let lastCaptureAt = 0; // 上次 captureVisibleTab 的时间戳（配额限流用）
@@ -286,7 +423,7 @@ const provider = {
       const q = query.toLowerCase();
       elements = elements.filter((e) => (e.name || '').toLowerCase().includes(q));
     }
-    return { elements, total: elements.length };
+    return { elements, total: elements.length, viewport: snap.viewport, stats: snap.stats };
   },
 
   async highlight({ ref }) {
@@ -317,6 +454,98 @@ const provider = {
       .map(({ ref, bbox }) => ({ ref, bbox }));
     const { dataUrl, markCount } = await annotateScreenshot(raw, marks, snap.viewport);
     return { dataUrl, markCount, viewport: snap.viewport };
+  },
+
+  /* ---------- 页内动作（注入 core/actions.js 的 performAction） ---------- */
+
+  // 纯读取的动作不需要同步页面变化；点击与按键可能触发跳转，需等加载完成
+  async act(payload) {
+    const READ_ONLY = { extract_table: 1, get_html: 1 };
+    const MAY_NAVIGATE = { click: 1, key: 1 };
+    const tab = await requireSnapshotTab();
+    const result = await injectFunc(tab.id, performAction, {
+      ...payload, session: state.page.session,
+    });
+    if (!result) throw new Error('无法在当前页面执行操作（页面可能已刷新或受限）。');
+    if (READ_ONLY[payload.action] || !result.ok) return { result, change: null };
+    const change = await syncAfterAction({ mayNavigate: Boolean(MAY_NAVIGATE[payload.action]) });
+    return { result, change };
+  },
+
+  /* ---------- 浏览器级动作（chrome.tabs） ---------- */
+
+  async navigate({ url }) {
+    const tab = await requireSnapshotTab();
+    const target = requireHttpUrl(url);
+    await chrome.tabs.update(tab.id, { url: target });
+    return await afterNavigation(tab.id);
+  },
+
+  async goBack() {
+    const tab = await requireSnapshotTab();
+    try {
+      await chrome.tabs.goBack(tab.id);
+    } catch {
+      throw new Error('当前标签页没有可后退的历史记录。');
+    }
+    return await afterNavigation(tab.id);
+  },
+
+  async refresh() {
+    const tab = await requireSnapshotTab();
+    await chrome.tabs.reload(tab.id);
+    return await afterNavigation(tab.id);
+  },
+
+  // 新开与切换标签页本身就是在转移工作页，不走 requireSnapshotTab 守卫；
+  // 它们把目标页设为激活页并更新 state.page.tabId，维持「激活页 === 工作页」不变式
+  async openTab({ url }) {
+    const target = requireHttpUrl(url);
+    const tab = await chrome.tabs.create({ url: target, active: true });
+    return await afterNavigation(tab.id);
+  },
+
+  async switchTab({ tabId }) {
+    if (!Number.isInteger(tabId)) throw new Error('tab_id 无效，请先调用 list_tabs 获取。');
+    let tab;
+    try {
+      tab = await chrome.tabs.update(tabId, { active: true });
+    } catch {
+      throw new Error(`标签页 ${tabId} 不存在或已关闭，请重新调用 list_tabs。`);
+    }
+    return await afterNavigation(tab.id);
+  },
+
+  async closeTab({ tabId }) {
+    const target = tabId == null ? state.page.tabId : tabId;
+    if (target == null) throw new Error('当前没有可关闭的工作标签页。');
+    const closingWorkTab = target === state.page.tabId;
+    try {
+      await chrome.tabs.remove(target);
+    } catch {
+      throw new Error(`标签页 ${target} 不存在或已关闭。`);
+    }
+    const tabs = await chrome.tabs.query({ currentWindow: true });
+    let change = null;
+    // 关掉的是工作页：收养一个新的工作页，否则后续动作全都无处落脚
+    if (closingWorkTab && tabs.length) {
+      const next = tabs.find((t) => t.active) || tabs[0];
+      await chrome.tabs.update(next.id, { active: true });
+      change = await afterNavigation(next.id);
+    }
+    return { remaining: tabs.length, change };
+  },
+
+  async listTabs() {
+    const tabs = await chrome.tabs.query({ currentWindow: true });
+    return tabs.map((t) => ({
+      id: t.id,
+      title: t.title || '',
+      // 受限页（chrome:// 等）没有 host 权限，读不到网址
+      url: t.url || '（受限页面，读取不到网址）',
+      active: Boolean(t.active),
+      isWork: t.id === state.page.tabId,
+    }));
   },
 };
 
@@ -365,9 +594,10 @@ function appendNote(root, text) {
 }
 
 /* ========== 工具调用活动行 ========== */
-function appendToolActivity(root, text) {
+// 有副作用的动作用 .action 样式强调——用户必须一眼看出 AI 改动了页面
+function appendToolActivity(root, text, isAction) {
   const div = document.createElement('div');
-  div.className = 'tool-activity running';
+  div.className = 'tool-activity running' + (isAction ? ' action' : '');
   div.textContent = text;
   root.appendChild(div);
   return div;
@@ -382,6 +612,9 @@ function settleToolActivity(div, text, ok) {
 // 活动行文案（外壳职责，core 只回传结构化 meta）。phase: run | done | fail
 function describeToolActivity(name, args, phase, data = {}) {
   const a = args || {};
+  const ref = (d) => `[${d.ref ?? a.ref ?? '?'}]`;
+  const named = (d) => (d.name ? ` "${d.name}"` : '');
+  const jumped = (d) => (d.navigated ? '，页面已跳转' : '');
   switch (name) {
     case 'find_in_page':
       if (phase === 'run') return `🔍 正在页面中搜索「${a.query || ''}」…`;
@@ -396,11 +629,73 @@ function describeToolActivity(name, args, phase, data = {}) {
     case 'highlight_element':
       if (phase === 'run') return `📍 正在页面上高亮元素 [${a.ref ?? '?'}]…`;
       if (phase === 'fail') return `📍 高亮元素 [${a.ref ?? '?'}] 失败`;
-      return `📍 已高亮元素 [${data.ref}]${data.name ? ` "${data.name}"` : ''}`;
+      return `📍 已高亮元素 [${data.ref}]${named(data)}`;
     case 'capture_screenshot':
       if (phase === 'run') return '📷 正在截取当前视口…';
       if (phase === 'fail') return '📷 截图失败';
       return `📷 已截取当前视口（标注 ${data.markCount} 个元素）`;
+    case 'extract_table':
+      if (phase === 'run') return `📊 正在提取第 ${a.table_index ?? '?'} 个表格…`;
+      if (phase === 'fail') return `📊 提取第 ${a.table_index ?? '?'} 个表格失败`;
+      return `📊 已提取第 ${data.tableIndex} 个表格（${data.rowCount} 行 × ${data.colCount} 列）`;
+    case 'get_element_html':
+      if (phase === 'run') return `🧩 正在读取元素 [${a.ref ?? '?'}] 的结构…`;
+      if (phase === 'fail') return `🧩 读取元素 [${a.ref ?? '?'}] 结构失败`;
+      return `🧩 已读取元素 ${ref(data)}${named(data)} 的结构`;
+
+    /* —— 动作类：文案更醒目，用户要能一眼看清 AI 对页面做了什么 —— */
+    case 'click_element':
+      if (phase === 'run') return `🖱️ 正在点击元素 [${a.ref ?? '?'}]…`;
+      if (phase === 'fail') return `🖱️ 点击元素 [${a.ref ?? '?'}] 失败`;
+      return `🖱️ 已点击 ${ref(data)}${named(data)}${jumped(data)}`;
+    case 'input_text': {
+      const preview = String(a.text || '').slice(0, 20) + (String(a.text || '').length > 20 ? '…' : '');
+      if (phase === 'run') return `⌨️ 正在向 [${a.ref ?? '?'}] 输入「${preview}」…`;
+      if (phase === 'fail') return `⌨️ 向 [${a.ref ?? '?'}] 输入失败`;
+      return `⌨️ 已向 ${ref(data)}${named(data)} 输入「${preview}」${jumped(data)}`;
+    }
+    case 'select_option':
+      if (phase === 'run') return `🔽 正在为 [${a.ref ?? '?'}] 选择「${a.option || ''}」…`;
+      if (phase === 'fail') return `🔽 为 [${a.ref ?? '?'}] 选择「${a.option || ''}」失败`;
+      return `🔽 已在 ${ref(data)}${named(data)} 中选择「${data.value}」${jumped(data)}`;
+    case 'press_key':
+      if (phase === 'run') return `⏎ 正在按下 ${a.key || ''}…`;
+      if (phase === 'fail') return `⏎ 按下 ${a.key || ''} 失败`;
+      return `⏎ 已按下 ${data.key}${data.submitted ? '，已提交表单' : ''}${jumped(data)}`;
+    case 'scroll_page': {
+      const label = { up: '向上', down: '向下', top: '回到顶部', bottom: '滚到底部' }[a.direction] || '';
+      if (phase === 'run') return `📜 正在${label}滚动…`;
+      if (phase === 'fail') return `📜 滚动失败`;
+      return `📜 已${label}滚动`;
+    }
+    case 'navigate':
+      if (phase === 'run') return `🌐 正在打开 ${a.url || ''}…`;
+      if (phase === 'fail') return `🌐 打开 ${a.url || ''} 失败`;
+      return `🌐 已打开：${data.title || a.url || ''}`;
+    case 'go_back':
+      if (phase === 'run') return '◀️ 正在后退…';
+      if (phase === 'fail') return '◀️ 后退失败';
+      return `◀️ 已后退到：${data.title || ''}`;
+    case 'refresh':
+      if (phase === 'run') return '🔄 正在刷新页面…';
+      if (phase === 'fail') return '🔄 刷新失败';
+      return `🔄 已刷新：${data.title || ''}`;
+    case 'open_tab':
+      if (phase === 'run') return `🗂️ 正在新标签页打开 ${a.url || ''}…`;
+      if (phase === 'fail') return `🗂️ 新标签页打开失败`;
+      return `🗂️ 已在新标签页打开：${data.title || a.url || ''}`;
+    case 'switch_tab':
+      if (phase === 'run') return `🗂️ 正在切换到标签页 ${a.tab_id ?? '?'}…`;
+      if (phase === 'fail') return `🗂️ 切换标签页失败`;
+      return `🗂️ 已切换到：${data.title || ''}`;
+    case 'close_tab':
+      if (phase === 'run') return '🗂️ 正在关闭标签页…';
+      if (phase === 'fail') return '🗂️ 关闭标签页失败';
+      return '🗂️ 已关闭标签页';
+    case 'list_tabs':
+      if (phase === 'run') return '🗂️ 正在读取标签页列表…';
+      if (phase === 'fail') return '🗂️ 读取标签页列表失败';
+      return `🗂️ 已读取标签页列表：${data.count} 个`;
     default:
       return phase === 'run' ? `⚙️ 正在调用 ${name}…` : `⚙️ ${name} ${phase === 'fail' ? '失败' : '完成'}`;
   }
@@ -501,6 +796,11 @@ async function runAgentLoop(el) {
   let rounds = 0;             // 已完成的工具轮数
   let imagesRetried = false;  // 「接口不支持图片」降级只重试一次
 
+  // 开了页面操作的回合允许更多轮：一次表单填写光是「列元素 + 逐个输入 + 提交 + 验证」
+  // 就要八九轮，5 轮必然半途而废
+  const actionsOn = Boolean(state.config.actionsEnabled);
+  const roundLimit = actionsOn ? MAX_ACTION_ROUNDS : MAX_TOOL_ROUNDS;
+
   const newSegment = () => {
     seg = document.createElement('div');
     seg.className = 'ai-content';
@@ -512,10 +812,14 @@ async function runAgentLoop(el) {
   };
 
   while (true) {
-    const useTools = !state.toolsBroken && state.page.status === 'ok' && rounds < MAX_TOOL_ROUNDS;
+    // 页面不可读时感知工具无用武之地，但动作工具仍有意义——
+    // 用户在 chrome:// 新标签页上说「打开某网址并总结」，靠的就是 open_tab
+    const canUseTools = state.page.status === 'ok' || actionsOn;
+    const useTools = !state.toolsBroken && canUseTools && rounds < roundLimit;
     const vision = useTools && Boolean(state.config.visionEnabled);
-    const tools = useTools ? buildToolDefs({ vision }) : undefined;
-    const requestMessages = buildRequestMessages({ tools: useTools, vision });
+    const actions = useTools && actionsOn;
+    const tools = useTools ? buildToolDefs({ vision, actions }) : undefined;
+    const requestMessages = buildRequestMessages({ tools: useTools, vision, actions });
     console.log('[发送内容]', requestMessages); // 验收依据：控制台可核对脱敏后的实际发送内容
 
     let acc = '';
@@ -568,7 +872,7 @@ async function runAgentLoop(el) {
 
     // 没有工具调用（正常结束/出错/中止）：本段即最终回复。
     // rounds 硬上限兜底：即使请求不带 tools，病态网关仍返回 tool_calls 也不再执行
-    if (streamError || !calls || !calls.length || rounds >= MAX_TOOL_ROUNDS + 2) {
+    if (streamError || !calls || !calls.length || rounds >= roundLimit + 2) {
       const msgObj = { role: 'assistant', content: acc };
       state.messages.push(msgObj);
       const aborted = streamError instanceof LlmError && streamError.kind === 'abort';
@@ -591,15 +895,30 @@ async function runAgentLoop(el) {
       })),
     });
 
+    // 同一批调用里一旦发生跳转，后续动作的元素编号已全部失效，不能再盲目执行
+    let batchBroken = false;
     for (const call of calls) {
+      const isAction = WRITE_TOOL_NAMES.has(call.name);
       // 中止：未执行的调用补占位 tool 消息——tool_calls 必须一一回填，否则历史不合法（下轮 400）
       if (signal.aborted) {
         state.messages.push({ role: 'tool', tool_call_id: call.id, content: '（用户已中止，未执行）' });
         continue;
       }
+      if (batchBroken) {
+        state.messages.push({
+          role: 'tool', tool_call_id: call.id,
+          content: '（页面已跳转，本批后续动作未执行，请基于新页面重新规划）',
+        });
+        settleToolActivity(
+          appendToolActivity(el.root, '', isAction),
+          `⏭️ 已跳过 ${call.name}：页面已跳转，编号需重新获取`,
+          false
+        );
+        continue;
+      }
       let argsForUi = null;
       try { argsForUi = call.arguments ? JSON.parse(call.arguments) : {}; } catch { /* 文案按 null 兜底 */ }
-      const row = appendToolActivity(el.root, describeToolActivity(call.name, argsForUi, 'run'));
+      const row = appendToolActivity(el.root, describeToolActivity(call.name, argsForUi, 'run'), isAction);
       maybeScroll();
       if (call.name === 'capture_screenshot') stripImagesFromHistory(); // 同一请求最多一张真图
       const { toolMessage, followUpMessage, meta } = await dispatchToolCall(call, provider);
@@ -615,6 +934,7 @@ async function runAgentLoop(el) {
         describeToolActivity(call.name, meta.args || argsForUi, meta.ok ? 'done' : 'fail', meta.data),
         meta.ok
       );
+      if (meta.data && meta.data.navigated) batchBroken = true;
       maybeScroll();
     }
 
@@ -625,7 +945,7 @@ async function runAgentLoop(el) {
     }
 
     rounds++;
-    if (rounds === MAX_TOOL_ROUNDS) {
+    if (rounds === roundLimit) {
       // 达到上限：下一轮 useTools 为 false（请求不带 tools），并明确告知模型直接作答
       state.messages.push({
         role: 'user',
@@ -682,31 +1002,7 @@ async function handleSend() {
     updateContextBar('reading');
     const snap = await snapshotCurrentTab();
     if (snap) {
-      // 文本与结构骨架都走文本通道，发给模型前必须一并脱敏；命中数合并计入徽标
-      const outlineRaw = formatOutline(snap.outline);
-      const maskOn = state.config.maskEnabled;
-      const textRes = maskOn ? maskSensitive(snap.text) : { text: snap.text, hits: null };
-      const outlineRes = maskOn ? maskSensitive(outlineRaw) : { text: outlineRaw, hits: null };
-      const hits = textRes.hits
-        ? {
-            idCard: textRes.hits.idCard + outlineRes.hits.idCard,
-            bankCard: textRes.hits.bankCard + outlineRes.hits.bankCard,
-            phone: textRes.hits.phone + outlineRes.hits.phone,
-          }
-        : null;
-      state.page = {
-        status: 'ok',
-        title: snap.title,
-        url: snap.url,
-        maskedText: textRes.text,
-        outlineText: outlineRes.text,
-        elementCount: snap.stats.totalElements,
-        session: snap.session,
-        tabId: snap.tabId,
-        hits,
-        injected: true,
-        refreshRequested: false,
-      };
+      applySnapshot(snap, snap.tabId);
       contentForRequest = buildUserContent(inputText, state.page.maskedText, state.page.outlineText);
     } else {
       // 快照失败也置 injected，避免同会话每条消息都无谓重试；可用「重新读取」手动再试
@@ -734,6 +1030,20 @@ async function handleSend() {
 async function handleRegenerate() {
   if (state.ui.phase !== 'idle') return;
   if (!state.messages.some((m) => m.role === 'user' && m.displayContent !== undefined)) return;
+
+  // 上一轮若做过有副作用的操作，重放会在页面上再执行一遍，必须先问过用户
+  let hasWrite = false;
+  for (let i = state.messages.length - 1; i >= 0; i--) {
+    const m = state.messages[i];
+    if (m.role === 'user' && m.displayContent !== undefined) break;
+    if (m.tool_calls && m.tool_calls.some((c) => WRITE_TOOL_NAMES.has(c.function.name))) {
+      hasWrite = true;
+      break;
+    }
+  }
+  if (hasWrite && !window.confirm('上一轮包含页面操作（点击 / 输入 / 跳转等），重新生成会再次真实执行这些操作。确定继续？')) {
+    return;
+  }
 
   // 从尾部弹出，直到栈顶是用户真实消息（displayContent 仅存在于用户敲入的消息上）
   while (state.messages.length) {
@@ -786,6 +1096,7 @@ async function handleSaveConfig() {
   state.toolsBroken = false; // 换了接口/模型，给 tools 一次重新探测的机会
   await storage.set('config', state.config);
   updateConfigHint();
+  renderPlusMenu(); // 「页面操作」开关可能在抽屉里被改动，菜单状态同步
   closeSettings();
 }
 
@@ -814,11 +1125,113 @@ function autoSizeInput() {
   els.input.style.height = Math.min(els.input.scrollHeight, 160) + 'px';
 }
 
+/* ========== 「+」功能菜单 ========== */
+// 菜单项登记表：后续新增功能（绑定 Skill、联网搜索、知识库等）在此补一项即可；
+// 提供 onSelect 回调后自动变为可点击，onSelect 为 null 时显示为置灰占位。
+// icon 为内联 SVG 字符串（16×16、stroke:currentColor），与顶部栏图标同一画风。
+const COMPOSER_MENU_ITEMS = [
+  {
+    id: 'skill',
+    label: '绑定 Skill',
+    hint: '即将上线',
+    icon: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M8 1.8l1.5 4.7 4.7 1.5-4.7 1.5L8 14.2 6.5 9.5 1.8 8l4.7-1.5z"/></svg>',
+    onSelect: null,
+  },
+  {
+    id: 'web-search',
+    label: '联网搜索',
+    hint: '即将上线',
+    icon: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><ellipse cx="8" cy="8" rx="2.8" ry="6.2"/><path d="M1.8 8h12.4"/></svg>',
+    onSelect: null,
+  },
+  {
+    id: 'knowledge-base',
+    label: '知识库',
+    hint: '即将上线',
+    icon: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 3.2c1.8-1 3.7-1 5.5 0 1.8-1 3.7-1 5.5 0v9.6c-1.8-1-3.7-1-5.5 0-1.8-1-3.7-1-5.5 0z"/><path d="M8 3.2v9.6"/></svg>',
+    onSelect: null,
+  },
+  {
+    id: 'page-actions',
+    label: '页面操作',
+    // hint 支持函数形式：随开关状态实时变化
+    hint: () => (state.config.actionsEnabled ? '已开启' : '已关闭'),
+    active: () => Boolean(state.config.actionsEnabled),
+    icon: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="1.8" y="2.5" width="12.4" height="8.2" rx="1"/><path d="M8 10.7v2.3M5.2 13.5h5.6"/><path d="M6.8 5.2l3.4 1.5-1.6.6-.6 1.6z"/></svg>',
+    onSelect: togglePageActions,
+  },
+];
+
+// 「页面操作」快捷开关：与设置抽屉里的 cfg-actions 共用同一个 config 字段，天然同步。
+// 开启是一次有实际后果的授权，先把风险说清楚再放行；关闭则不设阻拦。
+async function togglePageActions() {
+  const turningOn = !state.config.actionsEnabled;
+  if (turningOn && !window.confirm(
+    '开启后，AI 可以按你的指令点击、输入、跳转当前页面，操作会自动执行。\n' +
+    '每一步都会显示在对话中，可随时点「停止」。\n\n' +
+    '请勿在处理不希望被改动的业务数据时开启。确定开启？'
+  )) {
+    return;
+  }
+  state.config = { ...state.config, actionsEnabled: turningOn };
+  await storage.set('config', state.config);
+  renderPlusMenu();
+}
+
+// 渲染菜单项：label/hint 是代码内常量，无用户输入，用 textContent/常量 SVG 拼装
+function renderPlusMenu() {
+  els.plusMenu.innerHTML = '';
+  for (const item of COMPOSER_MENU_ITEMS) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'plus-menu-item';
+    btn.setAttribute('role', 'menuitem');
+    btn.disabled = typeof item.onSelect !== 'function';
+    if (typeof item.active === 'function' && item.active()) btn.classList.add('active');
+    btn.innerHTML = item.icon;
+    const label = document.createElement('span');
+    label.className = 'plus-menu-label';
+    label.textContent = item.label;
+    btn.appendChild(label);
+    const hintText = typeof item.hint === 'function' ? item.hint() : item.hint;
+    if (hintText) {
+      const hint = document.createElement('span');
+      hint.className = 'plus-menu-hint';
+      hint.textContent = hintText;
+      btn.appendChild(hint);
+    }
+    if (!btn.disabled) {
+      btn.addEventListener('click', () => {
+        setPlusMenuOpen(false);
+        item.onSelect();
+      });
+    }
+    els.plusMenu.appendChild(btn);
+  }
+}
+
+function setPlusMenuOpen(open) {
+  state.ui.plusMenuOpen = open;
+  els.plusMenu.classList.toggle('open', open);
+  els.btnPlus.classList.toggle('open', open);
+  els.btnPlus.setAttribute('aria-expanded', String(open));
+}
+
 /* ========== 事件绑定 ========== */
 function bindEvents() {
   els.btnSend.addEventListener('click', () => {
     if (state.ui.phase === 'streaming') handleStop();
     else handleSend();
+  });
+
+  els.btnPlus.addEventListener('click', () => setPlusMenuOpen(!state.ui.plusMenuOpen));
+
+  // 点击菜单区域以外任意位置关闭菜单（按钮自身的点击由上面的开关处理）
+  document.addEventListener('click', (e) => {
+    if (state.ui.plusMenuOpen && !e.target.closest('.composer-tools')) setPlusMenuOpen(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && state.ui.plusMenuOpen) setPlusMenuOpen(false);
   });
 
   els.input.addEventListener('input', autoSizeInput);
@@ -875,5 +1288,6 @@ function bindEvents() {
   await loadConfig();
   updateConfigHint();
   updateContextBar();
+  renderPlusMenu();
   bindEvents();
 })();

@@ -477,6 +477,23 @@ body {
 
 .tool-activity.failed { color: var(--danger); }
 
+/* 动作类活动行：AI 改动了页面，必须比只读感知更醒目 */
+.tool-activity.action {
+  color: var(--text);
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+  border-left: 3px solid var(--warn-text);
+  font-weight: 500;
+}
+
+.tool-activity.action.running { color: var(--warn-text); }
+.tool-activity.action.failed {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  border-left-color: var(--danger);
+}
+
 @keyframes tool-pulse {
   50% { opacity: 0.55; }
 }
@@ -553,6 +570,96 @@ body {
   padding: 10px var(--gap);
   background: var(--surface);
   border-top: 1px solid var(--border);
+}
+
+/* 「+」功能菜单：按钮 + 向上弹出的菜单，锚定在输入区左侧 */
+.composer-tools {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.plus-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.plus-btn:hover { border-color: var(--blue); color: var(--blue); }
+
+/* 展开时「+」旋转成「×」，作为关闭暗示 */
+.plus-btn svg { transition: transform 0.18s ease; }
+.plus-btn.open svg { transform: rotate(45deg); }
+
+.plus-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  min-width: 176px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.1);
+  z-index: 5;
+  /* 关闭态用 visibility 隐藏（同时挡住 Tab 聚焦），配合位移做轻量过渡 */
+  opacity: 0;
+  transform: translateY(4px);
+  visibility: hidden;
+  transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s;
+}
+
+.plus-menu.open {
+  opacity: 1;
+  transform: none;
+  visibility: visible;
+}
+
+.plus-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.plus-menu-item:hover:not(:disabled) { background: var(--bg); }
+
+.plus-menu-item:disabled { color: var(--text-2); cursor: default; }
+
+.plus-menu-item svg { flex-shrink: 0; color: var(--text-2); }
+
+/* 已启用的能力：图标与提示走主色，一眼看出当前状态 */
+.plus-menu-item.active { color: var(--blue); }
+.plus-menu-item.active svg { color: var(--blue); }
+.plus-menu-item.active .plus-menu-hint {
+  color: var(--blue);
+  background: var(--blue-weak);
+}
+
+.plus-menu-label { flex: 1; white-space: nowrap; }
+
+.plus-menu-hint {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  font-size: 11px;
+  color: var(--text-2);
+  background: var(--bg);
+  border-radius: 3px;
 }
 
 .composer textarea {
@@ -689,6 +796,16 @@ body {
   font-size: 11px;
   line-height: 1.6;
   color: var(--text-2);
+}
+
+/* 涉及风险的说明（页面操作）：warn 色卡片，不能和普通说明一样一扫而过 */
+.cfg-hint-warn {
+  margin-left: 0;
+  padding: 7px 9px;
+  color: var(--warn-text);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius);
 }
 
 .settings-actions {

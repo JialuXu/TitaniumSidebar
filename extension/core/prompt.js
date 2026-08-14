@@ -15,22 +15,45 @@ const BASE_PROMPT =
 const TOOLS_PROMPT =
   '你可以调用工具进一步感知页面：<页面内容> 可能因过长被截断，' +
   '缺少细节时优先用 find_in_page 在完整页面里搜索；' +
+  '需要逐行核对表格数据时用 extract_table 取回完整表格；' +
   '用户问「在哪 / 哪个按钮 / 怎么操作」时，可用 list_elements 查看可交互元素，' +
   '并用 highlight_element 在页面上把它标给用户看。' +
-  '你只能观察页面和高亮元素，不能点击、输入或以任何方式修改页面。';
+  'find_in_page 与 list_elements 都是零成本的即时操作，' +
+  '不要靠反复滚动去找内容。';
+
+// 未开启页面操作时明确边界，避免模型许诺自己做不到的事
+const READONLY_PROMPT =
+  '你只能观察页面和高亮元素，不能点击、输入或以任何方式修改页面；' +
+  '用户要求你代为操作时，说明当前未开启页面操作能力，并告诉他可在设置中开启。';
+
+const ACTIONS_PROMPT =
+  '用户已授权你操作页面：你可以点击、输入、选择下拉项、按键、滚动、跳转网址和管理标签页。使用规范：' +
+  '一、先感知再动作——操作前用 list_elements 确认目标编号与语义，不要凭猜测使用编号。' +
+  '二、一次只做一步，根据每次动作返回的页面变化摘要决定下一步；' +
+  '页面跳转后所有编号都会重置，必须重新 list_elements；带 * 的元素是上次操作后新出现的。' +
+  '三、涉及不可逆或对外产生影响的操作——转账、支付、下单、提交审批、删除数据、对外发送消息等——' +
+  '必须先停下来，用文字向用户说明你将要点击什么、会产生什么后果，等用户明确同意后再执行；' +
+  '不要在同一轮里既征求同意又把动作做掉。' +
+  '四、input_text 会整体替换输入框原值而不是追加；填完通常还需要 press_key 回车或点击提交按钮。' +
+  '五、动作失败时按返回的提示自纠：编号过期或元素消失就重新 list_elements，' +
+  '元素不可见就先 scroll_page 或展开它，下拉选项不存在就从返回的可选项里挑；' +
+  '同一个动作最多重试两次，仍不成功就如实告诉用户卡在哪里，不要反复试。' +
+  '六、只做用户要求的事：不要顺手点击无关链接、不要为了「看看」而改动页面数据。';
 
 const VISION_PROMPT =
   '当文字无法表达布局、图表、图片等视觉信息时，可用 capture_screenshot 查看当前视口截图；' +
   '截图上的编号框对应元素 ref，与 list_elements 的编号一致。';
 
 /**
- * 组装 system prompt：基础人设 + （可选）工具使用指引 + （可选）视觉指引。
- * @param {{ tools?: boolean, vision?: boolean }} [caps] 本次会话可用的感知能力
+ * 组装 system prompt：基础人设 + （可选）工具指引 + 操作/只读边界 + （可选）视觉指引。
+ * 各段必须与本次请求实际注册的 tools 一致，否则会指引模型调用不存在的工具。
+ * @param {{ tools?: boolean, vision?: boolean, actions?: boolean }} [caps] 本次请求可用的能力
  */
-export function buildSystemPrompt({ tools = false, vision = false } = {}) {
+export function buildSystemPrompt({ tools = false, vision = false, actions = false } = {}) {
   let prompt = BASE_PROMPT;
   if (tools) prompt += '\n' + TOOLS_PROMPT;
-  if (tools && vision) prompt += VISION_PROMPT;
+  if (tools) prompt += '\n' + (actions ? ACTIONS_PROMPT : READONLY_PROMPT);
+  if (tools && vision) prompt += '\n' + VISION_PROMPT;
   return prompt;
 }
 
