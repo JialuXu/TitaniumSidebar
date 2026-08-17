@@ -165,11 +165,14 @@ body {
 .ctx-caret.open { transform: rotate(90deg); }
 
 /* 已读取内容详情面板：max-height 过渡实现展开/折叠 */
+/* 折叠态必须彻底 0 高度：box-sizing 是 border-box，max-height:0 只压缩内容盒，
+   上下边框仍各占 1px，而背景默认画到 border-box，白底就会在暖纸底上留下一条横线。
+   因此白底与边框只在 .open 时给，折叠态 border-width 归零、背景透明。 */
 .ctx-detail {
   max-height: 0;
   overflow: hidden;
-  background: var(--surface);
-  border: 1px solid transparent;
+  background: none;
+  border: 0 solid var(--border);
   border-radius: var(--radius-md);
   transition: max-height 0.22s ease, margin-top 0.22s ease;
 }
@@ -178,7 +181,8 @@ body {
   max-height: 45vh;
   overflow-y: auto;
   margin-top: 8px;
-  border-color: var(--border);
+  background: var(--surface);
+  border-width: 1px;
 }
 
 .ctx-detail-meta {
