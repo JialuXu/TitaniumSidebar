@@ -55,6 +55,16 @@ The settings drawer also holds: language (applies immediately), redaction before
 - **Shortcuts** — Enter sends, Shift+Enter inserts a newline; streaming replies can be stopped at any time; hover a reply to copy it or regenerate; **New chat** clears the history.
 - **Pages that cannot be read** — browser-internal pages (`chrome://`), extension stores and the like are off limits; the AI then answers from your question alone.
 
+## Skills (preset)
+
+A skill is a session-scoped prompt pack — plain instructions, no code — that puts the AI into a specific task mode. Three presets ship with this version:
+
+- **Table to CSV** — transcribes page tables in full into a ` ```csv ` code block, with proper quoting and every figure kept exactly as the page shows it; the block can be copied or downloaded as a .csv file that opens directly in Excel.
+- **Financial statements** — identifies the statements and reporting period, shows the formula behind every ratio, and strictly separates figures copied from the page from figures it derived.
+- **Market digest** — organises and explains the market data the page shows, never predicts or gives buy/sell advice, and ends every reply with a fixed disclaimer line.
+
+Attach one via the **+** menu → **Attach a Skill**, or from the suggestion bar that appears when you are on a matching finance site (quote pages suggest Market digest, disclosure sites suggest Financial statements). The suggestion bar only reads the tab's URL — it never injects scripts or reads page content. The active skill shows as a removable chip above the input box; it lasts for the current conversation and **New chat** clears it.
+
 ## Page actions (off by default)
 
 Enable them with the "Allow page actions" toggle in the settings drawer or "Page actions" in the **+** menu next to the input box (the two are the same switch); the first time you turn it on, you get a risk confirmation. Once enabled the AI does more than look: it can click buttons, fill inputs, pick dropdown options, press Enter, scroll, navigate to a URL and open or close tabs — good for "fill this form with the details above" or "open that page and summarise it".

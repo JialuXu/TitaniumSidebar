@@ -364,13 +364,16 @@ body {
 .md-codeblock-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   padding: 4px 10px;
   font-size: 11px;
   color: var(--text-3);
   background: var(--code-bg);
   border-bottom: 1px solid var(--border);
 }
+
+/* 语言标签左侧撑开，按钮（复制 / csv 下载，可能有两个）自然靠右成组 */
+.md-codeblock-lang { margin-right: auto; }
 
 .md-copy-btn {
   border: none;
@@ -750,6 +753,102 @@ body {
   background: var(--neutral-soft);
   border-radius: var(--radius-pill);
 }
+
+/* ========== 技能（Skill） ========== */
+
+/* 「+」菜单的技能二级视图：压掉 ::before 的「能力开关」小标，
+   标题行改用 DOM 元素（.plus-menu-title）走 t() 取词，不再硬编码在伪元素里 */
+.plus-menu.skills::before { content: none; }
+
+.plus-menu-title {
+  display: block;
+  padding: 4px 8px 6px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  color: var(--text-3);
+}
+
+/* 技能建议条：主色浅底左彩边行卡（accent 色系，刻意区别于 caution 黄的 config-hint），
+   命中一个技能一行 */
+.skill-suggest {
+  flex-shrink: 0;
+  padding: 8px var(--gap) 0;
+}
+
+.skill-suggest-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--accent-soft);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius-sm);
+}
+
+.skill-suggest-row > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.skill-suggest-enable {
+  flex-shrink: 0;
+  border: none;
+  height: 24px;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-inverse);
+  background: var(--accent);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.skill-suggest-enable:hover { background: var(--accent-strong); }
+
+.skill-suggest-close {
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  padding: 2px 4px;
+  font-size: 10px;
+  color: var(--text-3);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.skill-suggest-close:hover { color: var(--accent); }
+
+/* 会话级技能 chip：输入卡片上方的主色胶囊，点 ✕ 摘除 */
+.skill-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 3px 6px 3px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: var(--radius-pill);
+}
+
+.skill-chip-remove {
+  border: none;
+  background: none;
+  padding: 2px 5px;
+  font-size: 10px;
+  color: var(--accent);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.skill-chip-remove:hover { background: rgba(143, 90, 60, 0.2); }
 
 .composer textarea {
   flex: 1;

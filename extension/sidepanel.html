@@ -59,6 +59,9 @@
     </div>
   </div>
 
+  <!-- 技能建议条：当前标签页 URL 命中技能名单且无激活技能时显示；行内容由 sidepanel.js 渲染 -->
+  <div id="skill-suggest" class="skill-suggest" hidden></div>
+
   <!-- 消息流 -->
   <main id="chat" class="chat">
     <div id="welcome" class="welcome">
@@ -75,6 +78,14 @@
 
   <!-- 输入区：白色圆角卡片内含「+」菜单、输入框与发送胶囊 -->
   <footer class="composer">
+    <!-- 会话级技能 chip：有激活技能时显示，点 ✕ 摘除；名称由 sidepanel.js 按当前语言写入 -->
+    <div id="skill-chip" class="skill-chip" hidden>
+      <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+        <path d="M8 1.8l1.5 4.7 4.7 1.5-4.7 1.5L8 14.2 6.5 9.5 1.8 8l4.7-1.5z"/>
+      </svg>
+      <span id="skill-chip-name" class="skill-chip-name"></span>
+      <button id="skill-chip-remove" class="skill-chip-remove" type="button" data-i18n-title="ui.skillChipRemove" title="摘除技能（本会话不再使用）">✕</button>
+    </div>
     <div class="composer-card">
       <!-- 「+」功能菜单：菜单项由 sidepanel.js 的 COMPOSER_MENU_ITEMS 登记表渲染 -->
       <div class="composer-tools">
@@ -135,7 +146,7 @@
         <button id="btn-save" class="primary-btn" type="button" data-i18n="ui.cfgSave">保存</button>
       </div>
       <div id="test-result" class="test-result"></div>
-      <div class="credit">Titanium v0.3.1</div>
+      <div class="credit">Titanium v0.4.0</div>
     </div>
   </aside>
 
