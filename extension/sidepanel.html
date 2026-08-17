@@ -5,6 +5,15 @@
   <title>Titanium</title>
   <link rel="stylesheet" href="sidepanel.css">
 </head>
+<!-- Titanium · Design by Xujl（署名只留在源码里，界面上不再展示） -->
+<!--
+  静态文案一律通过 data-i18n* 标注，由 sidepanel.js 的 applyStaticI18n 按当前语言写入：
+    data-i18n             → textContent（元素内必须只有文字，图标/输入框旁的文字要单独包 span）
+    data-i18n-title       → title
+    data-i18n-placeholder → placeholder
+    data-i18n-aria        → aria-label
+  HTML 里保留中文原文，只是为了「未执行 JS 时也能看懂」，运行时一定会被覆写。
+-->
 <body>
   <!-- 头部操作行：新对话胶囊 + 设置圆钮，右对齐（产品名由浏览器侧边栏自带标题栏展示，不再重复） -->
   <div class="panel-header">
@@ -12,9 +21,9 @@
       <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
         <path d="M8 3.2v9.6M3.2 8h9.6"/>
       </svg>
-      新对话
+      <span data-i18n="ui.newChat">新对话</span>
     </button>
-    <button id="btn-settings" class="round-btn" type="button" title="设置">
+    <button id="btn-settings" class="round-btn" type="button" data-i18n-title="ui.settings" title="设置">
       <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
         <circle cx="8" cy="8" r="2.2"/>
         <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4"/>
@@ -38,7 +47,7 @@
           <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/>
           <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>
         </svg>
-        重新读取
+        <span data-i18n="ui.ctxReRead">重新读取</span>
       </button>
     </div>
 
@@ -54,15 +63,14 @@
   <main id="chat" class="chat">
     <div id="welcome" class="welcome">
       <div class="welcome-title">Titanium</div>
-      <p>发送消息时，我会读取当前网页的文字内容作为上下文，帮你解读、总结、答疑。打开侧边栏本身不读取页面。</p>
-      <div class="credit">Design by Xujl</div>
+      <p data-i18n="ui.welcome">发送消息时，我会读取当前网页的文字内容作为上下文，帮你解读、总结、答疑。打开侧边栏本身不读取页面。</p>
     </div>
   </main>
 
   <!-- 未配置模型接口时的引导条 -->
   <div id="config-hint" class="config-hint" hidden>
-    尚未配置模型接口
-    <button id="btn-goto-settings" class="link-btn" type="button">去设置</button>
+    <span data-i18n="ui.configHint">尚未配置模型接口</span>
+    <button id="btn-goto-settings" class="link-btn" type="button" data-i18n="ui.gotoSettings">去设置</button>
   </div>
 
   <!-- 输入区：白色圆角卡片内含「+」菜单、输入框与发送胶囊 -->
@@ -70,58 +78,64 @@
     <div class="composer-card">
       <!-- 「+」功能菜单：菜单项由 sidepanel.js 的 COMPOSER_MENU_ITEMS 登记表渲染 -->
       <div class="composer-tools">
-        <button id="btn-plus" class="plus-btn" type="button" title="更多功能" aria-haspopup="menu" aria-expanded="false">
+        <button id="btn-plus" class="plus-btn" type="button" data-i18n-title="ui.more" title="更多功能" aria-haspopup="menu" aria-expanded="false">
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
             <path d="M8 3.2v9.6M3.2 8h9.6"/>
           </svg>
         </button>
-        <div id="plus-menu" class="plus-menu" role="menu" aria-label="更多功能"></div>
+        <div id="plus-menu" class="plus-menu" role="menu" data-i18n-aria="ui.more" aria-label="更多功能"></div>
       </div>
-      <textarea id="input" rows="1" placeholder="Enter 发送，Shift+Enter 换行"></textarea>
-      <button id="btn-send" class="send-btn" type="button">发送</button>
+      <textarea id="input" rows="1" data-i18n-placeholder="ui.inputPlaceholder" placeholder="Enter 发送，Shift+Enter 换行"></textarea>
+      <button id="btn-send" class="send-btn" type="button" data-i18n="ui.send">发送</button>
     </div>
   </footer>
 
   <!-- 设置抽屉 -->
   <div id="settings-mask" class="settings-mask"></div>
-  <aside id="settings" class="settings" aria-label="设置">
+  <aside id="settings" class="settings" data-i18n-aria="ui.settings" aria-label="设置">
     <div class="settings-head">
-      <span>设置</span>
-      <button id="btn-close-settings" class="icon-btn" type="button" title="关闭">✕</button>
+      <span data-i18n="ui.settings">设置</span>
+      <button id="btn-close-settings" class="icon-btn" type="button" data-i18n-title="ui.close" title="关闭">✕</button>
     </div>
     <div class="settings-body">
-      <label class="cfg-field">接口地址（baseUrl）
+      <label class="cfg-field">
+        <span data-i18n="ui.cfgLanguage">语言 / Language</span>
+        <!-- 选项由 sidepanel.js 用 LOCALE_LABELS 渲染（各语言用自己的写法，不随界面语言变化） -->
+        <select id="cfg-locale"></select>
+      </label>
+      <label class="cfg-field">
+        <span data-i18n="ui.cfgBaseUrl">接口地址（baseUrl）</span>
         <input id="cfg-baseurl" type="text" placeholder="https://api.deepseek.com/v1" spellcheck="false">
       </label>
-      <label class="cfg-field">模型名称
+      <label class="cfg-field">
+        <span data-i18n="ui.cfgModel">模型名称</span>
         <input id="cfg-model" type="text" placeholder="deepseek-chat" spellcheck="false">
       </label>
-      <label class="cfg-field">API Key
-        <input id="cfg-apikey" type="password" placeholder="可留空（视网关而定）">
+      <label class="cfg-field">
+        <span data-i18n="ui.cfgApiKey">API Key</span>
+        <input id="cfg-apikey" type="password" data-i18n-placeholder="ui.cfgApiKeyPlaceholder" placeholder="可留空">
       </label>
       <label class="cfg-switch">
         <input id="cfg-mask" type="checkbox" checked>
-        发送前脱敏（身份证 / 银行卡 / 手机号）
+        <span data-i18n="ui.cfgMask">发送前脱敏</span>
       </label>
+      <p class="cfg-hint" data-i18n="ui.cfgMaskHint">身份证 / 银行卡 / 手机号</p>
       <label class="cfg-switch">
         <input id="cfg-vision" type="checkbox">
-        模型支持视觉（启用截图工具）
+        <span data-i18n="ui.cfgVision">模型支持视觉</span>
       </label>
-      <p class="cfg-hint">截图内容无法脱敏，请确认页面可发送后再开启；模型不支持图片输入时请保持关闭。</p>
+      <p class="cfg-hint" data-i18n="ui.cfgVisionHint">启用截图工具；截图无法脱敏。</p>
       <label class="cfg-switch">
         <input id="cfg-actions" type="checkbox">
-        允许页面操作（AI 可点击、输入、跳转页面）
+        <span data-i18n="ui.cfgActions">允许页面操作</span>
       </label>
-      <p class="cfg-hint cfg-hint-warn">
-        开启后 AI 将按你的指令自动操作当前页面，每一步都显示在对话中，可随时点「停止」。
-        请勿在处理不希望被改动的业务数据时开启。转账、提交审批等不可逆操作，AI 会先向你确认。
-      </p>
+      <p class="cfg-hint cfg-hint-warn" data-i18n="ui.cfgActionsHint">AI 可点击、输入、跳转当前页面。每步可见、可随时停止，不可逆操作会先确认。</p>
       <div class="settings-actions">
-        <button id="btn-test" class="ghost-btn" type="button">测试连接</button>
-        <button id="btn-save" class="primary-btn" type="button">保存</button>
+        <button id="btn-test" class="ghost-btn" type="button" data-i18n="ui.cfgTest">测试连接</button>
+        <button id="btn-save" class="primary-btn" type="button" data-i18n="ui.cfgSave">保存</button>
       </div>
       <div id="test-result" class="test-result"></div>
-      <div class="credit settings-credit">Titanium v0.3.1 · Design by Xujl</div>
+      <div class="credit">Titanium v0.3.1</div>
     </div>
   </aside>
 

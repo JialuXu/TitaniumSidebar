@@ -18,7 +18,9 @@
  * @param {{ action: 'click'|'input'|'select'|'key'|'scroll'|'extract_table'|'get_html',
  *           session?: string, ref?: number, text?: string, option?: string, key?: string,
  *           direction?: 'up'|'down'|'top'|'bottom', pages?: number,
- *           tableIndex?: number, maxLen?: number }} payload
+ *           tableIndex?: number, maxLen?: number,
+ *           i18n?: { passwordMasked, tableTruncated, htmlTruncated } }} payload
+ *   i18n 由外壳按当前语言传入（本函数注入页面执行，不能 import core/i18n.js）
  * @returns {{ ok: true, action, urlBefore, urlAfter, urlChanged, focus, ... }
  *          | { ok: false, reason: string, ... }}
  *   失败 reason 全集：no-body | bad-action | stale | bad-ref | gone | hidden |
@@ -28,6 +30,12 @@
 export function performAction(payload) {
   const opts = payload || {};
   const action = opts.action;
+  // 缺省值保证脱离外壳直接调用时仍可用
+  const S = Object.assign({
+    passwordMasked: '（已写入，不回显）',
+    tableTruncated: '\n……（表格过长已截断）',
+    htmlTruncated: '…（已截断）',
+  }, opts.i18n || {});
 
   const doc = typeof document !== 'undefined' ? document : null;
   if (!doc || !doc.body) return { ok: false, reason: 'no-body' };
@@ -241,7 +249,7 @@ export function performAction(payload) {
 
       return finish({
         ref: opts.ref, name,
-        value: isPassword ? '（已写入，不回显）' : clamp(text, 80),
+        value: isPassword ? S.passwordMasked : clamp(text, 80),
       });
     }
 
@@ -382,7 +390,7 @@ export function performAction(payload) {
       const truncated = text.length > maxLen;
       return finish({
         tableIndex: idx, total: tables.length, rowCount, colCount, truncated,
-        data: truncated ? text.slice(0, maxLen) + '\n……（表格过长已截断）' : text,
+        data: truncated ? text.slice(0, maxLen) + S.tableTruncated : text,
       });
     }
 
@@ -421,7 +429,7 @@ export function performAction(payload) {
 
       let html = (clone.outerHTML || '').replace(/\s+/g, ' ').replace(/> </g, '><').trim();
       const truncated = html.length > maxLen;
-      if (truncated) html = html.slice(0, maxLen) + '…（已截断）';
+      if (truncated) html = html.slice(0, maxLen) + S.htmlTruncated;
       return finish({ ref: opts.ref, name: nameOf(got.el), truncated, data: html });
     }
 

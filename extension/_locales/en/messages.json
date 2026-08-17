@@ -1,0 +1,10 @@
+{
+  "extDescription": {
+    "message": "AI sidebar for any web page: reads the current page as context when you send a message and streams answers from your own OpenAI-compatible endpoint; page actions optional.",
+    "description": "Extension description shown on the extensions page and store (Titanium · Design by Xujl — the credit stays out of the message, never shown)"
+  },
+  "actionTitle": {
+    "message": "Open the Titanium sidebar",
+    "description": "Toolbar icon tooltip"
+  }
+}

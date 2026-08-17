@@ -3,6 +3,12 @@
 :root {
   /* 配色 token：与设计稿变量一一对应 */
   --bg: #ebe8e3;                          /* 暖纸底 */
+  /* 顶部棕色渐晕：设计稿的 167.84deg 线性渐变，上浓下透，覆盖在暖纸底之上 */
+  --bg-gradient: linear-gradient(
+    167.84deg,
+    rgba(143, 90, 60, 0.2) 6.875%,
+    rgba(143, 90, 60, 0) 58.625%
+  );
   --surface: #ffffff;                     /* 卡片白底 */
   --accent: #8f5a3c;                      /* 主色：沉稳棕 */
   --accent-strong: #7a4a30;               /* 主色 hover */
@@ -46,7 +52,11 @@ body {
   font-family: var(--font);
   font-size: 13px;
   color: var(--text);
-  background: var(--bg);
+  /* 渐变铺满整个面板且不重复；面板高度固定，渐变随视口拉伸而不随内容滚动 */
+  background-color: var(--bg);
+  background-image: var(--bg-gradient);
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
   min-width: 320px;
 }
 
@@ -262,16 +272,12 @@ body {
   margin: 0;
 }
 
-/* 设计者标识：小字、低调 */
+/* 版本标识：设置抽屉底部一行小字（Design by Xujl，署名只留在源码里） */
 .credit {
-  margin-top: 14px;
+  margin-top: 22px;
   font-size: 11px;
   color: var(--text-3);
   letter-spacing: 0.02em;
-}
-
-.settings-credit {
-  margin-top: 22px;
   text-align: center;
 }
 
@@ -615,7 +621,8 @@ body {
 .composer {
   flex-shrink: 0;
   padding: 8px var(--gap) var(--gap);
-  background: var(--bg);
+  /* 不铺不透明底色，让 body 的棕色渐晕透上来（.chat 独立滚动，内容不会穿到输入区下方） */
+  background: transparent;
 }
 
 /* 输入卡片：白底大圆角 + 轻投影 */
@@ -871,6 +878,27 @@ body {
 }
 
 .cfg-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* 语言下拉：与文本框同一视觉规格 */
+.cfg-field select {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 6px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.cfg-field select:focus {
   outline: none;
   border-color: var(--accent);
 }

@@ -23,7 +23,9 @@
  *   mode:'elements' —— 工具调用（元素列表/截图标注前）：基于既有 ref 映射增量刷新——
  *                      老元素保号、失效元素跳过、新元素续编 ref；session 不符返回 stale。
  * @param {{ mode?: 'full'|'elements', session?: string, inheritRefs?: boolean,
- *           maxTextLen?: number, maxElements?: number }} [options] 经 executeScript args 传入
+ *           maxTextLen?: number, maxElements?: number,
+ *           i18n?: { textTruncated, checked, tableMeta } }} [options] 经 executeScript args 传入
+ *   i18n 由外壳按当前语言传入（本函数注入页面执行，不能 import core/i18n.js）
  */
 export function snapshotPage(options) {
   const opts = options || {};
@@ -33,6 +35,13 @@ export function snapshotPage(options) {
   // 字符预算与同构折叠约束。收得太紧会让增量刷新编不进新元素（动作后新出现的
   // 按钮拿不到 ref），且必须配合把 elementsTruncated 显式告知模型。
   const MAX_ELEMENTS = opts.maxElements || 1500;
+  // 文案由外壳按当前语言传入（本函数要整体序列化注入页面，不能 import core/i18n.js）；
+  // 缺省值保证脱离外壳直接调用时仍可用。
+  const S = Object.assign({
+    textTruncated: '……（内容过长已截断）',
+    checked: '已选中',
+    tableMeta: '#{index} · {rows}行×{cols}列',
+  }, opts.i18n || {});
 
   const doc = typeof document !== 'undefined' ? document : null;
   if (!doc || !doc.body) return { ok: false, reason: 'no-body' };
@@ -182,7 +191,7 @@ export function snapshotPage(options) {
   // 表单控件当前值：密码框一律不取（隐私）；勾选类返回勾选态
   function controlValue(el, role) {
     if (role === 'checkbox' || role === 'radio' || role === 'switch') {
-      return el.checked ? '已选中' : null;
+      return el.checked ? S.checked : null;
     }
     if (role === 'select') {
       const opt = el.selectedOptions && el.selectedOptions[0];
@@ -486,7 +495,11 @@ export function snapshotPage(options) {
       tableCount++;
       const rows = node.querySelectorAll('tr').length;
       const cols = node.querySelector('tr') ? node.querySelector('tr').children.length : 0;
-      pushOutline({ kind: 'block', tag: 'table', name: '', depth, meta: `#${tableCount} · ${rows}行×${cols}列` });
+      const meta = S.tableMeta
+        .replace('{index}', String(tableCount))
+        .replace('{rows}', String(rows))
+        .replace('{cols}', String(cols));
+      pushOutline({ kind: 'block', tag: 'table', name: '', depth, meta });
       if (textOn) pushText('\n\n' + tableToMarkdown(node) + '\n\n');
       // 表格文字已随 Markdown 带出，下钻只为收集表内交互元素
       for (const child of node.childNodes) visit(child, false, depth, style.cursor, ariaOff);
@@ -509,7 +522,7 @@ export function snapshotPage(options) {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
   const textTruncated = text.length > MAX_TEXT;
-  if (textTruncated) text = text.slice(0, MAX_TEXT) + '……（内容过长已截断）';
+  if (textTruncated) text = text.slice(0, MAX_TEXT) + S.textTruncated;
 
   // —— 元素去重与 ref 分配 ——
   const kept = dedupeCandidates(candidates);

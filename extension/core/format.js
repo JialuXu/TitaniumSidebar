@@ -3,6 +3,10 @@
 // 快照/搜索返回的是结构化数据，发给模型前需要转成紧凑、稳定的纯文本。
 // 各通道的字符预算集中在 BUDGETS 里管理，超预算一律显式截断并注明，
 // 不做静默丢弃（模型需要知道「还有更多」才会去调工具）。
+//
+// 这里产出的文本是给模型看的，因此同样随界面语言切换（文案见 core/i18n.js）。
+
+import { t, q } from './i18n.js';
 
 export const BUDGETS = {
   text: 12000,       // 页面正文（snapshot 内部已按此截断，这里仅作统一出处）
@@ -17,8 +21,8 @@ export const BUDGETS = {
 
 /** 通用截断：超长切断并追加后缀 */
 export function clampText(s, max, suffix = '…') {
-  const t = s || '';
-  return t.length > max ? t.slice(0, max) + suffix : t;
+  const str = s || '';
+  return str.length > max ? str.slice(0, max) + suffix : str;
 }
 
 /**
@@ -36,12 +40,12 @@ export function formatOutline(nodes, budget = BUDGETS.outline) {
     // 标题在所属 landmark 内再缩进一级，层级感更接近视觉结构
     const indent = '  '.repeat(Math.min(n.depth + (n.kind === 'heading' ? 1 : 0), 5));
     const label = n.kind === 'heading' ? n.tag : n.tag;
-    const name = n.name ? ` 「${n.name}」` : '';
-    const meta = n.meta ? `（${n.meta}）` : '';
+    const name = n.name ? ` ${q(n.name)}` : '';
+    const meta = n.meta ? t('fmt.metaWrap', { s: n.meta }) : '';
     lines.push(`${indent}- ${label}${name}${meta}`);
   }
   let out = lines.join('\n');
-  if (out.length > budget) out = out.slice(0, budget) + '\n……（结构过长已截断）';
+  if (out.length > budget) out = out.slice(0, budget) + t('fmt.outlineTruncated');
   return out;
 }
 
@@ -63,14 +67,14 @@ export function formatOutline(nodes, budget = BUDGETS.outline) {
  *   total 为过滤前总数，用于「还有更多」提示；query 过滤时应传 collapse:false（用户在钻取）
  */
 export function formatElements(elements, { budget = BUDGETS.elements, total, collapse = true } = {}) {
-  if (!elements || !elements.length) return '（没有找到可交互元素）';
+  if (!elements || !elements.length) return t('fmt.noElements');
 
   const renderLine = (el) => {
     const name = el.name ? ` "${el.name}"` : '';
-    const ctx = el.context ? `（行：${el.context}）` : '';
+    const ctx = el.context ? t('fmt.rowCtx', { s: el.context }) : '';
     const href = el.href ? ` → ${el.href}` : '';
-    const value = el.value ? ` 值:"${el.value}"` : '';
-    const flag = el.disabled ? '（不可用）' : '';
+    const value = el.value ? t('fmt.value', { v: el.value }) : '';
+    const flag = el.disabled ? t('fmt.disabled') : '';
     return `${el.isNew ? '*' : ''}[${el.ref}] ${el.role}${name}${ctx}${href}${value}${flag}`;
   };
 
@@ -101,7 +105,7 @@ export function formatElements(elements, { budget = BUDGETS.elements, total, col
       if (hidden.length < 2) continue;
       for (const el of hidden) hiddenSet.add(el);
       const refs = hidden.slice(0, 8).map((e) => e.ref).join('/') + (hidden.length > 8 ? '/…' : '');
-      summaryByKey.set(k, { text: `……同类还有 ${hidden.length} 个：refs ${refs}`, covers: hidden.length });
+      summaryByKey.set(k, { text: t('fmt.collapsed', { n: hidden.length, refs }), covers: hidden.length });
     }
     for (const el of elements) {
       if (!hiddenSet.has(el)) { entries.push({ text: renderLine(el), covers: 1 }); continue; }
@@ -127,10 +131,10 @@ export function formatElements(elements, { budget = BUDGETS.elements, total, col
   }
   const grandTotal = typeof total === 'number' ? total : elements.length;
   if (shown < grandTotal) {
-    lines.push(`……（共 ${grandTotal} 个，仅列出前 ${shown} 个）`);
+    lines.push(t('fmt.moreElements', { total: grandTotal, shown }));
   }
   if (anyCollapsed) {
-    lines.push('（同类元素已折叠；要定位具体某一行的控件，用 query 参数过滤元素名或行文字）');
+    lines.push(t('fmt.collapseNote'));
   }
   return lines.join('\n');
 }
@@ -150,19 +154,19 @@ export function formatPageStatus(viewport, stats) {
     const percent = scrollable > 0 ? Math.round((viewport.scrollY / scrollable) * 100) : 100;
     lines.push(
       scrollable > 0
-        ? `当前视口位于全文 ${percent}% 处，上方约 ${above.toFixed(1)} 屏、下方约 ${below.toFixed(1)} 屏。`
-        : '当前页面一屏即可显示完整内容。'
+        ? t('fmt.scrollPos', { percent, above: above.toFixed(1), below: below.toFixed(1) })
+        : t('fmt.singleScreen')
     );
   }
   if (stats) {
     const parts = [];
-    if (typeof stats.totalElements === 'number') parts.push(`交互元素 ${stats.totalElements} 个`);
-    if (stats.tables) parts.push(`表格 ${stats.tables} 个（可用 extract_table 按序号完整提取）`);
-    if (stats.iframes) parts.push(`内嵌框架 ${stats.iframes} 个（跨文档内容读取不到）`);
-    if (parts.length) lines.push('页面统计：' + parts.join(' · '));
+    if (typeof stats.totalElements === 'number') parts.push(t('fmt.statElements', { n: stats.totalElements }));
+    if (stats.tables) parts.push(t('fmt.statTables', { n: stats.tables }));
+    if (stats.iframes) parts.push(t('fmt.statIframes', { n: stats.iframes }));
+    if (parts.length) lines.push(t('fmt.statsPrefix') + parts.join(' · '));
     // 编号名额耗尽必须说出来——静默截断会让模型把「没编上号」当成「不存在」
     if (stats.elementsTruncated) {
-      lines.push('注意：可交互元素数量超出编号上限，元素列表不完整（部分元素没有编号）。');
+      lines.push(t('fmt.elementsTruncated'));
     }
   }
   return lines.join('\n');
@@ -177,26 +181,21 @@ export function formatPageStatus(viewport, stats) {
 export function formatPageChange(change) {
   if (!change) return '';
   if (change.restricted) {
-    return '页面已跳转到无法读取的页面（浏览器内部页或受限页面），后续无法感知或操作该页。';
+    return t('fmt.chgRestricted');
   }
   if (change.navigated) {
-    const head = `页面已跳转：${change.title || '未命名页面'}（${change.url || ''}）。` +
-      '元素编号已重置，操作前请先调用 list_elements 获取新编号。';
+    const head = t('fmt.chgNavigated', { title: change.title || t('ui.untitled'), url: change.url || '' });
     const status = formatPageStatus(change.viewport, change.stats);
     return status ? head + '\n' + status : head;
   }
   const fresh = change.newElements || [];
   // 名额耗尽时「没有新增」是假象（新元素编不进号），必须区分说法——
   // Gmail 勾选邮件后工具栏按钮找不到，根因正是这句误导性的「没有新增」
-  const truncated = change.stats && change.stats.elementsTruncated
-    ? '注意：元素编号已达上限，可能有新出现的元素未能编号。'
-    : '';
+  const truncated = change.stats && change.stats.elementsTruncated ? t('fmt.chgTruncNote') : '';
   if (!fresh.length) {
-    return truncated
-      ? `页面未跳转，没有检测到可编号的新元素。${truncated}`
-      : '页面未跳转，也没有新增可交互元素。';
+    return truncated ? `${t('fmt.chgNoNewTrunc')}\n${truncated}` : t('fmt.chgNoNew');
   }
-  const head = `页面未跳转，新增 ${fresh.length} 个可交互元素（带 * 前缀）：\n` +
+  const head = t('fmt.chgNew', { n: fresh.length }) + '\n' +
     formatElements(fresh, { budget: BUDGETS.newElements });
   return truncated ? `${head}\n${truncated}` : head;
 }
@@ -206,14 +205,15 @@ export function formatPageChange(change) {
  * @param {Array<{id, title, url, active, isWork}>} tabs
  */
 export function formatTabs(tabs) {
-  if (!tabs || !tabs.length) return '没有可访问的标签页。';
-  const lines = [`共 ${tabs.length} 个标签页：`];
-  for (const t of tabs) {
-    const marks = [];
-    if (t.isWork) marks.push('当前工作页');
-    else if (t.active) marks.push('浏览器当前激活页');
-    const mark = marks.length ? `（${marks.join('、')}）` : '';
-    lines.push(`[tab_id=${t.id}] ${clampText(t.title || '未命名页面', 60)}${mark}\n    ${clampText(t.url || '', 120)}`);
+  if (!tabs || !tabs.length) return t('fmt.noTabs');
+  const lines = [t('fmt.tabsHead', { n: tabs.length })];
+  for (const tab of tabs) {
+    let mark = '';
+    if (tab.isWork) mark = t('fmt.metaWrap', { s: t('fmt.tabWork') });
+    else if (tab.active) mark = t('fmt.metaWrap', { s: t('fmt.tabActive') });
+    lines.push(
+      `[tab_id=${tab.id}] ${clampText(tab.title || t('ui.untitled'), 60)}${mark}\n    ${clampText(tab.url || '', 120)}`
+    );
   }
   return lines.join('\n');
 }
@@ -225,10 +225,15 @@ export function formatTabs(tabs) {
  */
 export function formatSearchResults(result, query) {
   if (!result || !result.ok) {
-    return `搜索失败：${result && result.reason === 'empty-query' ? '搜索词为空' : '页面不可读'}`;
+    return t(result && result.reason === 'empty-query' ? 'fmt.searchFailEmpty' : 'fmt.searchFailUnreadable');
   }
-  if (!result.total) return `页面中没有找到「${query}」。`;
-  const lines = [`共找到 ${result.total} 处「${query}」${result.results.length < result.total ? `，以下为前 ${result.results.length} 处` : ''}：`];
+  if (!result.total) return t('fmt.searchNone', { query });
+  const partial = result.results.length < result.total;
+  const lines = [
+    partial
+      ? t('fmt.searchHeadMore', { total: result.total, query, shown: result.results.length })
+      : t('fmt.searchHead', { total: result.total, query }),
+  ];
   result.results.forEach((r, i) => {
     lines.push(`${i + 1}. ……${r.snippet}……`);
   });

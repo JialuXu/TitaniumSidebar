@@ -15,6 +15,9 @@ import { buildSystemPrompt, buildUserContent } from './core/prompt.js';
 import { streamChat, testConnection, LlmError } from './core/llm-client.js';
 import { renderMarkdown } from './core/markdown.js';
 import { verifyQuote } from './core/citation.js';
+import {
+  t, setLocale, detectLocale, injectedStrings, LOCALES, LOCALE_LABELS, HTML_LANG,
+} from './core/i18n.js';
 
 /* ========== 存储适配器（外壳注入；SDK 外壳将来换 localStorage/后端下发实现） ========== */
 const storage = {
@@ -33,6 +36,7 @@ const DEFAULT_CONFIG = {
   maskEnabled: true,
   visionEnabled: false,
   actionsEnabled: false, // 允许页面操作（点击/输入/跳转），默认关闭
+  locale: '',            // 界面与模型文案的语言；空串=跟随浏览器（首次启动时判定）
 };
 
 function initialPage() {
@@ -74,11 +78,53 @@ const els = {};
   'ctx-caret', 'ctx-detail', 'ctx-detail-url', 'ctx-detail-outline', 'ctx-detail-text',
   'chat', 'welcome', 'config-hint', 'btn-goto-settings', 'input', 'btn-send',
   'btn-plus', 'plus-menu',
-  'settings-mask', 'settings', 'btn-close-settings', 'cfg-baseurl', 'cfg-model',
+  'settings-mask', 'settings', 'btn-close-settings', 'cfg-locale', 'cfg-baseurl', 'cfg-model',
   'cfg-apikey', 'cfg-mask', 'cfg-vision', 'cfg-actions', 'btn-test', 'btn-save', 'test-result',
 ].forEach((id) => {
   els[id.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = document.getElementById(id);
 });
+
+/* ========== 语言（界面文案 + 发给模型的文案共用同一个语言） ========== */
+
+// 静态文案：HTML 里用 data-i18n* 标注，这里按当前语言统一写入。
+// textContent 覆写要求元素内只有文字，因此图标按钮/输入框旁的文字都单独包了 span。
+function applyStaticI18n(root = document) {
+  root.querySelectorAll('[data-i18n]').forEach((el) => {
+    el.textContent = t(el.dataset.i18n);
+  });
+  root.querySelectorAll('[data-i18n-title]').forEach((el) => {
+    el.title = t(el.dataset.i18nTitle);
+  });
+  root.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {
+    el.placeholder = t(el.dataset.i18nPlaceholder);
+  });
+  root.querySelectorAll('[data-i18n-aria]').forEach((el) => {
+    el.setAttribute('aria-label', t(el.dataset.i18nAria));
+  });
+}
+
+// 语言下拉的选项：各语言用自己的写法（简体中文 / English），不随当前语言变化
+function renderLocaleOptions() {
+  els.cfgLocale.innerHTML = '';
+  for (const loc of LOCALES) {
+    const opt = document.createElement('option');
+    opt.value = loc;
+    opt.textContent = LOCALE_LABELS[loc];
+    els.cfgLocale.appendChild(opt);
+  }
+}
+
+// 切换语言：静态文案 + 所有动态渲染的界面一次性刷新。
+// 已经渲染在消息流里的历史内容保持原语言不变（那是当时的产物，改写反而失真）。
+function applyLocale(loc) {
+  const resolved = setLocale(loc);
+  document.documentElement.lang = HTML_LANG[resolved];
+  applyStaticI18n();
+  els.cfgLocale.value = resolved;
+  updateContextBar();
+  updateComposer();
+  renderPlusMenu();
+}
 
 /* ========== 配置 ========== */
 function isConfigured() {
@@ -92,6 +138,11 @@ function updateConfigHint() {
 async function loadConfig() {
   const saved = await storage.get('config');
   if (saved) state.config = { ...DEFAULT_CONFIG, ...saved };
+  // 未选过语言时按浏览器语言判定一次，并落盘（此后不再随浏览器变化）
+  if (!LOCALES.includes(state.config.locale)) {
+    state.config.locale = detectLocale(navigator.languages || navigator.language);
+    await storage.set('config', state.config);
+  }
 }
 
 function readConfigForm() {
@@ -102,10 +153,12 @@ function readConfigForm() {
     maskEnabled: els.cfgMask.checked,
     visionEnabled: els.cfgVision.checked,
     actionsEnabled: els.cfgActions.checked,
+    locale: els.cfgLocale.value, // 语言在选中时即时生效并落盘，这里只是保持整份配置完整
   };
 }
 
 function fillConfigForm() {
+  els.cfgLocale.value = state.config.locale;
   els.cfgBaseurl.value = state.config.baseUrl;
   els.cfgModel.value = state.config.model;
   els.cfgApikey.value = state.config.apiKey;
@@ -119,28 +172,29 @@ function describeError(err) {
   if (err instanceof LlmError) {
     switch (err.kind) {
       case 'badconfig':
-        return '尚未配置模型接口：请在设置中填写接口地址与模型名称。';
+        return t('err.badconfig');
       case 'network':
-        return '网络请求失败：请检查网络连接，以及接口地址是否可达。';
+        return t('err.network');
       case 'stream':
-        return '响应流中断：回复可能不完整，请重试。';
+        return t('err.stream');
       case 'http': {
-        if (err.status === 401) return '鉴权失败（401）：请检查 API Key 是否正确。';
-        if (err.status === 403) return '无权限（403）：请检查 API Key 权限或网关配置。';
-        if (err.status === 404) return '接口不存在（404）：请检查接口地址是否完整（通常需要以 /v1 结尾）。';
-        if (err.status === 429) return '请求过于频繁（429）：请稍后重试。';
-        if (err.status >= 500) return `服务端错误（${err.status}）：模型服务暂不可用，请稍后重试。`;
+        if (err.status === 401) return t('err.http401');
+        if (err.status === 403) return t('err.http403');
+        if (err.status === 404) return t('err.http404');
+        if (err.status === 429) return t('err.http429');
+        if (err.status >= 500) return t('err.http5xx', { status: err.status });
         const detail = (err.detail || '').slice(0, 200);
-        return `请求失败（HTTP ${err.status}）${detail ? '：' + detail : ''}`;
+        return t('err.httpOther', { status: err.status, detail: detail ? t('err.detailPrefix') + detail : '' });
       }
     }
   }
-  return '发生未知错误：' + ((err && err.message) || String(err));
+  return t('err.unknown', { message: (err && err.message) || String(err) });
 }
 
 /* ========== 上下文状态条 ========== */
-function truncateTitle(title, max = 22) {
-  if (!title) return '未命名页面';
+// 英文标题同宽度下字数更多，上限相应放宽
+function truncateTitle(title, max = document.documentElement.lang === 'en' ? 34 : 22) {
+  if (!title) return t('ui.untitled');
   return title.length > max ? title.slice(0, max) + '…' : title;
 }
 
@@ -162,18 +216,19 @@ function updateContextBar(transient) {
   els.ctxText.classList.remove('clickable');
 
   if (transient === 'reading') {
-    els.ctxText.textContent = '正在读取页面…';
+    els.ctxText.textContent = t('ui.ctxReading');
     setCtxExpanded(false);
     return;
   }
 
-  const refreshSuffix = page.refreshRequested ? ' · 下一条消息将重新读取' : '';
+  const suffix = page.refreshRequested ? t('ui.ctxRefreshSuffix') : '';
 
   if (page.status === 'ok') {
-    const elemPart = page.elementCount ? ` · ${page.elementCount} 个交互元素` : '';
-    els.ctxText.textContent =
-      `已读取：${truncateTitle(page.title)} · ${page.maskedText.length} 字${elemPart}${refreshSuffix}`;
-    els.ctxText.title = `${page.title || ''}（点击展开/折叠已读取内容）`;
+    const elements = page.elementCount ? t('ui.ctxElements', { n: page.elementCount }) : '';
+    els.ctxText.textContent = t('ui.ctxRead', {
+      title: truncateTitle(page.title), chars: page.maskedText.length, elements, suffix,
+    });
+    els.ctxText.title = t('ui.ctxTitleHint', { title: page.title || '' });
     els.ctxText.classList.add('clickable');
     els.ctxCaret.hidden = false;
     els.btnRefresh.hidden = false;
@@ -186,17 +241,17 @@ function updateContextBar(transient) {
     const hits = page.hits;
     const total = hits ? hits.idCard + hits.bankCard + hits.phone : 0;
     if (total > 0) {
-      els.ctxBadge.textContent = `脱敏 ${total}`;
-      els.ctxBadge.title = `身份证 ${hits.idCard} · 银行卡 ${hits.bankCard} · 手机号 ${hits.phone}`;
+      els.ctxBadge.textContent = t('ui.maskBadge', { n: total });
+      els.ctxBadge.title = t('ui.maskBadgeTitle', hits);
       els.ctxBadge.hidden = false;
     }
   } else if (page.status === 'unreadable') {
-    els.ctxText.textContent = `当前页面无法读取，将仅基于问题本身回答${refreshSuffix}`;
+    els.ctxText.textContent = t('ui.ctxUnreadable', { suffix });
     els.ctxText.title = '';
     els.btnRefresh.hidden = false;
     setCtxExpanded(false);
   } else {
-    els.ctxText.textContent = '发送消息时将读取当前页面';
+    els.ctxText.textContent = t('ui.ctxIdle');
     els.ctxText.title = '';
     setCtxExpanded(false);
   }
@@ -246,7 +301,7 @@ async function snapshotCurrentTab() {
   const tab = await getActiveTab();
   if (!tab) return null;
   const result = await injectFunc(tab.id, snapshotPage, {
-    mode: 'full', maxTextLen: 12000, maxElements: 1500,
+    mode: 'full', maxTextLen: 12000, maxElements: 1500, i18n: injectedStrings(),
   });
   if (!result || !result.ok || !result.text) return null;
   return { ...result, tabId: tab.id };
@@ -286,9 +341,9 @@ function applySnapshot(snap, tabId, { refreshRequested = false } = {}) {
 // 工具执行前置校验：当前激活标签页必须仍是快照来源页（截图截的就是激活页，必须守卫）
 async function requireSnapshotTab() {
   const tab = await getActiveTab();
-  if (!tab) throw new Error('当前页面无法读取（浏览器内部页或受限页面）。');
+  if (!tab) throw new Error(t('sys.restrictedPage'));
   if (state.page.tabId !== null && tab.id !== state.page.tabId) {
-    throw new Error('当前激活的标签页已切换，与已读取的页面不一致；请让用户点击「重新读取」后再提问。');
+    throw new Error(t('sys.tabSwitched'));
   }
   return tab;
 }
@@ -296,20 +351,20 @@ async function requireSnapshotTab() {
 // 刷新元素快照：老元素保号、新元素续编；session 过期（页面已导航）时自动全量重建
 async function refreshedElements(tab) {
   let res = await injectFunc(tab.id, snapshotPage, {
-    mode: 'elements', session: state.page.session, maxElements: 1500,
+    mode: 'elements', session: state.page.session, maxElements: 1500, i18n: injectedStrings(),
   });
   if (res && res.ok === false && res.reason === 'stale') {
     // maxTextLen 给最小值：全量重建只为拿元素映射，不需要文本通道的开销。
     // inheritRefs 让指纹相同的元素继承旧编号——SPA 重渲染后模型手里的 ref 仍然有效。
     const full = await injectFunc(tab.id, snapshotPage, {
-      mode: 'full', maxTextLen: 1, maxElements: 1500, inheritRefs: true,
+      mode: 'full', maxTextLen: 1, maxElements: 1500, inheritRefs: true, i18n: injectedStrings(),
     });
     if (full && full.ok) {
       state.page.session = full.session;
       res = { ok: true, elements: full.elements, viewport: full.viewport, stats: full.stats };
     }
   }
-  if (!res || !res.ok) throw new Error('无法读取页面元素（页面可能已刷新或受限）。');
+  if (!res || !res.ok) throw new Error(t('sys.elementsUnreadable'));
   return res;
 }
 
@@ -339,7 +394,7 @@ async function rebuildPageAfterNavigation(tab) {
     return { navigated: true, restricted: true };
   }
   const snap = await injectFunc(tab.id, snapshotPage, {
-    mode: 'full', maxTextLen: 12000, maxElements: 1500,
+    mode: 'full', maxTextLen: 12000, maxElements: 1500, i18n: injectedStrings(),
   });
   if (!snap || !snap.ok) {
     state.page = { ...state.page, status: 'unreadable', tabId: tab.id, refreshRequested: true };
@@ -399,7 +454,7 @@ async function afterNavigation(tabId) {
 function requireHttpUrl(url) {
   const target = String(url || '').trim();
   if (!/^https?:\/\//i.test(target)) {
-    throw new Error('只支持 http/https 开头的完整网址，请检查后重试。');
+    throw new Error(t('sys.badUrl'));
   }
   return target;
 }
@@ -413,7 +468,7 @@ const provider = {
   async searchInPage({ query, maxResults }) {
     const tab = await requireSnapshotTab();
     const res = await injectFunc(tab.id, searchPage, { query, maxResults });
-    if (!res) throw new Error('无法在当前页面中执行搜索（页面可能已刷新或受限）。');
+    if (!res) throw new Error(t('sys.searchFailed'));
     return res;
   },
 
@@ -436,7 +491,7 @@ const provider = {
     const res = await injectFunc(tab.id, highlightElement, {
       ref, session: state.page.session, durationMs: 3000,
     });
-    if (!res) throw new Error('无法在当前页面上执行高亮（页面可能已刷新或受限）。');
+    if (!res) throw new Error(t('sys.highlightFailed'));
     return res;
   },
 
@@ -451,7 +506,7 @@ const provider = {
     try {
       raw = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
     } catch (err) {
-      throw new Error('截图失败：' + ((err && err.message) || '浏览器拒绝了截图请求（窗口需处于可见状态）。'));
+      throw new Error(t('sys.shotFailed', { message: (err && err.message) || t('sys.shotDenied') }));
     }
     lastCaptureAt = Date.now();
     const marks = snap.elements
@@ -469,9 +524,9 @@ const provider = {
     const MAY_NAVIGATE = { click: 1, key: 1 };
     const tab = await requireSnapshotTab();
     const result = await injectFunc(tab.id, performAction, {
-      ...payload, session: state.page.session,
+      ...payload, session: state.page.session, i18n: injectedStrings(),
     });
-    if (!result) throw new Error('无法在当前页面执行操作（页面可能已刷新或受限）。');
+    if (!result) throw new Error(t('sys.actFailed'));
     if (READ_ONLY[payload.action] || !result.ok) return { result, change: null };
     const change = await syncAfterAction({ mayNavigate: Boolean(MAY_NAVIGATE[payload.action]) });
     return { result, change };
@@ -491,7 +546,7 @@ const provider = {
     try {
       await chrome.tabs.goBack(tab.id);
     } catch {
-      throw new Error('当前标签页没有可后退的历史记录。');
+      throw new Error(t('sys.noHistory'));
     }
     return await afterNavigation(tab.id);
   },
@@ -511,30 +566,30 @@ const provider = {
   },
 
   async switchTab({ tabId }) {
-    if (!Number.isInteger(tabId)) throw new Error('tab_id 无效，请先调用 list_tabs 获取。');
+    if (!Number.isInteger(tabId)) throw new Error(t('sys.badTabId'));
     let tab;
     try {
       tab = await chrome.tabs.update(tabId, { active: true });
     } catch {
-      throw new Error(`标签页 ${tabId} 不存在或已关闭，请重新调用 list_tabs。`);
+      throw new Error(t('sys.tabGone', { id: tabId }));
     }
     return await afterNavigation(tab.id);
   },
 
   async closeTab({ tabId }) {
     const target = tabId == null ? state.page.tabId : tabId;
-    if (target == null) throw new Error('当前没有可关闭的工作标签页。');
+    if (target == null) throw new Error(t('sys.noWorkTab'));
     const closingWorkTab = target === state.page.tabId;
     try {
       await chrome.tabs.remove(target);
     } catch {
-      throw new Error(`标签页 ${target} 不存在或已关闭。`);
+      throw new Error(t('sys.tabClosed', { id: target }));
     }
     const tabs = await chrome.tabs.query({ currentWindow: true });
     let change = null;
     // 关掉的是工作页：收养一个新的工作页，否则后续动作全都无处落脚
     if (closingWorkTab && tabs.length) {
-      const next = tabs.find((t) => t.active) || tabs[0];
+      const next = tabs.find((tab) => tab.active) || tabs[0];
       await chrome.tabs.update(next.id, { active: true });
       change = await afterNavigation(next.id);
     }
@@ -543,13 +598,13 @@ const provider = {
 
   async listTabs() {
     const tabs = await chrome.tabs.query({ currentWindow: true });
-    return tabs.map((t) => ({
-      id: t.id,
-      title: t.title || '',
+    return tabs.map((tab) => ({
+      id: tab.id,
+      title: tab.title || '',
       // 受限页（chrome:// 等）没有 host 权限，读不到网址
-      url: t.url || '（受限页面，读取不到网址）',
-      active: Boolean(t.active),
-      isWork: t.id === state.page.tabId,
+      url: tab.url || t('sys.restrictedUrl'),
+      active: Boolean(tab.active),
+      isWork: tab.id === state.page.tabId,
     }));
   },
 };
@@ -617,92 +672,101 @@ function settleToolActivity(div, text, ok) {
 // 活动行文案（外壳职责，core 只回传结构化 meta）。phase: run | done | fail
 function describeToolActivity(name, args, phase, data = {}) {
   const a = args || {};
-  const ref = (d) => `[${d.ref ?? a.ref ?? '?'}]`;
-  const named = (d) => (d.name ? ` "${d.name}"` : '');
-  const jumped = (d) => (d.navigated ? '，页面已跳转' : '');
+  // run/fail 阶段只有调用参数，done 阶段以工具回传的 meta.data 为准
+  const ref = data.ref ?? a.ref ?? '?';
+  const named = data.name ? ` "${data.name}"` : '';
+  const jumped = data.navigated ? t('act.jumped') : '';
   switch (name) {
-    case 'find_in_page':
-      if (phase === 'run') return `🔍 正在页面中搜索「${a.query || ''}」…`;
-      if (phase === 'fail') return `🔍 搜索「${a.query || ''}」失败`;
-      return data.total
-        ? `🔍 已搜索「${data.query}」：${data.total} 处匹配`
-        : `🔍 已搜索「${data.query}」：无匹配`;
+    case 'find_in_page': {
+      const query = phase === 'done' ? data.query : (a.query || '');
+      if (phase === 'run') return t('act.find.run', { query });
+      if (phase === 'fail') return t('act.find.fail', { query });
+      return t(data.total ? 'act.find.done' : 'act.find.none', { query, total: data.total });
+    }
     case 'list_elements':
-      if (phase === 'run') return '🧭 正在读取可交互元素…';
-      if (phase === 'fail') return '🧭 读取可交互元素失败';
-      return `🧭 已读取可交互元素：${data.count} 个${data.scope === 'viewport' ? '（可见区域）' : ''}`;
+      if (phase === 'run') return t('act.list.run');
+      if (phase === 'fail') return t('act.list.fail');
+      return t('act.list.done', {
+        count: data.count,
+        scope: data.scope === 'viewport' ? t('act.list.viewport') : '',
+      });
     case 'highlight_element':
-      if (phase === 'run') return `📍 正在页面上高亮元素 [${a.ref ?? '?'}]…`;
-      if (phase === 'fail') return `📍 高亮元素 [${a.ref ?? '?'}] 失败`;
-      return `📍 已高亮元素 [${data.ref}]${named(data)}`;
+      if (phase === 'run') return t('act.highlight.run', { ref });
+      if (phase === 'fail') return t('act.highlight.fail', { ref });
+      return t('act.highlight.done', { ref, name: named });
     case 'capture_screenshot':
-      if (phase === 'run') return '📷 正在截取当前视口…';
-      if (phase === 'fail') return '📷 截图失败';
-      return `📷 已截取当前视口（标注 ${data.markCount} 个元素）`;
-    case 'extract_table':
-      if (phase === 'run') return `📊 正在提取第 ${a.table_index ?? '?'} 个表格…`;
-      if (phase === 'fail') return `📊 提取第 ${a.table_index ?? '?'} 个表格失败`;
-      return `📊 已提取第 ${data.tableIndex} 个表格（${data.rowCount} 行 × ${data.colCount} 列）`;
+      if (phase === 'run') return t('act.shot.run');
+      if (phase === 'fail') return t('act.shot.fail');
+      return t('act.shot.done', { count: data.markCount });
+    case 'extract_table': {
+      const index = data.tableIndex ?? a.table_index ?? '?';
+      if (phase === 'run') return t('act.table.run', { index });
+      if (phase === 'fail') return t('act.table.fail', { index });
+      return t('act.table.done', { index, rows: data.rowCount, cols: data.colCount });
+    }
     case 'get_element_html':
-      if (phase === 'run') return `🧩 正在读取元素 [${a.ref ?? '?'}] 的结构…`;
-      if (phase === 'fail') return `🧩 读取元素 [${a.ref ?? '?'}] 结构失败`;
-      return `🧩 已读取元素 ${ref(data)}${named(data)} 的结构`;
+      if (phase === 'run') return t('act.html.run', { ref });
+      if (phase === 'fail') return t('act.html.fail', { ref });
+      return t('act.html.done', { ref, name: named });
 
     /* —— 动作类：文案更醒目，用户要能一眼看清 AI 对页面做了什么 —— */
     case 'click_element':
-      if (phase === 'run') return `🖱️ 正在点击元素 [${a.ref ?? '?'}]…`;
-      if (phase === 'fail') return `🖱️ 点击元素 [${a.ref ?? '?'}] 失败`;
-      return `🖱️ 已点击 ${ref(data)}${named(data)}${jumped(data)}`;
+      if (phase === 'run') return t('act.click.run', { ref });
+      if (phase === 'fail') return t('act.click.fail', { ref });
+      return t('act.click.done', { ref, name: named, jumped });
     case 'input_text': {
-      const preview = String(a.text || '').slice(0, 20) + (String(a.text || '').length > 20 ? '…' : '');
-      if (phase === 'run') return `⌨️ 正在向 [${a.ref ?? '?'}] 输入「${preview}」…`;
-      if (phase === 'fail') return `⌨️ 向 [${a.ref ?? '?'}] 输入失败`;
-      return `⌨️ 已向 ${ref(data)}${named(data)} 输入「${preview}」${jumped(data)}`;
+      const text = String(a.text || '');
+      const preview = text.slice(0, 20) + (text.length > 20 ? '…' : '');
+      if (phase === 'run') return t('act.input.run', { ref, preview });
+      if (phase === 'fail') return t('act.input.fail', { ref });
+      return t('act.input.done', { ref, name: named, preview, jumped });
     }
     case 'select_option':
-      if (phase === 'run') return `🔽 正在为 [${a.ref ?? '?'}] 选择「${a.option || ''}」…`;
-      if (phase === 'fail') return `🔽 为 [${a.ref ?? '?'}] 选择「${a.option || ''}」失败`;
-      return `🔽 已在 ${ref(data)}${named(data)} 中选择「${data.value}」${jumped(data)}`;
-    case 'press_key':
-      if (phase === 'run') return `⏎ 正在按下 ${a.key || ''}…`;
-      if (phase === 'fail') return `⏎ 按下 ${a.key || ''} 失败`;
-      return `⏎ 已按下 ${data.key}${data.submitted ? '，已提交表单' : ''}${jumped(data)}`;
+      if (phase === 'run') return t('act.select.run', { ref, option: a.option || '' });
+      if (phase === 'fail') return t('act.select.fail', { ref, option: a.option || '' });
+      return t('act.select.done', { ref, name: named, value: data.value, jumped });
+    case 'press_key': {
+      const key = phase === 'done' ? data.key : (a.key || '');
+      if (phase === 'run') return t('act.key.run', { key });
+      if (phase === 'fail') return t('act.key.fail', { key });
+      return t('act.key.done', { key, submitted: data.submitted ? t('act.key.submitted') : '', jumped });
+    }
     case 'scroll_page': {
-      const label = { up: '向上', down: '向下', top: '回到顶部', bottom: '滚到底部' }[a.direction] || '';
-      if (phase === 'run') return `📜 正在${label}滚动…`;
-      if (phase === 'fail') return `📜 滚动失败`;
-      return `📜 已${label}滚动`;
+      const label = t('act.scroll.' + (a.direction || 'down'));
+      if (phase === 'run') return t('act.scroll.run', { label });
+      if (phase === 'fail') return t('act.scroll.fail');
+      return t('act.scroll.done', { label });
     }
     case 'navigate':
-      if (phase === 'run') return `🌐 正在打开 ${a.url || ''}…`;
-      if (phase === 'fail') return `🌐 打开 ${a.url || ''} 失败`;
-      return `🌐 已打开：${data.title || a.url || ''}`;
+      if (phase === 'run') return t('act.navigate.run', { url: a.url || '' });
+      if (phase === 'fail') return t('act.navigate.fail', { url: a.url || '' });
+      return t('act.navigate.done', { title: data.title || a.url || '' });
     case 'go_back':
-      if (phase === 'run') return '◀️ 正在后退…';
-      if (phase === 'fail') return '◀️ 后退失败';
-      return `◀️ 已后退到：${data.title || ''}`;
+      if (phase === 'run') return t('act.back.run');
+      if (phase === 'fail') return t('act.back.fail');
+      return t('act.back.done', { title: data.title || '' });
     case 'refresh':
-      if (phase === 'run') return '🔄 正在刷新页面…';
-      if (phase === 'fail') return '🔄 刷新失败';
-      return `🔄 已刷新：${data.title || ''}`;
+      if (phase === 'run') return t('act.refresh.run');
+      if (phase === 'fail') return t('act.refresh.fail');
+      return t('act.refresh.done', { title: data.title || '' });
     case 'open_tab':
-      if (phase === 'run') return `🗂️ 正在新标签页打开 ${a.url || ''}…`;
-      if (phase === 'fail') return `🗂️ 新标签页打开失败`;
-      return `🗂️ 已在新标签页打开：${data.title || a.url || ''}`;
+      if (phase === 'run') return t('act.openTab.run', { url: a.url || '' });
+      if (phase === 'fail') return t('act.openTab.fail');
+      return t('act.openTab.done', { title: data.title || a.url || '' });
     case 'switch_tab':
-      if (phase === 'run') return `🗂️ 正在切换到标签页 ${a.tab_id ?? '?'}…`;
-      if (phase === 'fail') return `🗂️ 切换标签页失败`;
-      return `🗂️ 已切换到：${data.title || ''}`;
+      if (phase === 'run') return t('act.switchTab.run', { id: a.tab_id ?? '?' });
+      if (phase === 'fail') return t('act.switchTab.fail');
+      return t('act.switchTab.done', { title: data.title || '' });
     case 'close_tab':
-      if (phase === 'run') return '🗂️ 正在关闭标签页…';
-      if (phase === 'fail') return '🗂️ 关闭标签页失败';
-      return '🗂️ 已关闭标签页';
+      if (phase === 'run') return t('act.closeTab.run');
+      if (phase === 'fail') return t('act.closeTab.fail');
+      return t('act.closeTab.done');
     case 'list_tabs':
-      if (phase === 'run') return '🗂️ 正在读取标签页列表…';
-      if (phase === 'fail') return '🗂️ 读取标签页列表失败';
-      return `🗂️ 已读取标签页列表：${data.count} 个`;
+      if (phase === 'run') return t('act.listTabs.run');
+      if (phase === 'fail') return t('act.listTabs.fail');
+      return t('act.listTabs.done', { count: data.count });
     default:
-      return phase === 'run' ? `⚙️ 正在调用 ${name}…` : `⚙️ ${name} ${phase === 'fail' ? '失败' : '完成'}`;
+      return t(`act.generic.${phase === 'run' ? 'run' : phase === 'fail' ? 'fail' : 'done'}`, { name });
   }
 }
 
@@ -719,12 +783,12 @@ function finalizeAssistant(el, msgObj, contentEl) {
       const badge = document.createElement('button');
       badge.type = 'button';
       badge.className = 'quote-badge';
-      badge.textContent = '来自当前页面';
-      badge.title = '点击暂存该原文';
+      badge.textContent = t('ui.quoteBadge');
+      badge.title = t('ui.quoteBadgeTitle');
       badge.addEventListener('click', () => {
         state.lastCitation = quoteText;
-        badge.textContent = '已暂存';
-        setTimeout(() => { badge.textContent = '来自当前页面'; }, 1200);
+        badge.textContent = t('ui.quoteStashed');
+        setTimeout(() => { badge.textContent = t('ui.quoteBadge'); }, 1200);
       });
       bq.prepend(badge);
     });
@@ -737,18 +801,18 @@ function finalizeAssistant(el, msgObj, contentEl) {
   if (msgObj.content) {
     const copyBtn = document.createElement('button');
     copyBtn.type = 'button';
-    copyBtn.textContent = '复制全文';
+    copyBtn.textContent = t('ui.copyAll');
     copyBtn.addEventListener('click', async () => {
       await navigator.clipboard.writeText(msgObj.content).catch(() => {});
-      copyBtn.textContent = '已复制';
-      setTimeout(() => { copyBtn.textContent = '复制全文'; }, 1200);
+      copyBtn.textContent = t('ui.copied');
+      setTimeout(() => { copyBtn.textContent = t('ui.copyAll'); }, 1200);
     });
     actions.appendChild(copyBtn);
   }
   const regenBtn = document.createElement('button');
   regenBtn.type = 'button';
   regenBtn.className = 'btn-regen';
-  regenBtn.textContent = '重新生成';
+  regenBtn.textContent = t('ui.regenerate');
   regenBtn.addEventListener('click', handleRegenerate);
   actions.appendChild(regenBtn);
   el.root.appendChild(actions);
@@ -773,7 +837,7 @@ function buildRequestMessages(caps) {
 
 function updateComposer() {
   const streaming = state.ui.phase === 'streaming';
-  els.btnSend.textContent = streaming ? '停止' : '发送';
+  els.btnSend.textContent = t(streaming ? 'ui.stop' : 'ui.send');
   els.btnSend.classList.toggle('stop', streaming);
 }
 
@@ -783,7 +847,7 @@ function stripImagesFromHistory() {
   let changed = false;
   for (const m of state.messages) {
     if (m._kind === 'tool-image' && Array.isArray(m.content)) {
-      m.content = m._placeholder || '[视口截图已省略]';
+      m.content = m._placeholder || t('sys.shotOmitted');
       changed = true;
     }
   }
@@ -865,12 +929,12 @@ async function runAgentLoop(el) {
     ) {
       if (tools && !state.toolsBroken) {
         state.toolsBroken = true;
-        appendNote(el.root, '当前接口不支持工具调用，已降级为纯文本模式（仍会注入页面文本与结构骨架）。');
+        appendNote(el.root, t('ui.noteToolsDegraded'));
         continue; // 不带 tools 原样重试本轮
       }
       if (!imagesRetried && stripImagesFromHistory()) {
         imagesRetried = true;
-        appendNote(el.root, '当前接口不支持图片输入，已移除截图重试；建议在设置中关闭「模型支持视觉」。');
+        appendNote(el.root, t('ui.noteImageDegraded'));
         continue;
       }
     }
@@ -884,7 +948,11 @@ async function runAgentLoop(el) {
       if (streamError && !aborted) {
         showErrorIn(el.root, describeError(streamError)); // 中止不算错误，保留已生成部分
       } else if (!acc && !streamError) {
-        seg.innerHTML = '<p class="md-note">（模型未返回内容）</p>';
+        seg.textContent = '';
+        const note = document.createElement('p');
+        note.className = 'md-note';
+        note.textContent = t('ui.emptyReply');
+        seg.appendChild(note);
       }
       finalizeAssistant(el, msgObj, seg);
       break;
@@ -906,17 +974,17 @@ async function runAgentLoop(el) {
       const isAction = WRITE_TOOL_NAMES.has(call.name);
       // 中止：未执行的调用补占位 tool 消息——tool_calls 必须一一回填，否则历史不合法（下轮 400）
       if (signal.aborted) {
-        state.messages.push({ role: 'tool', tool_call_id: call.id, content: '（用户已中止，未执行）' });
+        state.messages.push({ role: 'tool', tool_call_id: call.id, content: t('sys.aborted') });
         continue;
       }
       if (batchBroken) {
         state.messages.push({
           role: 'tool', tool_call_id: call.id,
-          content: '（页面已跳转，本批后续动作未执行，请基于新页面重新规划）',
+          content: t('sys.batchBroken'),
         });
         settleToolActivity(
           appendToolActivity(el.root, '', isAction),
-          `⏭️ 已跳过 ${call.name}：页面已跳转，编号需重新获取`,
+          t('ui.skipNavigated', { name: call.name }),
           false
         );
         continue;
@@ -929,8 +997,9 @@ async function runAgentLoop(el) {
       const { toolMessage, followUpMessage, meta } = await dispatchToolCall(call, provider);
       state.messages.push(toolMessage);
       if (followUpMessage) {
-        followUpMessage._placeholder =
-          `[视口截图已省略：${meta.data.w}×${meta.data.h}，标注 ${meta.data.markCount} 个元素]`;
+        followUpMessage._placeholder = t('sys.shotOmittedMeta', {
+          w: meta.data.w, h: meta.data.h, n: meta.data.markCount,
+        });
         state.messages.push(followUpMessage);
         attachShotThumbnail(row, followUpMessage);
       }
@@ -954,7 +1023,7 @@ async function runAgentLoop(el) {
       // 达到上限：下一轮 useTools 为 false（请求不带 tools），并明确告知模型直接作答
       state.messages.push({
         role: 'user',
-        content: '（系统提示）工具调用次数已达上限，请直接基于已有信息作答。',
+        content: t('sys.toolLimit'),
         _kind: 'tool-limit',
       });
     }
@@ -978,8 +1047,8 @@ function attachShotThumbnail(row, followUpMessage) {
   const img = document.createElement('img');
   img.className = 'tool-thumb';
   img.src = part.image_url.url;
-  img.alt = '视口截图';
-  img.title = '点击放大/还原';
+  img.alt = t('ui.shotAlt');
+  img.title = t('ui.shotTitle');
   img.addEventListener('click', () => img.classList.toggle('expanded'));
   row.insertAdjacentElement('afterend', img);
 }
@@ -1046,7 +1115,7 @@ async function handleRegenerate() {
       break;
     }
   }
-  if (hasWrite && !window.confirm('上一轮包含页面操作（点击 / 输入 / 跳转等），重新生成会再次真实执行这些操作。确定继续？')) {
+  if (hasWrite && !window.confirm(t('ui.regenConfirm'))) {
     return;
   }
 
@@ -1107,16 +1176,16 @@ async function handleSaveConfig() {
 
 async function handleTestConnection() {
   const config = readConfigForm();
-  els.testResult.textContent = '正在测试…';
+  els.testResult.textContent = t('ui.testRunning');
   els.testResult.className = 'test-result';
   if (!config.baseUrl || !config.model) {
-    els.testResult.textContent = '请先填写接口地址与模型名称。';
+    els.testResult.textContent = t('ui.testNeedFields');
     els.testResult.className = 'test-result err';
     return;
   }
   try {
     await testConnection(config);
-    els.testResult.textContent = '连接成功，接口可用。';
+    els.testResult.textContent = t('ui.testOk');
     els.testResult.className = 'test-result ok';
   } catch (err) {
     els.testResult.textContent = describeError(err);
@@ -1134,33 +1203,34 @@ function autoSizeInput() {
 // 菜单项登记表：后续新增功能（绑定 Skill、联网搜索、知识库等）在此补一项即可；
 // 提供 onSelect 回调后自动变为可点击，onSelect 为 null 时显示为置灰占位。
 // icon 为内联 SVG 字符串（16×16、stroke:currentColor），与顶部栏图标同一画风。
+// label/hint 均为函数：渲染时才取词，因而语言切换后重渲即生效。
 const COMPOSER_MENU_ITEMS = [
   {
     id: 'skill',
-    label: '绑定 Skill',
-    hint: '即将上线',
+    label: () => t('ui.menuSkill'),
+    hint: () => t('ui.menuComingSoon'),
     icon: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M8 1.8l1.5 4.7 4.7 1.5-4.7 1.5L8 14.2 6.5 9.5 1.8 8l4.7-1.5z"/></svg>',
     onSelect: null,
   },
   {
     id: 'web-search',
-    label: '联网搜索',
-    hint: '即将上线',
+    label: () => t('ui.menuWebSearch'),
+    hint: () => t('ui.menuComingSoon'),
     icon: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><ellipse cx="8" cy="8" rx="2.8" ry="6.2"/><path d="M1.8 8h12.4"/></svg>',
     onSelect: null,
   },
   {
     id: 'knowledge-base',
-    label: '知识库',
-    hint: '即将上线',
+    label: () => t('ui.menuKnowledge'),
+    hint: () => t('ui.menuComingSoon'),
     icon: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 3.2c1.8-1 3.7-1 5.5 0 1.8-1 3.7-1 5.5 0v9.6c-1.8-1-3.7-1-5.5 0-1.8-1-3.7-1-5.5 0z"/><path d="M8 3.2v9.6"/></svg>',
     onSelect: null,
   },
   {
     id: 'page-actions',
-    label: '页面操作',
+    label: () => t('ui.menuPageActions'),
     // hint 支持函数形式：随开关状态实时变化
-    hint: () => (state.config.actionsEnabled ? '已开启' : '已关闭'),
+    hint: () => t(state.config.actionsEnabled ? 'ui.menuOn' : 'ui.menuOff'),
     active: () => Boolean(state.config.actionsEnabled),
     icon: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="1.8" y="2.5" width="12.4" height="8.2" rx="1"/><path d="M8 10.7v2.3M5.2 13.5h5.6"/><path d="M6.8 5.2l3.4 1.5-1.6.6-.6 1.6z"/></svg>',
     onSelect: togglePageActions,
@@ -1171,11 +1241,7 @@ const COMPOSER_MENU_ITEMS = [
 // 开启是一次有实际后果的授权，先把风险说清楚再放行；关闭则不设阻拦。
 async function togglePageActions() {
   const turningOn = !state.config.actionsEnabled;
-  if (turningOn && !window.confirm(
-    '开启后，AI 可以按你的指令点击、输入、跳转当前页面，操作会自动执行。\n' +
-    '每一步都会显示在对话中，可随时点「停止」。\n\n' +
-    '请勿在处理不希望被改动的业务数据时开启。确定开启？'
-  )) {
+  if (turningOn && !window.confirm(t('ui.actionsConfirm'))) {
     return;
   }
   state.config = { ...state.config, actionsEnabled: turningOn };
@@ -1183,7 +1249,7 @@ async function togglePageActions() {
   renderPlusMenu();
 }
 
-// 渲染菜单项：label/hint 是代码内常量，无用户输入，用 textContent/常量 SVG 拼装
+// 渲染菜单项：label/hint 取自文案目录，无用户输入，用 textContent/常量 SVG 拼装
 function renderPlusMenu() {
   els.plusMenu.innerHTML = '';
   for (const item of COMPOSER_MENU_ITEMS) {
@@ -1196,7 +1262,7 @@ function renderPlusMenu() {
     btn.innerHTML = item.icon;
     const label = document.createElement('span');
     label.className = 'plus-menu-label';
-    label.textContent = item.label;
+    label.textContent = typeof item.label === 'function' ? item.label() : item.label;
     btn.appendChild(label);
     const hintText = typeof item.hint === 'function' ? item.hint() : item.hint;
     if (hintText) {
@@ -1269,6 +1335,13 @@ function bindEvents() {
   els.btnSave.addEventListener('click', handleSaveConfig);
   els.btnTest.addEventListener('click', handleTestConnection);
 
+  // 语言即时生效并落盘（不等「保存」）：抽屉里其他字段还没填完时也能先把界面语言换过来
+  els.cfgLocale.addEventListener('change', async () => {
+    state.config = { ...state.config, locale: els.cfgLocale.value };
+    await storage.set('config', state.config);
+    applyLocale(state.config.locale);
+  });
+
   // 用户上滚暂停自动滚动，滚回底部恢复
   els.chat.addEventListener('scroll', () => {
     const nearBottom =
@@ -1283,16 +1356,16 @@ function bindEvents() {
     const codeEl = btn.closest('.md-codeblock')?.querySelector('pre code');
     if (!codeEl) return;
     await navigator.clipboard.writeText(codeEl.textContent).catch(() => {});
-    btn.textContent = '已复制';
-    setTimeout(() => { btn.textContent = '复制'; }, 1200);
+    btn.textContent = t('md.copied');
+    setTimeout(() => { btn.textContent = t('md.copy'); }, 1200);
   });
 }
 
 /* ========== 启动（只读配置，不读页面、不发网络请求） ========== */
 (async function init() {
   await loadConfig();
+  renderLocaleOptions();
+  applyLocale(state.config.locale); // 静态文案 + 状态条 + 菜单 + 发送按钮一并按语言渲染
   updateConfigHint();
-  updateContextBar();
-  renderPlusMenu();
   bindEvents();
 })();

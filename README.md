@@ -1,103 +1,72 @@
-# Titanium — 网页侧边栏 AI 助手
+# Titanium — AI Sidebar for the Web
 
-一个轻量的 Chrome / Edge 浏览器扩展：浏览任意网页时，打开右侧边栏与 AI 对话。当你发送消息时，扩展会读取当前页面的文字内容作为上下文，让 AI 结合页面回答你的问题。
+**English** | [中文](README.zh-CN.md)
 
-- **自带模型接口**：连接任何 OpenAI 兼容接口（DeepSeek、本地部署的 Ollama / vLLM 等），API Key 只存在你的浏览器本地
-- **按需读取页面**：只有发送消息时才读取页面，打开侧边栏不产生任何请求
-- **混合感知**：发送时注入页面文本 + 结构骨架；模型还可按需调用工具——**全文搜索**（命中长页面截断之外的内容）、**可交互元素列表**、**页面高亮定位**（把它说的按钮直接在页面上框出来）、**表格完整提取**、**元素结构查看**、**视口截图**（可选，带元素编号标注，需视觉模型）
-- **页面操作（可选，默认关闭）**：开启后 AI 可以点击、输入、选择、按键、滚动、跳转网址、管理标签页；每一步都在对话中实时可见，随时可停止，不可逆操作会先征求你的同意
-- **发送前脱敏**：默认对页面中的手机号、身份证号、银行卡号打码后再发送（搜索结果、表单值等工具结果同样脱敏；截图除外）
-- **引用可溯源**：AI 引用的「页面原文」会自动校验，确为原文才显示「来自当前页面」徽标，防止模型编造引文
-- **零依赖**：纯原生 HTML/CSS/JS，无构建、无第三方库、无外部 CDN，可离线安装使用
+A lightweight Chrome / Edge extension: open a sidebar on any web page and chat with an AI about it. When you send a message, the extension reads the text of the current page and passes it along as context, so the AI answers with the page in hand.
 
-## 安装
+- **Bring your own model** — any OpenAI-compatible endpoint (DeepSeek, self-hosted Ollama / vLLM, …); your API key never leaves your browser
+- **Reads the page only on demand** — captured when you send a message; opening the sidebar fires no requests
+- **Hybrid perception** — page text plus a structural outline by default, and the model can call tools as needed: full-text search, interactive element list, highlight on page, full table extraction, element HTML inspection, viewport screenshots (optional, needs a vision model)
+- **Page actions** (off by default) — once enabled the AI can click, type, select, press keys, scroll, navigate and manage tabs
+- **Redaction before sending** — phone numbers, national ID numbers and bank card numbers are masked by default (screenshots excepted)
+- **Verifiable quotes** — a passage only earns the "from this page" badge if it matches the captured page text verbatim
+- **Fully bilingual (English / 简体中文)** — interface, system prompt, tool text and the AI's answer language switch together; picked from your browser language on first run, changeable in settings
+- **Zero dependencies** — plain HTML/CSS/JS, no build step, no third-party libraries, no CDN; installs and runs fully offline
 
-1. 下载或克隆本仓库。
-2. 打开 Chrome / Edge 的扩展管理页（地址栏输入 `chrome://extensions` 或 `edge://extensions`）。
-3. 打开右上角的**开发者模式**开关。
-4. 点击**加载已解压的扩展程序**，选择本仓库的 `extension/` 目录。
-5. 点击浏览器工具栏中的扩展图标，即可打开侧边栏。
+## Installation
 
-> 要求 Chrome / Edge 版本 ≥ 114。
+1. Download or clone this repository
+2. Open `chrome://extensions` or `edge://extensions` and turn on **Developer mode** in the top-right corner
+3. Click **Load unpacked** and select this repository's `extension/` directory
+4. Click the extension icon in the toolbar to open the sidebar
 
-## 配置
+> Requires Chrome / Edge 114 or newer.
 
-点击侧边栏右上角的齿轮打开设置，填写接口地址、模型名称和 API Key，可点「测试连接」验证后保存。
+## Configuration
 
-**示例 1：DeepSeek 官方 API**
+Click the gear icon in the top-right of the sidebar, fill in the endpoint, model name and API key, optionally hit **Test connection**, then save.
 
-| 配置项 | 值 |
+| Setting | DeepSeek official API | Self-hosted (Ollama / vLLM, …) |
+|---|---|---|
+| Endpoint (baseUrl) | `https://api.deepseek.com/v1` | e.g. `http://localhost:11434/v1` |
+| Model name | `deepseek-chat` | whatever you deployed, e.g. `qwen2.5:14b` |
+| API key | create one at the [DeepSeek platform](https://platform.deepseek.com) | leave empty if the service needs no auth |
+
+> The baseUrl usually has to end with `/v1` — the extension appends `/chat/completions` to it. Check this first if the connection test returns 404.
+
+The settings drawer also holds: language (applies immediately), redaction before sending, "model supports vision" (enables the screenshot tool — note screenshots are not redacted), and "allow page actions". The extension contains no analytics or telemetry; page content goes only to the endpoint you configured, and your settings and key live solely in `chrome.storage.local`.
+
+## Usage
+
+- **When the page is read** — the current page is captured when you send your *first* message; the status bar then shows "Read: {page title} · {N} characters · {M} interactive elements". Later messages in the same conversation do not re-read it. Click the status bar to inspect exactly what was captured.
+- **Re-read** — after the page changes (for example an in-app navigation), click **Re-read** and your next message will carry the new content.
+- **Perception tools** — the model calls them on its own and the sidebar shows a live activity line for each. Ask "where is X on this page" and the AI draws a highlight box for three seconds; ask it to "extract table N in full" and you get the whole table, free of the body-text truncation limit. Requires an endpoint that supports function calling (DeepSeek and most gateways do); if it does not, the extension falls back to plain text.
+- **Source badge** — a blockquote gets the "from this page" badge only if it matches the captured page text verbatim. Treat quotes without a badge with suspicion.
+- **Shortcuts** — Enter sends, Shift+Enter inserts a newline; streaming replies can be stopped at any time; hover a reply to copy it or regenerate; **New chat** clears the history.
+- **Pages that cannot be read** — browser-internal pages (`chrome://`), extension stores and the like are off limits; the AI then answers from your question alone.
+
+## Page actions (off by default)
+
+Enable them with the "Allow page actions" toggle in the settings drawer or "Page actions" in the **+** menu next to the input box (the two are the same switch); the first time you turn it on, you get a risk confirmation. Once enabled the AI does more than look: it can click buttons, fill inputs, pick dropdown options, press Enter, scroll, navigate to a URL and open or close tabs — good for "fill this form with the details above" or "open that page and summarise it".
+
+Every action appears in the conversation as a prominent activity line, and you can hit **Stop** at any point during streaming — pending actions are skipped. For irreversible operations (transfers, payments, orders, approval submissions, deletions) the AI explains what it is about to do and waits for your explicit go-ahead. After a navigation, element numbers reset and the status bar notes that your next message will re-read the page. While the switch is off, action tools are not registered with the model at all.
+
+**Known limitations**: actions are dispatched as synthetic events (`isTrusted` is false), which a handful of strictly validating sites ignore; custom dropdown widgets need the AI to open them and click an option. Do not enable this while working with business data you do not want touched.
+
+## How this differs from an in-bank production build
+
+SSO/4A authentication, a domain allowlist, gateway-side redaction and audit logs, per-system extraction adapters, OCR for scanned documents, and audit trails plus step-up authorisation for page actions — all covered by existing in-bank capabilities and out of scope for this build.
+
+## Troubleshooting
+
+| Symptom | What to check |
 |---|---|
-| 接口地址（baseUrl） | `https://api.deepseek.com/v1` |
-| 模型名称 | `deepseek-chat` |
-| API Key | 在 [DeepSeek 开放平台](https://platform.deepseek.com) 申请 |
-
-**示例 2：本地部署（Ollama / vLLM 等 OpenAI 兼容服务）**
-
-| 配置项 | 值 |
-|---|---|
-| 接口地址（baseUrl） | 如 `http://localhost:11434/v1` |
-| 模型名称 | 部署的模型名，如 `qwen2.5:14b` |
-| API Key | 服务无鉴权可留空 |
-
-> baseUrl 通常需要以 `/v1` 结尾（扩展会在其后拼接 `/chat/completions`）。测试连接返回 404 时请优先检查这一点。
-
-## 使用说明
-
-- **读取时机**：发送第一条消息时才读取当前页面，读取后顶部状态条显示「已读取：{页面标题} · {N} 字 · {M} 个交互元素」；同一会话的后续消息不重复读取。点状态条可展开查看实际读取的内容与页面结构。
-- **重新读取**：页面内容变化后（如站内跳转），点状态条上的「重新读取」，下一条消息会携带新内容。
-- **感知工具**：回答过程中模型可能自行调用工具，侧边栏会实时显示活动行（如「🔍 正在页面中搜索…」）。问「XX 在页面哪里」时，AI 会在页面上画一个 3 秒的高亮框帮你定位；页面里的长表格可以让它「完整提取第 N 个表格」，不受正文截断限制。邮件列表、表格这类每行重复大量同类控件的页面，元素列表会自动折叠同类项并给无名控件附上所在行的文字，AI 可按行文字定位「哪一行的按钮」。要求接口支持 function calling（DeepSeek、主流网关均支持）；不支持时自动降级为纯文本模式，功能不受影响、只是少了工具。
-- **视觉开关**：设置中的「模型支持视觉」默认关闭；开启后 AI 可截取当前视口（图上带元素编号标注）理解布局和图表。注意：**截图内容不经过脱敏**，且要求所配模型支持图片输入（如 qwen-vl、GLM-4V 等）。
-- **脱敏开关**：默认开启，命中数显示在状态条徽标上，可在设置中关闭。
-- **出处徽标**：AI 回复中的引用块若确为当前页面原文，右上角会显示「来自当前页面」徽标；没有徽标的引用请自行甄别。
-- **快捷操作**：Enter 发送、Shift+Enter 换行；流式回复中可随时停止；悬停 AI 回复可复制全文或重新生成；「新对话」清空历史。
-- **无法读取的页面**：浏览器内部页（`chrome://`）、扩展商店等无法读取，此时 AI 仅基于你的问题回答（感知工具也不可用；若已开启页面操作，仍可让它打开一个能读的网址）。
-
-## 页面操作（默认关闭）
-
-开启后，AI 不再只是"看"，还能替你操作当前页面：点击按钮、填写输入框、选择下拉项、按回车、滚动、跳转网址、开关标签页。适合"帮我把这个表单按上面的信息填好"「打开某某页面并总结」这类任务。
-
-**如何开启**：设置抽屉里的「允许页面操作」开关，或输入区左侧「+」菜单中的「页面操作」（两处同步，菜单上会显示当前状态）。首次开启会有一次风险确认。
-
-**安全设计**：
-
-- 开关关闭时，操作类工具**根本不会注册**给模型——它看不见也调不出，行为与纯感知版完全一致。
-- 每个动作在对话中以**醒目的活动行**实时呈现（「🖱️ 已点击 [12] "提交订单"」），你能清楚看到 AI 对页面做了什么。
-- 流式过程中随时可点「停止」，未执行的动作会被跳过。
-- **转账、支付、下单、提交审批、删除、对外发送**这类不可逆操作，AI 会先停下来用文字说明将要点击什么、有什么后果，等你明确同意后才执行。
-- 页面跳转后元素编号自动重置，状态条会换成新页标题并提示「下一条消息将重新读取」。
-- 上一轮做过操作时点「重新生成」，会先弹确认——重放意味着再执行一遍。
-
-**已知限制**：动作通过合成事件派发（`isTrusted` 为 false），极少数强校验站点可能忽略；自定义下拉组件需要 AI 先点开再点选项，而非 `select_option`。请勿在处理不希望被改动的业务数据时开启。
-
-## 隐私说明
-
-- 扩展**不含任何数据统计或上报**，页面内容只发送到你自己配置的模型接口。
-- API Key 与配置仅保存在浏览器本地（`chrome.storage.local`），不会同步到任何服务器。
-- 建议在处理敏感页面时保持脱敏开关开启，或使用本地部署的模型。
-
-## 当前版本与行内生产版的差异
-
-- **鉴权/SSO**：本版不接 SSO/4A，生产版由统一门户完成登录与会话透传。
-- **域名白名单**：本版对任意网页可用，生产版仅在配置过的业务系统域名内启用。
-- **网关侧脱敏与审计**：本版脱敏在插件端完成，生产版由行内网关二次脱敏并留存审计日志。
-- **按系统的适配器配置**：本版通用 DOM 感知，生产版可为重点系统下发定制的提取/元素适配规则。
-- **OCR**：本版截图仅交给视觉模型直读，生产版可叠加行内 OCR 服务处理扫描件类页面。
-- **操作类动作的审计与二次授权**：本版页面操作由用户自行开关、靠提示词约束高危操作，生产版应把动作留痕上报审计，并对提交类动作做强制的二次授权。
-
-## 常见问题
-
-| 现象 | 排查 |
-|---|---|
-| 401 错误 | 检查 API Key 是否正确 |
-| 404 错误 | 检查 baseUrl 是否以 `/v1` 结尾 |
-| 网络失败 | 检查接口地址可达性；本地服务确认已启动 |
-| 提示「接口不支持工具调用，已降级」 | 接口不支持 function calling，属正常降级；换支持 tools 的模型/网关即可恢复 |
-| 提示「接口不支持图片输入」 | 所配模型无视觉能力，请在设置中关闭「模型支持视觉」 |
-| 提示「标签页已切换，请重新读取」 | 对话中途切换了标签页，点状态条「重新读取」后继续 |
-| AI 说它不能操作页面 | 页面操作开关未开启，去设置或「+」菜单打开 |
-| 点击/输入没反应 | 少数站点会忽略合成事件；也可能编号已过期——让 AI 重新列一次元素再试 |
-| 提示「元素编号已过期」 | 页面刷新或跳转导致编号重置，AI 会自行重新获取，一般无需干预 |
+| 401 error | Verify the API key |
+| 404 error | Check that the baseUrl ends with `/v1` |
+| Network failure | Confirm the endpoint is reachable; make sure a local service is actually running |
+| "Endpoint does not support tool calling / image input, degraded" | The endpoint or model lacks that capability — this is the normal fallback; switch to one that supports it |
+| "Tab switched, please re-read" | You changed tabs mid-conversation; click **Re-read** and continue |
+| Clicks / typing have no effect | A few sites ignore synthetic events; the element numbers may also be stale — ask the AI to list the elements again and retry |
 
 ---
 

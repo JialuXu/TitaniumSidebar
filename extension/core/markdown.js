@@ -11,6 +11,8 @@
 // 流式渲染由外壳负责：每次收到 delta 后用累计全文全量重渲当前消息即可，
 // 未闭合的围栏代码块会被自然渲染到文末。
 
+import { t } from './i18n.js';
+
 /** HTML 转义（& < > " '） */
 export function escapeHtml(s) {
   return (s || '')
@@ -95,8 +97,8 @@ export function renderMarkdown(mdText) {
       i++; // 跳过闭合行（无闭合行时已到文末）
       html.push(
         '<div class="md-codeblock">' +
-          `<div class="md-codeblock-head"><span class="md-codeblock-lang">${lang || '代码'}</span>` +
-          '<button type="button" class="md-copy-btn" data-role="copy-code">复制</button></div>' +
+          `<div class="md-codeblock-head"><span class="md-codeblock-lang">${lang || t('md.code')}</span>` +
+          `<button type="button" class="md-copy-btn" data-role="copy-code">${t('md.copy')}</button></div>` +
           `<pre><code>${code.join('\n')}</code></pre></div>`
       );
       continue;
