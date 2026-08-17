@@ -133,6 +133,17 @@ const ZH = {
     '每一步都会显示在对话中，可随时点「停止」。\n\n' +
     '请勿在处理不希望被改动的业务数据时开启。确定开启？',
 
+  /* ---------- 界面：技能（Skill） ---------- */
+  'ui.menuSkillNone': '未使用',
+  'ui.skillPickTitle': '选择技能',
+  'ui.skillBack': '‹ 返回',
+  'ui.skillNone': '不使用技能',
+  'ui.skillInUse': '使用中',
+  'ui.skillChipRemove': '摘除技能（本会话不再使用）',
+  'ui.skillSuggestText': '此页面适用「{name}」',
+  'ui.skillEnable': '启用',
+  'ui.skillSuggestDismiss': '关闭（本会话不再建议）',
+
   /* ---------- 界面：设置抽屉 ---------- */
   'ui.cfgLanguage': '语言 / Language',
   'ui.cfgBaseUrl': '接口地址（baseUrl）',
@@ -343,6 +354,8 @@ const ZH = {
   'md.code': '代码',
   'md.copy': '复制',
   'md.copied': '已复制',
+  'md.download': '下载',
+  'md.downloaded': '已下载',
 
   /* ---------- 注入函数文案 ---------- */
   'inj.textTruncated': '……（内容过长已截断）',
@@ -390,6 +403,48 @@ const ZH = {
   'prompt.vision':
     '当文字无法表达布局、图表、图片等视觉信息时，可用 capture_screenshot 查看当前视口截图；' +
     '截图上的编号框对应元素 ref，与 list_elements 的编号一致。',
+
+  /* ---------- 技能（Skill）：名称 / 说明 / 指令正文 / 工具指引 ----------
+     body 在技能激活时恒拼入 system prompt（纯文本降级后任务约束仍有效）；
+     toolHint 提及具体工具名，仅本次请求真的注册了 tools 时拼——
+     与「prompt 各段必须与实际注册的 tools 严格一致」同一条铁律。 */
+  'skill.csv-table.name': '表格提取（CSV）',
+  'skill.csv-table.desc': '完整提取页面表格并输出为可复制的 CSV 代码块',
+  'skill.csv-table.body':
+    '当前任务模式：表格提取整理。用户需要把页面中的表格完整整理为 CSV。输出规则：' +
+    '结果放在一个 ```csv 围栏代码块中，首行为表头；' +
+    '单元格含逗号、双引号或换行时用双引号包裹，内部双引号写成两个双引号；' +
+    '数字、金额、百分比与原文一字不差——不换算单位、不增删千分位、不四舍五入；' +
+    '空单元格留空；合并单元格按视觉归属补到所在行列；说明文字放在代码块之外。' +
+    '不省略任何行列；页面数据不完整时明确说明缺了哪部分，不要编造补齐。',
+  'skill.csv-table.toolHint':
+    '提取前先看 <页面结构> 里的表格序号，用 extract_table 完整取回表格再转 CSV，' +
+    '不要用可能被截断的正文拼凑；页面有多个表格且用户未指明时，' +
+    '先列出各表序号与规模让用户选择。',
+  'skill.fin-report.name': '财报分析',
+  'skill.fin-report.desc': '识别三张报表，比率计算注明公式，页面数字与推算数字严格区分',
+  'skill.fin-report.body':
+    '当前任务模式：财报与财务分析。先识别页面涉及的报表类型' +
+    '（资产负债表 / 利润表 / 现金流量表）与报告期。' +
+    '计算比率（毛利率、净利率、ROE、资产负债率、流动比率等）时必须写出公式与所用原始数字；' +
+    '严格区分「页面数字」（原文照抄，一字不差）与「推算数字」（标注「推算」并给出算式）。' +
+    '结论用页面原文引用块（>）佐证。页面缺某项数据时明确说明，不要估计；' +
+    '跨报告期比较时注明口径是否一致。',
+  'skill.fin-report.toolHint':
+    '财务数据多在表格里且正文可能被截断：先用 extract_table 完整取回报表再计算，' +
+    '用 find_in_page 定位附注与具体科目；绝不要拿截断正文里的数字做计算。',
+  'skill.market-brief.name': '行情解读',
+  'skill.market-brief.desc': '只整理与解释页面行情与资金数据，不预测、不荐股',
+  'skill.market-brief.body':
+    '当前任务模式：行情信息整理。只整理和解释页面上呈现的行情数据' +
+    '（价格、涨跌幅、成交量、资金流向、盘口、板块表现等），说明这些数字的含义与相互关系。' +
+    '严格区分页面陈述的事实与你的推断，推断必须注明依据。' +
+    '不预测未来走势、不给出买卖建议、不评价某只股票「值不值得买」；' +
+    '用户追问时说明这超出了信息整理的范围。数字与涨跌幅一律与页面一致。' +
+    '每次回答的最后固定加一行：「以上为页面信息整理，不构成投资建议。」',
+  'skill.market-brief.toolHint':
+    '行情页数字密集且更新快：需要完整数据时用 extract_table 取回行情表格，' +
+    '页面正文里找不到的字段用 find_in_page 搜索；不要引用截断正文里可能残缺的数字。',
 
   /* ---------- 工具定义：描述与参数 ---------- */
   'tool.find.d':
@@ -510,6 +565,17 @@ const EN = {
     'Once enabled, the AI can click, type and navigate on the current page on your instruction, and does so automatically.\n' +
     'Every step appears in the conversation and you can hit "Stop" at any time.\n\n' +
     'Do not enable this while working with business data you do not want touched. Enable it?',
+
+  /* ---------- UI: skills ---------- */
+  'ui.menuSkillNone': 'None',
+  'ui.skillPickTitle': 'Choose a skill',
+  'ui.skillBack': '‹ Back',
+  'ui.skillNone': 'No skill',
+  'ui.skillInUse': 'In use',
+  'ui.skillChipRemove': 'Remove this skill (for this conversation)',
+  'ui.skillSuggestText': 'The "{name}" skill fits this page',
+  'ui.skillEnable': 'Enable',
+  'ui.skillSuggestDismiss': 'Dismiss (no more suggestions this session)',
 
   /* ---------- UI: settings drawer ---------- */
   'ui.cfgLanguage': 'Language / 语言',
@@ -721,6 +787,8 @@ const EN = {
   'md.code': 'Code',
   'md.copy': 'Copy',
   'md.copied': 'Copied',
+  'md.download': 'Download',
+  'md.downloaded': 'Downloaded',
 
   /* ---------- Strings passed into injected functions ---------- */
   'inj.textTruncated': '…(content too long, truncated)',
@@ -767,6 +835,55 @@ const EN = {
   'prompt.vision':
     'When text cannot convey layout, charts or images, use capture_screenshot to look at the current viewport; ' +
     'the numbered boxes on the screenshot are element refs, identical to the numbers from list_elements.',
+
+  /* ---------- Skills: name / description / body / tool hint ----------
+     body is always appended to the system prompt while the skill is active
+     (task constraints survive the plain-text fallback); toolHint names concrete
+     tools, so it is appended only when this request actually registers tools —
+     the same rule as "every prompt section must match the registered tools". */
+  'skill.csv-table.name': 'Table to CSV',
+  'skill.csv-table.desc': 'Extract page tables in full as a copyable CSV code block',
+  'skill.csv-table.body':
+    'Task mode: table extraction. The user wants tables on this page transcribed into CSV in full. ' +
+    'Output rules: put the result in one ```csv fenced code block with the header as the first row; ' +
+    'wrap a cell in double quotes when it contains a comma, quote or newline, doubling any inner quotes; ' +
+    'keep every number, amount and percentage exactly as the page shows it — no unit conversion, ' +
+    'no reformatting, no rounding; leave empty cells empty; assign merged cells to their visual row and column; ' +
+    'keep commentary outside the code block. Never drop rows or columns; ' +
+    'if the page data is incomplete, say which part is missing instead of inventing it.',
+  'skill.csv-table.toolHint':
+    'Before transcribing, check the table indexes in <page_outline> and pull the full table with extract_table ' +
+    'rather than reconstructing it from possibly truncated body text; when the page has several tables and ' +
+    'the user did not specify one, list their indexes and sizes for the user to choose.',
+  'skill.fin-report.name': 'Financial statements',
+  'skill.fin-report.desc': 'Identify the three statements; ratios come with formulas; page figures kept verbatim',
+  'skill.fin-report.body':
+    'Task mode: financial statement analysis. First identify which statements the page covers ' +
+    '(balance sheet / income statement / cash flow statement) and the reporting period. ' +
+    'When computing ratios (gross margin, net margin, ROE, debt-to-asset, current ratio, etc.) ' +
+    'always show the formula and the source figures; strictly separate "page figures" (copied verbatim) ' +
+    'from "derived figures" (label them as derived and show the arithmetic). ' +
+    'Support conclusions with blockquotes (>) of the page\'s own wording. ' +
+    'When a figure is missing from the page, say so instead of estimating; ' +
+    'note whether compared periods use a consistent basis.',
+  'skill.fin-report.toolHint':
+    'Financial data usually sits in tables and the body text may be truncated: pull statements in full ' +
+    'with extract_table before computing, and locate notes or line items with find_in_page; ' +
+    'never compute from figures in the truncated body text.',
+  'skill.market-brief.name': 'Market digest',
+  'skill.market-brief.desc': 'Organise and explain the market data on the page only — no predictions, no stock tips',
+  'skill.market-brief.body':
+    'Task mode: market data digest. Only organise and explain the market information this page shows ' +
+    '(prices, changes, volume, money flow, order book, sector moves) and what the figures mean. ' +
+    'Strictly separate what the page states from what you infer, and give the basis for any inference. ' +
+    'Do not predict future moves, give buy or sell advice, or judge whether a stock is worth buying; ' +
+    'if pressed, say this is beyond organising page information. Keep every figure and percentage ' +
+    'identical to the page. End every reply with the line: ' +
+    '"The above is a digest of this page\'s information and does not constitute investment advice."',
+  'skill.market-brief.toolHint':
+    'Quote pages are dense and fast-moving: pull full tables with extract_table when complete data is needed, ' +
+    'and search missing fields with find_in_page; do not cite possibly stale or incomplete figures ' +
+    'from the truncated body text.',
 
   /* ---------- Tool definitions ---------- */
   'tool.find.d':

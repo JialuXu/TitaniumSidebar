@@ -7,7 +7,7 @@
 //      唯一剩余注入面是 URL scheme——只放行 http(s):// 与 #，其余按纯文本输出。
 //
 // 支持子集：标题 h1–h4、加粗/斜体、有序/无序列表（单层）、行内代码、
-// 围栏代码块（带复制按钮，按钮事件由外壳委托绑定）、表格、分隔线、链接、引用块。
+// 围栏代码块（带复制按钮，csv 块另有下载按钮，按钮事件均由外壳委托绑定）、表格、分隔线、链接、引用块。
 // 流式渲染由外壳负责：每次收到 delta 后用累计全文全量重渲当前消息即可，
 // 未闭合的围栏代码块会被自然渲染到文末。
 
@@ -95,9 +95,15 @@ export function renderMarkdown(mdText) {
         i++;
       }
       i++; // 跳过闭合行（无闭合行时已到文末）
+      // csv 块附下载按钮：金融场景下 CSV 的归宿多半是 Excel，落盘比复制粘贴顺手
+      const downloadBtn =
+        lang.toLowerCase() === 'csv'
+          ? `<button type="button" class="md-copy-btn" data-role="download-csv">${t('md.download')}</button>`
+          : '';
       html.push(
         '<div class="md-codeblock">' +
           `<div class="md-codeblock-head"><span class="md-codeblock-lang">${lang || t('md.code')}</span>` +
+          downloadBtn +
           `<button type="button" class="md-copy-btn" data-role="copy-code">${t('md.copy')}</button></div>` +
           `<pre><code>${code.join('\n')}</code></pre></div>`
       );

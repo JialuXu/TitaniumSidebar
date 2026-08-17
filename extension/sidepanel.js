@@ -15,6 +15,7 @@ import { buildSystemPrompt, buildUserContent } from './core/prompt.js';
 import { streamChat, testConnection, LlmError } from './core/llm-client.js';
 import { renderMarkdown } from './core/markdown.js';
 import { verifyQuote } from './core/citation.js';
+import { listSkills, matchSkillsByUrl, hostOfUrl } from './core/skills.js';
 import {
   t, setLocale, detectLocale, injectedStrings, LOCALES, LOCALE_LABELS, HTML_LANG,
 } from './core/i18n.js';
@@ -65,10 +66,14 @@ const state = {
   // 工具调用轮次会追加 assistant(tool_calls)/tool/截图跟随消息，`_` 前缀字段发请求前剔除。
   messages: [],
   page: initialPage(),
-  ui: { phase: 'idle', autoScroll: true, ctxExpanded: false, plusMenuOpen: false }, // phase: idle | streaming
+  // phase: idle | streaming；plusMenuView: root 根菜单 | skills 技能二级列表（菜单关闭时复位）
+  ui: { phase: 'idle', autoScroll: true, ctxExpanded: false, plusMenuOpen: false, plusMenuView: 'root' },
   abortController: null,
   toolsBroken: false, // 接口不支持 tools（收到过 400/422），本会话降级纯文本；保存配置时重置
   lastCitation: '', // 点击引用徽标暂存的原文（生产版可扩展为定位高亮）
+  skillId: null, // 会话级激活技能 id：不入 config、不持久化，「新对话」清空
+  // URL 建议：items 为当前命中的 [{ id, host }]；dismissed 记「host|skillId」，本会话不再建议
+  suggest: { items: [], dismissed: new Set() },
 };
 
 /* ========== DOM 引用 ========== */
@@ -78,6 +83,7 @@ const els = {};
   'ctx-caret', 'ctx-detail', 'ctx-detail-url', 'ctx-detail-outline', 'ctx-detail-text',
   'chat', 'welcome', 'config-hint', 'btn-goto-settings', 'input', 'btn-send',
   'btn-plus', 'plus-menu',
+  'skill-suggest', 'skill-chip', 'skill-chip-name', 'skill-chip-remove',
   'settings-mask', 'settings', 'btn-close-settings', 'cfg-locale', 'cfg-baseurl', 'cfg-model',
   'cfg-apikey', 'cfg-mask', 'cfg-vision', 'cfg-actions', 'btn-test', 'btn-save', 'test-result',
 ].forEach((id) => {
@@ -124,6 +130,8 @@ function applyLocale(loc) {
   updateContextBar();
   updateComposer();
   renderPlusMenu();
+  renderSkillChip();
+  renderSkillSuggest();
 }
 
 /* ========== 配置 ========== */
@@ -822,7 +830,7 @@ function finalizeAssistant(el, msgObj, contentEl) {
 // caps 与本轮请求是否带 tools 保持一致，system prompt 才不会指引模型调用不存在的工具
 function buildRequestMessages(caps) {
   return [
-    { role: 'system', content: buildSystemPrompt(caps || { tools: false, vision: false }) },
+    { role: 'system', content: buildSystemPrompt(caps || { tools: false, vision: false, skill: null }) },
     ...state.messages
       // 失败的空回复不进入请求；带 tool_calls 而 content 为空的 assistant 必须保留（历史断链会 400）
       .filter((m) => m.role !== 'assistant' || m.content || (m.tool_calls && m.tool_calls.length))
@@ -870,6 +878,9 @@ async function runAgentLoop(el) {
   const actionsOn = Boolean(state.config.actionsEnabled);
   const roundLimit = actionsOn ? MAX_ACTION_ROUNDS : MAX_TOOL_ROUNDS;
 
+  // 技能在回合开始时快照：流式过程中切换/摘除不影响进行中的回合，下一条消息生效
+  const skillId = state.skillId;
+
   const newSegment = () => {
     seg = document.createElement('div');
     seg.className = 'ai-content';
@@ -888,7 +899,7 @@ async function runAgentLoop(el) {
     const vision = useTools && Boolean(state.config.visionEnabled);
     const actions = useTools && actionsOn;
     const tools = useTools ? buildToolDefs({ vision, actions }) : undefined;
-    const requestMessages = buildRequestMessages({ tools: useTools, vision, actions });
+    const requestMessages = buildRequestMessages({ tools: useTools, vision, actions, skill: skillId });
     console.log('[发送内容]', requestMessages); // 验收依据：控制台可核对脱敏后的实际发送内容
 
     let acc = '';
@@ -1146,9 +1157,15 @@ function handleNewChat() {
   handleStop();
   state.messages = [];
   state.page = initialPage();
+  state.skillId = null; // 技能是会话属性，随会话清空
+  state.suggest.items = [];
+  state.suggest.dismissed.clear(); // 「本会话不再建议」的记忆也随会话清空
   els.chat.querySelectorAll('.msg').forEach((m) => m.remove());
   els.welcome.hidden = false;
   updateContextBar();
+  renderSkillChip();
+  renderPlusMenu();
+  evaluateSkillSuggestion(); // 对当前页重新评估建议
 }
 
 /* ========== 设置抽屉 ========== */
@@ -1199,18 +1216,91 @@ function autoSizeInput() {
   els.input.style.height = Math.min(els.input.scrollHeight, 160) + 'px';
 }
 
+/* ========== 技能（Skill） ========== */
+// 技能 = 会话级的声明式提示词包（core/skills.js 登记目录，指令正文在 i18n）。
+// 状态只存 state.skillId：不入 config、不持久化；chip / 菜单 hint / 建议条三处联动。
+
+// 设定或摘除会话级技能（id 传 null 即摘除）
+function setSkill(id) {
+  state.skillId = id || null;
+  renderSkillChip();
+  renderPlusMenu(); // 菜单项 hint 显示当前技能名
+  renderSkillSuggest(); // 有激活技能时建议条隐藏；摘除后已命中的建议立即恢复
+}
+
+function renderSkillChip() {
+  const on = Boolean(state.skillId);
+  els.skillChip.hidden = !on;
+  if (on) els.skillChipName.textContent = t(`skill.${state.skillId}.name`);
+}
+
+// 渲染建议条：一行一个命中技能；全部 textContent 赋值，无注入面
+function renderSkillSuggest() {
+  els.skillSuggest.innerHTML = '';
+  const items = state.skillId ? [] : state.suggest.items; // 有激活技能时整条隐藏
+  els.skillSuggest.hidden = !items.length;
+  for (const { id, host } of items) {
+    const row = document.createElement('div');
+    row.className = 'skill-suggest-row';
+    const text = document.createElement('span');
+    text.textContent = t('ui.skillSuggestText', { name: t(`skill.${id}.name`) });
+    const enable = document.createElement('button');
+    enable.type = 'button';
+    enable.className = 'skill-suggest-enable';
+    enable.textContent = t('ui.skillEnable');
+    enable.addEventListener('click', () => setSkill(id));
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'skill-suggest-close';
+    close.textContent = '✕';
+    close.title = t('ui.skillSuggestDismiss');
+    close.addEventListener('click', () => {
+      state.suggest.dismissed.add(`${host}|${id}`); // 同 host + 技能，本会话不再建议
+      state.suggest.items = state.suggest.items.filter((it) => !(it.id === id && it.host === host));
+      renderSkillSuggest();
+    });
+    row.append(text, enable, close);
+    els.skillSuggest.appendChild(row);
+  }
+}
+
+// 评估当前激活标签页是否命中技能建议。只读 tab.url 元数据，绝不注入脚本读内容——
+// 不违反「发消息才读取页面」的承诺；也不触碰 state.page，与「重新读取」互不干扰。
+async function evaluateSkillSuggestion() {
+  const tab = await getActiveTab(); // 受限页（chrome:// 等）返回 null → 不建议
+  const host = tab ? hostOfUrl(tab.url) : '';
+  const matches = host ? matchSkillsByUrl(tab.url) : [];
+  state.suggest.items = matches
+    .filter((s) => !state.suggest.dismissed.has(`${host}|${s.id}`))
+    .map((s) => ({ id: s.id, host }));
+  renderSkillSuggest();
+}
+
+// tabs 事件的去抖：一次导航会触发多次 onUpdated，200ms 合并成一次评估
+let suggestTimer = 0;
+function scheduleSuggestEval() {
+  clearTimeout(suggestTimer);
+  suggestTimer = setTimeout(evaluateSkillSuggestion, 200);
+}
+
 /* ========== 「+」功能菜单 ========== */
-// 菜单项登记表：后续新增功能（绑定 Skill、联网搜索、知识库等）在此补一项即可；
+// 菜单项登记表：后续新增功能（联网搜索、知识库等）在此补一项即可；
 // 提供 onSelect 回调后自动变为可点击，onSelect 为 null 时显示为置灰占位。
 // icon 为内联 SVG 字符串（16×16、stroke:currentColor），与顶部栏图标同一画风。
 // label/hint 均为函数：渲染时才取词，因而语言切换后重渲即生效。
+// keepOpen 为真的项点击后菜单不关闭（如「绑定 Skill」进入二级列表）。
 const COMPOSER_MENU_ITEMS = [
   {
     id: 'skill',
     label: () => t('ui.menuSkill'),
-    hint: () => t('ui.menuComingSoon'),
+    hint: () => (state.skillId ? t(`skill.${state.skillId}.name`) : t('ui.menuSkillNone')),
+    active: () => Boolean(state.skillId),
     icon: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M8 1.8l1.5 4.7 4.7 1.5-4.7 1.5L8 14.2 6.5 9.5 1.8 8l4.7-1.5z"/></svg>',
-    onSelect: null,
+    keepOpen: true,
+    onSelect: () => {
+      state.ui.plusMenuView = 'skills';
+      renderPlusMenu();
+    },
   },
   {
     id: 'web-search',
@@ -1251,7 +1341,12 @@ async function togglePageActions() {
 
 // 渲染菜单项：label/hint 取自文案目录，无用户输入，用 textContent/常量 SVG 拼装
 function renderPlusMenu() {
+  els.plusMenu.classList.toggle('skills', state.ui.plusMenuView === 'skills');
   els.plusMenu.innerHTML = '';
+  if (state.ui.plusMenuView === 'skills') {
+    renderSkillMenu();
+    return;
+  }
   for (const item of COMPOSER_MENU_ITEMS) {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -1272,8 +1367,11 @@ function renderPlusMenu() {
       btn.appendChild(hint);
     }
     if (!btn.disabled) {
-      btn.addEventListener('click', () => {
-        setPlusMenuOpen(false);
+      btn.addEventListener('click', (e) => {
+        // 菜单内点击不冒泡到 document 的外点关闭监听：keepOpen 项会重渲菜单、
+        // 把被点按钮摘出文档，冒泡后 closest 判定失败会被误当成「点在菜单外」
+        e.stopPropagation();
+        if (!item.keepOpen) setPlusMenuOpen(false);
         item.onSelect();
       });
     }
@@ -1281,14 +1379,83 @@ function renderPlusMenu() {
   }
 }
 
+// 技能二级列表：标题 + 返回 + 「不使用技能」 + 预置技能（当前项高亮并带「使用中」胶囊）
+function renderSkillMenu() {
+  const title = document.createElement('span');
+  title.className = 'plus-menu-title';
+  title.textContent = t('ui.skillPickTitle'); // DOM 取词，不沿用 ::before 硬编码做法
+  els.plusMenu.appendChild(title);
+  const addItem = (labelText, selected, hintText, descText, onClick) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'plus-menu-item';
+    btn.setAttribute('role', 'menuitem');
+    if (selected) btn.classList.add('active');
+    if (descText) btn.title = descText;
+    const label = document.createElement('span');
+    label.className = 'plus-menu-label';
+    label.textContent = labelText;
+    btn.appendChild(label);
+    if (hintText) {
+      const hint = document.createElement('span');
+      hint.className = 'plus-menu-hint';
+      hint.textContent = hintText;
+      btn.appendChild(hint);
+    }
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation(); // 同上：「返回」会重渲菜单，冒泡会被误判为外点而关闭
+      onClick();
+    });
+    els.plusMenu.appendChild(btn);
+  };
+  addItem(t('ui.skillBack'), false, '', '', () => {
+    state.ui.plusMenuView = 'root';
+    renderPlusMenu();
+  });
+  addItem(t('ui.skillNone'), !state.skillId, '', '', () => {
+    setSkill(null);
+    setPlusMenuOpen(false);
+  });
+  for (const s of listSkills()) {
+    const inUse = state.skillId === s.id;
+    addItem(t(`skill.${s.id}.name`), inUse, inUse ? t('ui.skillInUse') : '', t(`skill.${s.id}.desc`), () => {
+      setSkill(s.id);
+      setPlusMenuOpen(false);
+    });
+  }
+}
+
 function setPlusMenuOpen(open) {
   state.ui.plusMenuOpen = open;
+  // 关闭时把视图复位到根菜单，下次打开不会残留技能列表
+  if (!open && state.ui.plusMenuView !== 'root') {
+    state.ui.plusMenuView = 'root';
+    renderPlusMenu();
+  }
   els.plusMenu.classList.toggle('open', open);
   els.btnPlus.classList.toggle('open', open);
   els.btnPlus.setAttribute('aria-expanded', String(open));
 }
 
 /* ========== 事件绑定 ========== */
+// 把 CSV 文本落盘为 .csv 文件：前置 UTF-8 BOM，保证 Excel 打开中文不乱码；
+// 文件名取当前页面标题（清掉路径非法字符与空白），读不到标题时用 table 兜底
+function downloadCsv(text) {
+  const base =
+    ((state.page && state.page.title) || '')
+      .replace(/[\\/:*?"<>|\s]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40) || 'table';
+  const blob = new Blob(['\uFEFF' + text], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${base}.csv`;
+  a.click();
+  // 延迟回收：click 后立即 revoke 在部分场景会截断尚未开始的下载
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function bindEvents() {
   els.btnSend.addEventListener('click', () => {
     if (state.ui.phase === 'streaming') handleStop();
@@ -1349,15 +1516,31 @@ function bindEvents() {
     state.ui.autoScroll = nearBottom;
   });
 
-  // 代码块复制按钮：内容随流式重渲不断重建，用事件委托
+  // 代码块头部按钮（复制 / csv 下载）：内容随流式重渲不断重建，用事件委托
   els.chat.addEventListener('click', async (e) => {
-    const btn = e.target.closest('[data-role="copy-code"]');
+    const btn = e.target.closest('[data-role="copy-code"], [data-role="download-csv"]');
     if (!btn) return;
     const codeEl = btn.closest('.md-codeblock')?.querySelector('pre code');
     if (!codeEl) return;
-    await navigator.clipboard.writeText(codeEl.textContent).catch(() => {});
-    btn.textContent = t('md.copied');
-    setTimeout(() => { btn.textContent = t('md.copy'); }, 1200);
+    if (btn.dataset.role === 'copy-code') {
+      await navigator.clipboard.writeText(codeEl.textContent).catch(() => {});
+      btn.textContent = t('md.copied');
+      setTimeout(() => { btn.textContent = t('md.copy'); }, 1200);
+    } else {
+      downloadCsv(codeEl.textContent);
+      btn.textContent = t('md.downloaded');
+      setTimeout(() => { btn.textContent = t('md.download'); }, 1200);
+    }
+  });
+
+  // 技能 chip 的 ✕：摘除会话级技能
+  els.skillChipRemove.addEventListener('click', () => setSkill(null));
+
+  // 标签页切换 / 导航 → 重新评估技能建议（只读 tab.url 元数据，绝不注入脚本）；
+  // onUpdated 只关心 URL 变化（含 SPA pushState），其余 changeInfo 一律忽略
+  chrome.tabs.onActivated.addListener(scheduleSuggestEval);
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (changeInfo.url) scheduleSuggestEval();
   });
 }
 
@@ -1368,4 +1551,7 @@ function bindEvents() {
   applyLocale(state.config.locale); // 静态文案 + 状态条 + 菜单 + 发送按钮一并按语言渲染
   updateConfigHint();
   bindEvents();
+  // 打开面板时若已停在名单内的页面，直接给出技能建议：只查 tab 元数据，
+  // 不注入脚本、不发网络请求，「打开侧边栏不读取页面」的承诺不受影响
+  evaluateSkillSuggestion();
 })();

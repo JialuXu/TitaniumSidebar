@@ -8,13 +8,18 @@
 import { t } from './i18n.js';
 
 /**
- * 组装 system prompt：基础人设 + （可选）工具指引 + 操作/只读边界 + （可选）视觉指引。
- * 各段必须与本次请求实际注册的 tools 一致，否则会指引模型调用不存在的工具。
- * @param {{ tools?: boolean, vision?: boolean, actions?: boolean }} [caps] 本次请求可用的能力
+ * 组装 system prompt：基础人设 + （可选）技能正文 + （可选）工具指引 + 操作/只读边界 + （可选）视觉指引。
+ * 各段必须与本次请求实际注册的 tools 一致，否则会指引模型调用不存在的工具——
+ * 因此技能的 body 恒拼（纯文本降级后任务约束仍有效），而提及具体工具名的
+ * toolHint 只在真的带 tools 时拼；只读/动作护栏段永远排在技能段之后，技能无法越权。
+ * @param {{ tools?: boolean, vision?: boolean, actions?: boolean, skill?: string|null }} [caps]
+ *   本次请求可用的能力；skill 为激活技能的 id（外壳保证只传合法 id），null 表示未启用
  */
-export function buildSystemPrompt({ tools = false, vision = false, actions = false } = {}) {
+export function buildSystemPrompt({ tools = false, vision = false, actions = false, skill = null } = {}) {
   let prompt = t('prompt.base');
+  if (skill) prompt += '\n' + t(`skill.${skill}.body`);
   if (tools) prompt += '\n' + t('prompt.tools');
+  if (tools && skill) prompt += '\n' + t(`skill.${skill}.toolHint`);
   if (tools) prompt += '\n' + t(actions ? 'prompt.actions' : 'prompt.readonly');
   if (tools && vision) prompt += '\n' + t('prompt.vision');
   return prompt;
