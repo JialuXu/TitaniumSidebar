@@ -6,6 +6,8 @@
 // 缩放系数不信任 devicePixelRatio：captureVisibleTab 的位图宽 ÷ 视口 CSS 宽实测得出，
 // 天然吸收系统 DPR 与页面缩放两个因素，编号框才能与元素严格对齐。
 
+import { t } from './i18n.js';
+
 /**
  * @param {string} dataUrl 原始截图（captureVisibleTab 返回的 data URL）
  * @param {Array<{ ref: number, bbox: { x, y, w, h } }>} marks 视口内元素（CSS 像素 bbox）
@@ -20,7 +22,7 @@ export async function annotateScreenshot(dataUrl, marks, viewport, opts = {}) {
   const img = await new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error('截图解码失败'));
+    image.onerror = () => reject(new Error(t('err.shotDecode')));
     image.src = dataUrl;
   });
 

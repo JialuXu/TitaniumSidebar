@@ -2,7 +2,8 @@
 //
 // 只依赖标准 fetch，不依赖扩展的 CORS 豁免（接口地址由外壳传入；
 // SDK 场景下 CORS 由网关开放或宿主同域反代解决，core 不关心）。
-// 错误统一抛结构化的 LlmError，中文文案映射是外壳的职责，core 不含文案。
+// 错误统一抛结构化的 LlmError，可读文案映射是外壳的职责（describeError），
+// 本文件不含任何面向用户的文案——LlmError.message 只是调试串，不进 UI。
 
 /**
  * 结构化错误。kind 取值：
@@ -14,7 +15,7 @@
  */
 export class LlmError extends Error {
   constructor(kind, { status = 0, detail = '' } = {}) {
-    super(`LLM 调用失败：${kind}${status ? ' ' + status : ''}`);
+    super(`LLM request failed: ${kind}${status ? ' ' + status : ''}`);
     this.name = 'LlmError';
     this.kind = kind;
     this.status = status;

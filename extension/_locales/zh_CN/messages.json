@@ -1,0 +1,10 @@
+{
+  "extDescription": {
+    "message": "网页侧边栏 AI 助手：发送消息时读取当前页面内容作为上下文，调用自行配置的 OpenAI 兼容接口流式问答；可选开启页面操作能力。",
+    "description": "扩展管理页与商店中展示的描述（Titanium · Design by Xujl，署名不进 message，不对外展示）"
+  },
+  "actionTitle": {
+    "message": "打开 Titanium 侧边栏",
+    "description": "工具栏图标的悬停提示"
+  }
+}
