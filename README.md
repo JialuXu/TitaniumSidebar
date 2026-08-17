@@ -80,6 +80,13 @@ SSO/4A authentication, a domain allowlist, gateway-side redaction and audit logs
 | "Tab switched, please re-read" | You changed tabs mid-conversation; click **Re-read** and continue |
 | Clicks / typing have no effect | A few sites ignore synthetic events; the element numbers may also be stale — ask the AI to list the elements again and retry |
 
+## Contributing and security
+
+- **Contributing** — [CONTRIBUTING.md](CONTRIBUTING.md). Read the hard constraints first: zero dependencies and no build step, `core/` stays platform-independent (no `chrome.*`), injected functions stay self-contained, and every user- *and* model-facing string lives in `core/i18n.js` in both languages. `main` is protected, so fork and open a PR.
+- **Code of conduct** — [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) (Contributor Covenant 2.1).
+- **Security** — [SECURITY.md](SECURITY.md). Report vulnerabilities privately through the [Security tab](https://github.com/JialuXu/TitaniumSidebar/security/advisories/new), never in a public issue. It also spells out what is *not* a vulnerability here: redaction is regex best-effort, screenshots are never redacted, and the guardrail on irreversible actions is a prompt-level one, not a technical block.
+- **Licence** — [MIT](LICENSE).
+
 ---
 
 Titanium · Design by Xujl

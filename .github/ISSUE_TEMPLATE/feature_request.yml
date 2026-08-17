@@ -1,0 +1,67 @@
+name: "💡 功能建议 / Feature request"
+description: "提议一项新能力或改进 / Propose a new capability or an improvement"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提之前请先看 [CONTRIBUTING 的「不在范围内」清单](https://github.com/JialuXu/TitaniumSidebar/blob/main/CONTRIBUTING.md#不在范围内) —— 自动读取页面、埋点、mock 演示模式、鉴权/OCR/RAG、火狐支持、`chrome.debugger` 等都是已经决定不做的。
+
+        Please check the ["Out of scope" list in CONTRIBUTING](https://github.com/JialuXu/TitaniumSidebar/blob/main/CONTRIBUTING.md#out-of-scope) first — auto-reading the page, telemetry, demo/mock modes, auth/OCR/RAG, Firefox support and `chrome.debugger` have all been decided against.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 前置检查 / Preflight
+      options:
+        - label: "我看过「不在范围内」清单，这条不在其中 / I checked the out-of-scope list"
+          required: true
+        - label: "我搜索过现有 Issue，没有重复 / I searched existing issues for duplicates"
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决什么问题 / What problem does this solve?
+      description: "先说场景与痛点，不要直接给方案 —— 问题描述清楚了，方案往往会变 / Describe the situation and the pain first, not the solution; a clear problem often changes the solution"
+      placeholder: "我在读长报表页时，想让 AI 只看某一段，但现在只能整页读取……"
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望的方案 / Proposed solution
+      description: "如果涉及界面，描述交互；如果涉及模型，说明工具或提示词该怎么变 / Describe the interaction if it's UI; describe the tool or prompt change if it's model-facing"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: 大致涉及哪一层 / Which layer does it touch?
+      description: "不确定就选最后一项 / Pick the last option if unsure"
+      options:
+        - "感知层（快照 / 搜索 / 元素 / 表格 / 截图）/ Perception"
+        - "动作层（点击 / 输入 / 导航 / 标签页）/ Actions"
+        - "模型交互（prompt / 工具定义 / SSE）/ Model interaction"
+        - "侧边栏 UI 与外壳 / Sidebar UI and shell"
+        - "双语文案 i18n / Bilingual text"
+        - "文档 / Documentation"
+        - "不确定 / Not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 考虑过的替代方案 / Alternatives considered
+      description: "包括「现在你是怎么绕过去的」/ Including how you work around it today"
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: 你愿意实现它吗 / Would you implement it?
+      options:
+        - label: "我愿意提 PR（会先读 CONTRIBUTING 的硬性约束）/ I'm willing to open a PR (after reading the hard constraints in CONTRIBUTING)"
+          required: false

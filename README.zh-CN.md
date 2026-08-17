@@ -80,6 +80,13 @@
 | 提示「标签页已切换，请重新读取」 | 对话中途切换了标签页，点状态条「重新读取」后继续 |
 | 点击/输入没反应 | 少数站点会忽略合成事件；也可能编号已过期，让 AI 重新列一次元素再试 |
 
+## 参与贡献与安全
+
+- **贡献指南** —— [CONTRIBUTING.md](CONTRIBUTING.md)。动手前请先看硬性约束：零依赖零构建、`core/` 保持平台无关（不出现 `chrome.*`）、注入函数必须自包含、面向用户**与面向模型**的文案都要进 `core/i18n.js` 并中英双补。`main` 分支受保护，请 fork 后提 PR。
+- **行为准则** —— [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)（Contributor Covenant 2.1）。
+- **安全策略** —— [SECURITY.md](SECURITY.md)。漏洞请走 [Security 标签页的私密报告通道](https://github.com/JialuXu/TitaniumSidebar/security/advisories/new)，不要开公开 Issue。其中也写清了哪些**不算**漏洞：脱敏是正则尽力而为、截图完全不脱敏、不可逆操作的护栏停在 prompt 层面而非技术硬拦截。
+- **开源协议** —— [MIT](LICENSE)。
+
 ---
 
 Titanium · Design by Xujl
