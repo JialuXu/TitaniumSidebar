@@ -1,0 +1,18 @@
+<!-- Titanium 图标源图：暖棕圆角方 + 「Ti」字母印记，i 的点取金色呼应界面 accent。
+     三个 PNG 由此图渲染成 128 后降采样出 48/16，改图标时重跑这一步即可。 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <!-- 与面板背景同源的棕色渐晕：左上浓、右下沉 -->
+    <linearGradient id="ti-bg" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#A06B46"/>
+      <stop offset="1" stop-color="#78482E"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="29" fill="url(#ti-bg)"/>
+  <!-- T：横竖两段圆角笔画 -->
+  <rect x="26" y="34" width="52" height="13" rx="6.5" fill="#FBF7F0"/>
+  <rect x="45.5" y="34" width="13" height="60" rx="6.5" fill="#FBF7F0"/>
+  <!-- i：竖笔 + 金色点 -->
+  <rect x="88" y="54" width="13" height="40" rx="6.5" fill="#FBF7F0"/>
+  <circle cx="94.5" cy="39" r="7.5" fill="#E3AE63"/>
+</svg>
