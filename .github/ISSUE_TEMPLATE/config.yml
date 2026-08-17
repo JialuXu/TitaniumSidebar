@@ -1,0 +1,12 @@
+# 关闭空白 Issue，强制走模板（安全问题另有私密通道，见下）
+blank_issues_enabled: false
+contact_links:
+  - name: "🔒 报告安全漏洞 / Report a security vulnerability"
+    url: https://github.com/JialuXu/TitaniumSidebar/security/advisories/new
+    about: "安全问题请走私密报告通道，不要开公开 Issue。/ Report privately — do not open a public issue."
+  - name: "🛠 安装与配置排查 / Installation and setup troubleshooting"
+    url: https://github.com/JialuXu/TitaniumSidebar/blob/main/README.md#troubleshooting
+    about: "401 / 404 / 装了没有侧边栏 / CRX_REQUIRED_PROOF_MISSING 等常见问题，README 里有答案。/ Common issues are answered in the README."
+  - name: "📐 贡献前必读的硬性约束 / Hard constraints before contributing"
+    url: https://github.com/JialuXu/TitaniumSidebar/blob/main/CONTRIBUTING.md
+    about: "零依赖、core 平台无关、注入函数自包含、双语覆盖到模型侧。/ Zero dependencies, platform-independent core, self-contained injected functions, bilingual down to the model-facing text."

@@ -20,7 +20,17 @@ A lightweight Chrome / Edge extension: open a sidebar on any web page and chat w
 3. Click **Load unpacked** and select this repository's `extension/` directory
 4. Click the extension icon in the toolbar to open the sidebar
 
-> Requires Chrome / Edge 114 or newer.
+> Load the **unpacked** `extension/` directory. Do not use "Pack extension" and then drag the resulting `.crx` in — Chrome only accepts CRX files signed by the Web Store and rejects self-packed ones with `CRX_REQUIRED_PROOF_MISSING`. To roll the extension out across an organisation, force-install it through enterprise policy (`ExtensionInstallForcelist` pointing at a self-hosted update manifest) or publish it to the store as unlisted; policy-installed extensions skip that signature check.
+
+### Browser support
+
+| Browser | Requirement |
+|---|---|
+| Chrome / Chromium | **114 or newer.** The `chrome.sidePanel` API arrived in 114; the manifest declares `minimum_chrome_version: 114`, so older builds refuse to install. |
+| Microsoft Edge | **117 or newer recommended.** Edge rolled the sidebar API out to stable in stages from 115 onwards; on 114–116 the extension may install yet never show a panel. |
+| Firefox / Safari | Not supported. Neither offers the Manifest V3 side panel API, and Firefox is out of scope by design. |
+
+The extension is Manifest V3 only and uses ES2020+ with no build step or transpilation — there is no legacy fallback path. Check your build under `chrome://version` or `edge://version`.
 
 ## Configuration
 
@@ -61,12 +71,21 @@ SSO/4A authentication, a domain allowlist, gateway-side redaction and audit logs
 
 | Symptom | What to check |
 |---|---|
+| `CRX_REQUIRED_PROOF_MISSING` while installing | You packed the `.crx` yourself; Chrome only accepts store-signed packages. Load the unpacked `extension/` directory, or deploy through enterprise policy |
+| Installs fine but no sidebar opens | Your browser is below the version floor — check `chrome://version` (Chrome 114+, Edge 117+) |
 | 401 error | Verify the API key |
 | 404 error | Check that the baseUrl ends with `/v1` |
 | Network failure | Confirm the endpoint is reachable; make sure a local service is actually running |
 | "Endpoint does not support tool calling / image input, degraded" | The endpoint or model lacks that capability — this is the normal fallback; switch to one that supports it |
 | "Tab switched, please re-read" | You changed tabs mid-conversation; click **Re-read** and continue |
 | Clicks / typing have no effect | A few sites ignore synthetic events; the element numbers may also be stale — ask the AI to list the elements again and retry |
+
+## Contributing and security
+
+- **Contributing** — [CONTRIBUTING.md](CONTRIBUTING.md). Read the hard constraints first: zero dependencies and no build step, `core/` stays platform-independent (no `chrome.*`), injected functions stay self-contained, and every user- *and* model-facing string lives in `core/i18n.js` in both languages. `main` is protected, so fork and open a PR.
+- **Code of conduct** — [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) (Contributor Covenant 2.1).
+- **Security** — [SECURITY.md](SECURITY.md). Report vulnerabilities privately through the [Security tab](https://github.com/JialuXu/TitaniumSidebar/security/advisories/new), never in a public issue. It also spells out what is *not* a vulnerability here: redaction is regex best-effort, screenshots are never redacted, and the guardrail on irreversible actions is a prompt-level one, not a technical block.
+- **Licence** — [MIT](LICENSE).
 
 ---
 

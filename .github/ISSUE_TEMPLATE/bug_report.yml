@@ -1,0 +1,110 @@
+name: "🐞 Bug 报告 / Bug report"
+description: "扩展的行为与预期不符 / Something in the extension behaves incorrectly"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。**请勿在此粘贴 API Key、真实个人信息，或真实业务系统的截图** —— Issue 是公开的。
+        安全漏洞请走 [私密报告通道](https://github.com/JialuXu/TitaniumSidebar/security/advisories/new)，不要开公开 Issue。
+
+        Thanks for reporting. **Do not paste API keys, real personal data, or screenshots of live internal systems here** — issues are public.
+        For security vulnerabilities use the [private reporting channel](https://github.com/JialuXu/TitaniumSidebar/security/advisories/new) instead.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 前置检查 / Preflight
+      options:
+        - label: "我看过 README 的「Troubleshooting / 排查」表格，问题不在其中 / I checked the README troubleshooting table"
+          required: true
+        - label: "我搜索过现有 Issue，没有重复 / I searched existing issues for duplicates"
+          required: true
+        - label: "本报告不含 API Key 或真实敏感数据 / This report contains no API keys or real sensitive data"
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 扩展版本 / Extension version
+      description: "见 `extension/manifest.json` 的 version 字段，或扩展管理页 / From `extension/manifest.json` or the extensions page"
+      placeholder: "0.3.1"
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: 浏览器与版本 / Browser and version
+      description: "在 `chrome://version` 或 `edge://version` 查看 / Check `chrome://version` or `edge://version`"
+      placeholder: "Chrome 126.0.6478.127 / macOS 14.5"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: actions
+    attributes:
+      label: 「允许页面操作」当时的状态 / Was "Allow page actions" on?
+      description: "动作类问题与纯感知问题的排查路径完全不同 / Action bugs and perception bugs are diagnosed very differently"
+      options:
+        - "关闭 / Off"
+        - "开启 / On"
+        - "不确定 / Not sure"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: locale
+    attributes:
+      label: 界面语言 / Interface language
+      options:
+        - "简体中文"
+        - "English"
+        - "两种语言都能复现 / Reproduces in both"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      description: "越具体越好：什么页面、原话提示词是什么、点了哪里 / Be concrete: which page, the exact prompt, what you clicked"
+      placeholder: |
+        1. 打开 https://example.com
+        2. 在侧边栏发送「帮我总结这个页面」
+        3. ……
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: 期望结果与实际结果 / Expected vs actual
+      placeholder: |
+        期望 / Expected：状态条显示页面标题与字数
+        实际 / Actual：状态条一直停在「发送消息时将读取当前页面」
+    validations:
+      required: true
+
+  - type: textarea
+    id: console
+    attributes:
+      label: 控制台报错 / Console output
+      description: |
+        侧边栏内右键 → 检查，看 Console；service worker 的日志在扩展管理页的「service worker」链接后面。
+        Right-click inside the panel → Inspect for the panel console; service worker logs are behind the "service worker" link on the extensions page.
+        **粘贴前请自行删掉 Key 和敏感内容 / Strip keys and sensitive content before pasting.**
+      render: text
+
+  - type: input
+    id: endpoint
+    attributes:
+      label: 模型接口类型 / Endpoint type
+      description: "只需说明种类，**不要填带 Key 的完整 URL** / Kind only — **do not paste a URL containing a key**"
+      placeholder: "DeepSeek 官方 API / 自建 vLLM / Ollama qwen2.5:14b"
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 其他信息 / Anything else
+      description: "可公开的页面 URL、截图、你已经试过的排查手段 / A public page URL that reproduces it, screenshots, what you already tried"
