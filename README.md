@@ -20,7 +20,17 @@ A lightweight Chrome / Edge extension: open a sidebar on any web page and chat w
 3. Click **Load unpacked** and select this repository's `extension/` directory
 4. Click the extension icon in the toolbar to open the sidebar
 
-> Requires Chrome / Edge 114 or newer.
+> Load the **unpacked** `extension/` directory. Do not use "Pack extension" and then drag the resulting `.crx` in — Chrome only accepts CRX files signed by the Web Store and rejects self-packed ones with `CRX_REQUIRED_PROOF_MISSING`. To roll the extension out across an organisation, force-install it through enterprise policy (`ExtensionInstallForcelist` pointing at a self-hosted update manifest) or publish it to the store as unlisted; policy-installed extensions skip that signature check.
+
+### Browser support
+
+| Browser | Requirement |
+|---|---|
+| Chrome / Chromium | **114 or newer.** The `chrome.sidePanel` API arrived in 114; the manifest declares `minimum_chrome_version: 114`, so older builds refuse to install. |
+| Microsoft Edge | **117 or newer recommended.** Edge rolled the sidebar API out to stable in stages from 115 onwards; on 114–116 the extension may install yet never show a panel. |
+| Firefox / Safari | Not supported. Neither offers the Manifest V3 side panel API, and Firefox is out of scope by design. |
+
+The extension is Manifest V3 only and uses ES2020+ with no build step or transpilation — there is no legacy fallback path. Check your build under `chrome://version` or `edge://version`.
 
 ## Configuration
 
@@ -61,6 +71,8 @@ SSO/4A authentication, a domain allowlist, gateway-side redaction and audit logs
 
 | Symptom | What to check |
 |---|---|
+| `CRX_REQUIRED_PROOF_MISSING` while installing | You packed the `.crx` yourself; Chrome only accepts store-signed packages. Load the unpacked `extension/` directory, or deploy through enterprise policy |
+| Installs fine but no sidebar opens | Your browser is below the version floor — check `chrome://version` (Chrome 114+, Edge 117+) |
 | 401 error | Verify the API key |
 | 404 error | Check that the baseUrl ends with `/v1` |
 | Network failure | Confirm the endpoint is reachable; make sure a local service is actually running |

@@ -20,7 +20,17 @@
 3. 点击**加载已解压的扩展程序**，选择本仓库的 `extension/` 目录
 4. 点击工具栏中的扩展图标打开侧边栏
 
-> 要求 Chrome / Edge 版本 ≥ 114。
+> 请用**加载已解压**的方式安装 `extension/` 目录。不要用「打包扩展程序」生成 `.crx` 再拖进浏览器——Chrome 只接受由网上应用店签名的 CRX，自行打包的会以 `CRX_REQUIRED_PROOF_MISSING` 被拒绝。需要在组织内批量分发时，走企业策略强制安装（`ExtensionInstallForcelist` 指向自托管的 update manifest），或以「不公开」形式上架商店；策略安装的扩展不做这项签名校验。
+
+### 浏览器版本要求
+
+| 浏览器 | 要求 |
+|---|---|
+| Chrome / Chromium | **≥ 114。** `chrome.sidePanel` API 自 114 起提供；manifest 已声明 `minimum_chrome_version: 114`，低于此版本会直接拒绝安装。 |
+| Microsoft Edge | **建议 ≥ 117。** Edge 从 115 起分批向稳定版推送侧边栏 API，114–116 上可能装得上却始终不显示面板。 |
+| Firefox / Safari | 不支持。两者均无 Manifest V3 侧边栏 API，且火狐本就不在本方案覆盖范围内。 |
+
+本扩展仅支持 Manifest V3，代码为 ES2020+ 且无构建、无转译，不提供任何低版本降级路径。可在 `chrome://version` 或 `edge://version` 查看当前版本。
 
 ## 配置
 
@@ -61,6 +71,8 @@
 
 | 现象 | 排查 |
 |---|---|
+| 安装时提示 `CRX_REQUIRED_PROOF_MISSING` | 自行打包的 `.crx` 不被接受，Chrome 只认商店签名的包。改用「加载已解压」安装 `extension/` 目录，或通过企业策略分发 |
+| 装上了但打不开侧边栏 | 浏览器版本低于要求，在 `chrome://version` 确认（Chrome ≥ 114、Edge ≥ 117） |
 | 401 错误 | 检查 API Key 是否正确 |
 | 404 错误 | 检查 baseUrl 是否以 `/v1` 结尾 |
 | 网络失败 | 检查接口地址可达性；本地服务确认已启动 |
