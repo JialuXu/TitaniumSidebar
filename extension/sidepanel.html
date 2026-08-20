@@ -15,8 +15,26 @@
   HTML 里保留中文原文，只是为了「未执行 JS 时也能看懂」，运行时一定会被覆写。
 -->
 <body>
-  <!-- 头部操作行：新对话胶囊 + 设置圆钮，右对齐（产品名由浏览器侧边栏自带标题栏展示，不再重复） -->
+  <!-- 头部操作行：左侧页面胶囊 + 右侧新对话胶囊与设置圆钮（产品名由浏览器侧边栏自带标题栏展示，不再重复） -->
   <div class="panel-header">
+    <!-- 历史会话钮：与右侧设置钮同款圆钮，点开下方浮层列出已保存的会话 -->
+    <button id="btn-history" class="round-btn" type="button" data-i18n-title="ui.history" title="历史会话" aria-haspopup="dialog" aria-expanded="false">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M2.6 8a5.4 5.4 0 1 0 1.6-3.8"/>
+        <path d="M2.6 1.9v2.6h2.6"/>
+        <path d="M8 5v3l2.2 1.3"/>
+      </svg>
+    </button>
+    <!-- 页面胶囊：读取状态全部收在这一个按钮里，未读取过时整颗隐藏；点开才看详情 -->
+    <button id="btn-context" class="ctx-chip" type="button" hidden aria-haspopup="dialog" aria-expanded="false">
+      <svg class="ctx-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/>
+        <path d="M15 2v5h5"/>
+        <path d="M16 13H8M16 17H8"/>
+      </svg>
+      <span id="ctx-chip-text" class="ctx-chip-text"></span>
+      <span id="ctx-dot" class="ctx-dot" hidden></span>
+    </button>
     <button id="btn-new-chat" class="pill-btn" type="button">
       <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
         <path d="M8 3.2v9.6M3.2 8h9.6"/>
@@ -31,32 +49,23 @@
     </button>
   </div>
 
-  <!-- 上下文状态卡：读取状态 / 页面标题与字数 / 脱敏徽标 / 重新读取；空闲态整卡隐藏 -->
-  <div id="context-wrap" class="context-wrap" hidden>
-    <div class="context-card">
-      <svg class="ctx-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/>
-        <path d="M15 2v5h5"/>
-        <path d="M16 13H8M16 17H8"/>
-      </svg>
-      <span id="ctx-caret" class="ctx-caret" hidden>▸</span>
-      <span id="ctx-text" class="ctx-text">发送消息时将读取当前页面</span>
-      <span id="ctx-badge" class="ctx-badge" hidden></span>
-      <button id="btn-refresh" class="ctx-btn" type="button" hidden>
-        <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/>
-          <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>
-        </svg>
-        <span data-i18n="ui.ctxReRead">重新读取</span>
-      </button>
+  <!-- 历史会话浮层：与页面胶囊浮层同一形态（fixed 覆盖消息流，不占布局），点外部或 Esc 收起；
+       行内容由 sidepanel.js 渲染 -->
+  <div id="history-pop" class="history-pop" role="dialog" data-i18n-aria="ui.history" aria-label="历史会话" hidden>
+    <div class="history-pop-head">
+      <span data-i18n="ui.history">历史会话</span>
+      <button id="btn-clear-history" class="history-clear" type="button" data-i18n="ui.historyClearAll" hidden>清空全部</button>
     </div>
+    <div id="history-list" class="history-list"></div>
+  </div>
 
-    <!-- 已读取内容详情：点击状态卡展开，再次点击折叠 -->
-    <div id="ctx-detail" class="ctx-detail">
-      <div class="ctx-detail-meta"><span id="ctx-detail-url"></span></div>
-      <div id="ctx-detail-outline" class="ctx-detail-outline" hidden></div>
-      <div id="ctx-detail-text" class="ctx-detail-text"></div>
-    </div>
+  <!-- 已读取内容详情：点页面胶囊展开的浮层，覆盖在消息流之上，不占布局高度 -->
+  <div id="ctx-detail" class="ctx-detail" role="dialog" hidden>
+    <div id="ctx-detail-title" class="ctx-detail-title"></div>
+    <div class="ctx-detail-meta"><span id="ctx-detail-url"></span></div>
+    <div id="ctx-detail-stats" class="ctx-detail-stats"></div>
+    <div id="ctx-detail-outline" class="ctx-detail-outline" hidden></div>
+    <div id="ctx-detail-text" class="ctx-detail-text"></div>
   </div>
 
   <!-- 技能建议条：当前标签页 URL 命中技能名单且无激活技能时显示；行内容由 sidepanel.js 渲染 -->
@@ -146,7 +155,7 @@
         <button id="btn-save" class="primary-btn" type="button" data-i18n="ui.cfgSave">保存</button>
       </div>
       <div id="test-result" class="test-result"></div>
-      <div class="credit">Titanium v0.4.0</div>
+      <div class="credit">Titanium v0.5.0</div>
     </div>
   </aside>
 

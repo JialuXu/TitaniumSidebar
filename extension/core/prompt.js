@@ -26,17 +26,44 @@ export function buildSystemPrompt({ tools = false, vision = false, actions = fal
 }
 
 /**
+ * 组装压缩上下文（/compact）那一轮的 system prompt。
+ * 这一轮不注册 tools，因此不拼任何提及工具名的段落；与普通问答不同，
+ * 摘要提示词可以规定摘要须覆盖的要点（普通问答仍不规定输出模板）。
+ * @param {string} [instruction] 用户随命令给出的摘要指示（如 `/compact 只保留财报数字`）
+ */
+export function buildCompactPrompt(instruction = '') {
+  let prompt = t('prompt.compact');
+  if (instruction) prompt += '\n' + t('prompt.compactInstruction', { instruction });
+  return prompt;
+}
+
+/**
  * 组装用户消息内容：带页面内容时包 <页面内容> 标签（结构骨架紧随其后），
- * 否则原样返回用户输入。同一会话只有首条消息（或「重新读取」后的下一条）携带。
+ * 否则原样返回用户输入。每条消息发送前都会比对页面，只有内容确实变化时才重新携带；
+ * 页面没变的消息原样返回，历史里那一份继续有效。
  * 标签名随语言变化（中文 <页面内容>，英文 <page_content>），与 prompt 里的写法一致。
  * @param {string} userInput 用户输入
  * @param {string|null} pageText 脱敏后的页面文本，null 表示不携带
  * @param {string|null} [outlineText] 脱敏后的结构骨架文本，可缺省
+ * @param {string} [lead] 页面块之前的一句说明（如「用户已切换到新页面」），可缺省
  */
-export function buildUserContent(userInput, pageText, outlineText) {
+export function buildUserContent(userInput, pageText, outlineText, lead) {
   if (!pageText) return userInput;
   const cTag = t('tag.content');
   const oTag = t('tag.outline');
+  const leadBlock = lead ? `${lead}\n\n` : '';
   const outlineBlock = outlineText ? `<${oTag}>\n${outlineText}\n</${oTag}>\n\n` : '';
-  return `<${cTag}>\n${pageText}\n</${cTag}>\n\n${outlineBlock}${userInput}`;
+  return `${leadBlock}<${cTag}>\n${pageText}\n</${cTag}>\n\n${outlineBlock}${userInput}`;
+}
+
+/**
+ * 组装「页面有小幅变化」的用户消息：只带差异摘要，不重发全文。
+ * 用于同一网址下页面内容被改动（用户翻页/展开、AI 操作了页面）的场景——
+ * 全文重发一次就是上万字符，而差异通常只有几十行。
+ * @param {string} userInput 用户输入
+ * @param {string} diffText formatTextDiff 产出的变化摘要
+ */
+export function buildPageUpdate(userInput, diffText) {
+  const uTag = t('tag.update');
+  return `<${uTag}>\n${diffText}\n</${uTag}>\n\n${userInput}`;
 }
