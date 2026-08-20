@@ -9,13 +9,17 @@ import {
   buildToolDefs, dispatchToolCall, MAX_TOOL_ROUNDS, MAX_ACTION_ROUNDS, WRITE_TOOL_NAMES,
 } from './core/tools.js';
 import { annotateScreenshot } from './core/annotate.js';
-import { formatOutline } from './core/format.js';
+import { formatOutline, formatTextDiff } from './core/format.js';
 import { maskSensitive } from './core/masker.js';
-import { buildSystemPrompt, buildUserContent } from './core/prompt.js';
+import { buildSystemPrompt, buildUserContent, buildPageUpdate, buildCompactPrompt } from './core/prompt.js';
+import { parseCompactCommand, buildCompactState, compactRequestTail } from './core/compact.js';
 import { streamChat, testConnection, LlmError } from './core/llm-client.js';
 import { renderMarkdown } from './core/markdown.js';
 import { verifyQuote } from './core/citation.js';
 import { listSkills, matchSkillsByUrl, hostOfUrl } from './core/skills.js';
+import {
+  createHistoryStore, newSessionId, deriveSessionTitle, countTurns, HISTORY_RECORD_VERSION,
+} from './core/history.js';
 import {
   t, setLocale, detectLocale, injectedStrings, LOCALES, LOCALE_LABELS, HTML_LANG,
 } from './core/i18n.js';
@@ -29,7 +33,14 @@ const storage = {
   async set(key, value) {
     await chrome.storage.local.set({ [key]: value });
   },
+  // 历史会话的删除/淘汰需要真正移除键（set undefined 删不掉），接口在 get/set 之外多一个 remove
+  async remove(key) {
+    await chrome.storage.local.remove(key);
+  },
 };
+
+// 历史会话存储：索引与记录分键存放，超过 50 条自动淘汰最旧（见 core/history.js）
+const historyStore = createHistoryStore(storage, { maxSessions: 50 });
 
 /* ========== 全局状态 ========== */
 const DEFAULT_CONFIG = {
@@ -39,6 +50,11 @@ const DEFAULT_CONFIG = {
   actionsEnabled: false, // 允许页面操作（点击/输入/跳转），默认关闭
   locale: '',            // 界面与模型文案的语言；空串=跟随浏览器（首次启动时判定）
 };
+
+// 模型「已经看到的页面」的初值：text 为空表示还没给模型看过任何页面内容
+function initialSentPage() {
+  return { text: '', outline: '', url: '', title: '', diffChars: 0 };
+}
 
 function initialPage() {
   return {
@@ -54,8 +70,6 @@ function initialPage() {
     // 因此「浏览器激活页 === 工作页」这一不变式始终成立，守卫逻辑无需改动。
     tabId: null,
     hits: null,              // 脱敏命中计数 { idCard, bankCard, phone }，未开脱敏为 null
-    injected: false,         // 页面内容是否已注入过消息历史（同会话不重复注入）
-    refreshRequested: false, // 用户点了「重新读取」或页面已跳转，下一条消息重新提取
   };
 }
 
@@ -65,13 +79,29 @@ const state = {
   // displayContent 只存用户敲入的原话用于渲染（不把 12000 字页面文本刷进 UI）。
   // 工具调用轮次会追加 assistant(tool_calls)/tool/截图跟随消息，`_` 前缀字段发请求前剔除。
   messages: [],
-  page: initialPage(),
-  // phase: idle | streaming；plusMenuView: root 根菜单 | skills 技能二级列表（菜单关闭时复位）
-  ui: { phase: 'idle', autoScroll: true, ctxExpanded: false, plusMenuOpen: false, plusMenuView: 'root' },
+  page: initialPage(),           // 当前页面的最新快照（面板展示、引用校验、ref 映射的依据）
+  // 模型「已经看到的页面」：每条消息发送前拿它与最新快照比对，决定是不带、带差异还是带全文。
+  // 与 state.page 分开是必需的——AI 操作导致跳转时 state.page 已换成新页，
+  // 而模型手上还是旧页，只有这一份记录能判断出「该给模型新内容了」。
+  sentPage: initialSentPage(),
+  // 压缩上下文（/compact）：{ summary, boundary } 或 null。
+  // summary 是包好标签的整段摘要（语言在压缩那一刻定死），boundary 是压缩点在 messages 中的下标；
+  // 之后的请求只带「摘要 + slice(boundary)」，可见消息数组不删不改。会话属性，随会话保存/清空。
+  compact: null,
+  // phase: idle | streaming | compacting；plusMenuView: root 根菜单 | skills 技能二级列表（菜单关闭时复位）
+  ui: {
+    phase: 'idle', autoScroll: true, ctxExpanded: false,
+    plusMenuOpen: false, plusMenuView: 'root',
+    historyOpen: false, // 历史会话浮层是否展开（与页面胶囊浮层互斥）
+  },
   abortController: null,
   toolsBroken: false, // 接口不支持 tools（收到过 400/422），本会话降级纯文本；保存配置时重置
   lastCitation: '', // 点击引用徽标暂存的原文（生产版可扩展为定位高亮）
   skillId: null, // 会话级激活技能 id：不入 config、不持久化，「新对话」清空
+  // 历史会话身份：sessionId 为 null 表示当前会话还没落过库（首次保存时生成）。
+  // 每个回合收尾自动保存一次；「新对话」把身份清空，下一段会话另起一条记录。
+  sessionId: null,
+  sessionCreatedAt: 0,
   // URL 建议：items 为当前命中的 [{ id, host }]；dismissed 记「host|skillId」，本会话不再建议
   suggest: { items: [], dismissed: new Set() },
 };
@@ -79,11 +109,13 @@ const state = {
 /* ========== DOM 引用 ========== */
 const els = {};
 [
-  'btn-new-chat', 'btn-settings', 'context-wrap', 'ctx-text', 'ctx-badge', 'btn-refresh',
-  'ctx-caret', 'ctx-detail', 'ctx-detail-url', 'ctx-detail-outline', 'ctx-detail-text',
+  'btn-new-chat', 'btn-settings', 'btn-context', 'ctx-chip-text', 'ctx-dot',
+  'ctx-detail', 'ctx-detail-title', 'ctx-detail-url', 'ctx-detail-stats',
+  'ctx-detail-outline', 'ctx-detail-text',
   'chat', 'welcome', 'config-hint', 'btn-goto-settings', 'input', 'btn-send',
   'btn-plus', 'plus-menu',
   'skill-suggest', 'skill-chip', 'skill-chip-name', 'skill-chip-remove',
+  'btn-history', 'history-pop', 'history-list', 'btn-clear-history',
   'settings-mask', 'settings', 'btn-close-settings', 'cfg-locale', 'cfg-baseurl', 'cfg-model',
   'cfg-apikey', 'cfg-mask', 'cfg-vision', 'cfg-actions', 'btn-test', 'btn-save', 'test-result',
 ].forEach((id) => {
@@ -127,11 +159,13 @@ function applyLocale(loc) {
   document.documentElement.lang = HTML_LANG[resolved];
   applyStaticI18n();
   els.cfgLocale.value = resolved;
-  updateContextBar();
+  updateContextChip();
   updateComposer();
   renderPlusMenu();
   renderSkillChip();
   renderSkillSuggest();
+  // 历史浮层开着才重渲（列表要读存储，没开就不白读一次）；消息流里的历史内容保持原语言
+  if (state.ui.historyOpen) renderHistoryList();
 }
 
 /* ========== 配置 ========== */
@@ -199,69 +233,65 @@ function describeError(err) {
   return t('err.unknown', { message: (err && err.message) || String(err) });
 }
 
-/* ========== 上下文状态条 ========== */
-// 英文标题同宽度下字数更多，上限相应放宽
-function truncateTitle(title, max = document.documentElement.lang === 'en' ? 34 : 22) {
+/* ========== 顶部页面胶囊（读取状态的唯一出口） ========== */
+// 胶囊很窄，标题上限相应收紧；英文同宽度下字数更多
+function truncateTitle(title, max = document.documentElement.lang === 'en' ? 26 : 16) {
   if (!title) return t('ui.untitled');
   return title.length > max ? title.slice(0, max) + '…' : title;
 }
 
-// 展开/折叠「已读取内容」详情面板（仅 status 为 ok 时可展开）
+// 展开/折叠「已读取内容」浮层（仅 status 为 ok 时可展开）
 function setCtxExpanded(expanded) {
   state.ui.ctxExpanded = expanded && state.page.status === 'ok';
-  els.ctxDetail.classList.toggle('open', state.ui.ctxExpanded);
-  els.ctxCaret.classList.toggle('open', state.ui.ctxExpanded);
+  els.ctxDetail.hidden = !state.ui.ctxExpanded;
+  els.btnContext.classList.toggle('open', state.ui.ctxExpanded);
+  els.btnContext.setAttribute('aria-expanded', String(state.ui.ctxExpanded));
 }
 
-function updateContextBar(transient) {
+// 读取状态全部收在这颗胶囊里：没读过整颗隐藏，读过只留标题，其余细节点开才看。
+// 没有「重新读取」按钮——重新读取由发送前的自动比对负责（见 syncPageForSend）。
+function updateContextChip(transient) {
   const { page } = state;
-  // 空闲态（尚未发过消息）整卡隐藏，读取中/已读取/不可读时才显示
-  els.contextWrap.hidden =
-    transient !== 'reading' && page.status !== 'ok' && page.status !== 'unreadable';
-  els.ctxBadge.hidden = true;
-  els.btnRefresh.hidden = true;
-  els.ctxCaret.hidden = true;
-  els.ctxText.classList.remove('clickable');
+  const reading = transient === 'reading';
+  els.btnContext.hidden = !reading && page.status !== 'ok' && page.status !== 'unreadable';
+  els.btnContext.classList.toggle('reading', reading);
+  els.btnContext.classList.toggle('muted', !reading && page.status !== 'ok');
+  els.btnContext.disabled = page.status !== 'ok' || reading;
+  els.ctxDot.hidden = true;
 
-  if (transient === 'reading') {
-    els.ctxText.textContent = t('ui.ctxReading');
+  if (reading) {
+    els.ctxChipText.textContent = t('ui.ctxReading');
+    els.btnContext.title = '';
     setCtxExpanded(false);
     return;
   }
 
-  const suffix = page.refreshRequested ? t('ui.ctxRefreshSuffix') : '';
+  if (page.status !== 'ok') {
+    els.ctxChipText.textContent = t('ui.ctxUnreadable');
+    els.btnContext.title = '';
+    setCtxExpanded(false);
+    return;
+  }
 
-  if (page.status === 'ok') {
-    const elements = page.elementCount ? t('ui.ctxElements', { n: page.elementCount }) : '';
-    els.ctxText.textContent = t('ui.ctxRead', {
-      title: truncateTitle(page.title), chars: page.maskedText.length, elements, suffix,
-    });
-    els.ctxText.title = t('ui.ctxTitleHint', { title: page.title || '' });
-    els.ctxText.classList.add('clickable');
-    els.ctxCaret.hidden = false;
-    els.btnRefresh.hidden = false;
-    // 详情面板内容与当前读取结果保持同步（textContent 赋值，无注入风险）
-    els.ctxDetailUrl.textContent = page.url;
-    els.ctxDetailOutline.textContent = page.outlineText;
-    els.ctxDetailOutline.hidden = !page.outlineText;
-    els.ctxDetailText.textContent = page.maskedText;
-    setCtxExpanded(state.ui.ctxExpanded); // 内容更新后维持原展开状态
-    const hits = page.hits;
-    const total = hits ? hits.idCard + hits.bankCard + hits.phone : 0;
-    if (total > 0) {
-      els.ctxBadge.textContent = t('ui.maskBadge', { n: total });
-      els.ctxBadge.title = t('ui.maskBadgeTitle', hits);
-      els.ctxBadge.hidden = false;
-    }
-  } else if (page.status === 'unreadable') {
-    els.ctxText.textContent = t('ui.ctxUnreadable', { suffix });
-    els.ctxText.title = '';
-    els.btnRefresh.hidden = false;
-    setCtxExpanded(false);
-  } else {
-    els.ctxText.textContent = t('ui.ctxIdle');
-    els.ctxText.title = '';
-    setCtxExpanded(false);
+  els.ctxChipText.textContent = truncateTitle(page.title);
+  els.btnContext.title = t('ui.ctxChipTitle', { title: page.title || '' });
+  // 浮层内容与当前读取结果保持同步（textContent 赋值，无注入风险）
+  els.ctxDetailTitle.textContent = page.title || t('ui.untitled');
+  els.ctxDetailUrl.textContent = t('ui.ctxReadFrom', { url: page.url });
+  els.ctxDetailStats.textContent = t('ui.ctxMeta', {
+    chars: page.maskedText.length, n: page.elementCount,
+  });
+  els.ctxDetailOutline.textContent = page.outlineText;
+  els.ctxDetailOutline.hidden = !page.outlineText;
+  els.ctxDetailText.textContent = page.maskedText;
+  setCtxExpanded(state.ui.ctxExpanded); // 内容更新后维持原展开状态
+
+  const hits = page.hits;
+  const total = hits ? hits.idCard + hits.bankCard + hits.phone : 0;
+  if (total > 0) {
+    els.ctxDot.title = t('ui.maskBadgeTitle', hits);
+    els.ctxDot.hidden = false;
+    els.ctxDetailStats.textContent += ` · ${t('ui.maskBadge', { n: total })}`;
   }
 }
 
@@ -308,16 +338,19 @@ async function injectFunc(tabId, func, args) {
 async function snapshotCurrentTab() {
   const tab = await getActiveTab();
   if (!tab) return null;
+  // 每条消息发送前都会走这里重读一次。仍是同一标签页的同一网址时按指纹继承旧编号，
+  // 模型在会话中已经见过的 ref 才不会因为一次例行重读而集体作废；换了页面则干净重编。
+  const inheritRefs = tab.id === state.page.tabId && tab.url === state.page.url;
   const result = await injectFunc(tab.id, snapshotPage, {
-    mode: 'full', maxTextLen: 12000, maxElements: 1500, i18n: injectedStrings(),
+    mode: 'full', maxTextLen: 12000, maxElements: 1500, inheritRefs, i18n: injectedStrings(),
   });
   if (!result || !result.ok || !result.text) return null;
   return { ...result, tabId: tab.id };
 }
 
 // 把一次 full 快照写入 state.page（脱敏 + 命中合并）。
-// 首条消息的读取与动作导致跳转后的重建共用这一份，避免两处规则漂移。
-function applySnapshot(snap, tabId, { refreshRequested = false } = {}) {
+// 发送前的例行重读与动作导致跳转后的重建共用这一份，避免两处规则漂移。
+function applySnapshot(snap, tabId) {
   // 文本与结构骨架都走文本通道，发给模型前必须一并脱敏；命中数合并计入徽标
   const outlineRaw = formatOutline(snap.outline);
   const maskOn = state.config.maskEnabled;
@@ -339,8 +372,6 @@ function applySnapshot(snap, tabId, { refreshRequested = false } = {}) {
           phone: textRes.hits.phone + outlineRes.hits.phone,
         }
       : null,
-    injected: true,
-    refreshRequested,
   };
 }
 
@@ -393,24 +424,24 @@ async function waitForTabComplete(tabId, timeoutMs) {
 }
 
 // 页面已跳转：全量重建快照并整体更新 state.page。
-// 刻意置 refreshRequested——新页全文不在本回合塞给模型（回合内 token 会爆），
-// 而是复用既有的「重新读取」机制，由下一条用户消息携带。
+// 新页全文刻意不在本回合塞给模型（回合内 token 会爆，tool 消息对之间也插不进 user 消息），
+// 而是留给下一条用户消息——那时 state.sentPage 与新页网址不符，自动携带新页全文。
 async function rebuildPageAfterNavigation(tab) {
   if (!tab || !tab.id || isRestrictedUrl(tab.url)) {
-    state.page = { ...state.page, status: 'unreadable', tabId: tab && tab.id ? tab.id : state.page.tabId, refreshRequested: true };
-    updateContextBar();
+    state.page = { ...state.page, status: 'unreadable', tabId: tab && tab.id ? tab.id : state.page.tabId };
+    updateContextChip();
     return { navigated: true, restricted: true };
   }
   const snap = await injectFunc(tab.id, snapshotPage, {
     mode: 'full', maxTextLen: 12000, maxElements: 1500, i18n: injectedStrings(),
   });
   if (!snap || !snap.ok) {
-    state.page = { ...state.page, status: 'unreadable', tabId: tab.id, refreshRequested: true };
-    updateContextBar();
+    state.page = { ...state.page, status: 'unreadable', tabId: tab.id };
+    updateContextChip();
     return { navigated: true, restricted: true };
   }
-  applySnapshot(snap, tab.id, { refreshRequested: true });
-  updateContextBar();
+  applySnapshot(snap, tab.id);
+  updateContextChip();
   return {
     navigated: true, title: snap.title, url: snap.url,
     viewport: snap.viewport, stats: snap.stats,
@@ -509,7 +540,7 @@ const provider = {
     const snap = await refreshedElements(tab);
     // captureVisibleTab 配额约 2 次/秒，间隔不足时补足等待
     const wait = 600 - (Date.now() - lastCaptureAt);
-    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    if (wait > 0) await sleep(wait);
     let raw;
     try {
       raw = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
@@ -653,6 +684,24 @@ function showErrorIn(root, text) {
   root.appendChild(div);
 }
 
+// 流程提示行：直接进消息流（不属于任何一条消息），一行浅色小字交代
+// 「这条消息重新读了页面」「已压缩此前对话」这类过程事实。返回节点供调用方后续改写。
+function appendFlowNote(text) {
+  const div = document.createElement('div');
+  div.className = 'flow-note';
+  div.textContent = text;
+  els.chat.appendChild(div);
+  return div;
+}
+
+// 不挂在任何消息上的错误行（如压缩失败）：与消息内错误同款样式，独立成行
+function appendFlowError(text) {
+  const div = document.createElement('div');
+  div.className = 'msg-error standalone';
+  div.textContent = text;
+  els.chat.appendChild(div);
+}
+
 // 一次性提示条（接口不支持 tools/图片时的降级说明）
 function appendNote(root, text) {
   const div = document.createElement('div');
@@ -778,75 +827,111 @@ function describeToolActivity(name, args, phase, data = {}) {
   }
 }
 
+// 引用块出处校验：命中给定页面文本的引用卡片加「来自当前页面」徽标。
+// 实时回合对照 state.page.maskedText，历史回放对照恢复出来的 sentPage 文本。
+function applyQuoteBadges(target, pageText) {
+  if (!pageText) return;
+  target.querySelectorAll('blockquote').forEach((bq) => {
+    const quoteText = bq.textContent.trim();
+    if (!verifyQuote(quoteText, pageText)) return; // 未命中不背书
+    bq.classList.add('quote-verified');
+    const badge = document.createElement('button');
+    badge.type = 'button';
+    badge.className = 'quote-badge';
+    badge.textContent = t('ui.quoteBadge');
+    badge.title = t('ui.quoteBadgeTitle');
+    badge.addEventListener('click', () => {
+      state.lastCitation = quoteText;
+      badge.textContent = t('ui.quoteStashed');
+      setTimeout(() => { badge.textContent = t('ui.quoteBadge'); }, 1200);
+    });
+    bq.prepend(badge);
+  });
+}
+
+// 操作行：复制全文（有正文才有）+ 重新生成（只挂在最后一条 AI 回复上，先清掉旧的）
+function appendMessageActions(root, contentText, withRegen) {
+  if (withRegen) els.chat.querySelectorAll('.btn-regen').forEach((b) => b.remove());
+  const actions = document.createElement('div');
+  actions.className = 'msg-actions';
+  if (contentText) {
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.textContent = t('ui.copyAll');
+    copyBtn.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(contentText).catch(() => {});
+      copyBtn.textContent = t('ui.copied');
+      setTimeout(() => { copyBtn.textContent = t('ui.copyAll'); }, 1200);
+    });
+    actions.appendChild(copyBtn);
+  }
+  if (withRegen) {
+    const regenBtn = document.createElement('button');
+    regenBtn.type = 'button';
+    regenBtn.className = 'btn-regen';
+    regenBtn.textContent = t('ui.regenerate');
+    regenBtn.addEventListener('click', handleRegenerate);
+    actions.appendChild(regenBtn);
+  }
+  root.appendChild(actions);
+}
+
 // 流结束后的收尾：引用块出处校验 + 操作行。
 // 徽标必须在流结束后一次性插入——流式过程中每帧全量重渲会把它抹掉。
 // contentEl 为最终回答所在的正文段（工具轮次会产生多段，只校验最后一段）。
 function finalizeAssistant(el, msgObj, contentEl) {
   const target = contentEl || el.content;
   if (msgObj.content && state.page.status === 'ok') {
-    target.querySelectorAll('blockquote').forEach((bq) => {
-      const quoteText = bq.textContent.trim();
-      if (!verifyQuote(quoteText, state.page.maskedText)) return; // 未命中不背书
-      bq.classList.add('quote-verified');
-      const badge = document.createElement('button');
-      badge.type = 'button';
-      badge.className = 'quote-badge';
-      badge.textContent = t('ui.quoteBadge');
-      badge.title = t('ui.quoteBadgeTitle');
-      badge.addEventListener('click', () => {
-        state.lastCitation = quoteText;
-        badge.textContent = t('ui.quoteStashed');
-        setTimeout(() => { badge.textContent = t('ui.quoteBadge'); }, 1200);
-      });
-      bq.prepend(badge);
-    });
+    applyQuoteBadges(target, state.page.maskedText);
   }
-
-  // 操作行：复制全文 + 重新生成（重新生成只对最后一条 AI 回复有意义，先清掉旧的）
-  els.chat.querySelectorAll('.btn-regen').forEach((b) => b.remove());
-  const actions = document.createElement('div');
-  actions.className = 'msg-actions';
-  if (msgObj.content) {
-    const copyBtn = document.createElement('button');
-    copyBtn.type = 'button';
-    copyBtn.textContent = t('ui.copyAll');
-    copyBtn.addEventListener('click', async () => {
-      await navigator.clipboard.writeText(msgObj.content).catch(() => {});
-      copyBtn.textContent = t('ui.copied');
-      setTimeout(() => { copyBtn.textContent = t('ui.copyAll'); }, 1200);
-    });
-    actions.appendChild(copyBtn);
-  }
-  const regenBtn = document.createElement('button');
-  regenBtn.type = 'button';
-  regenBtn.className = 'btn-regen';
-  regenBtn.textContent = t('ui.regenerate');
-  regenBtn.addEventListener('click', handleRegenerate);
-  actions.appendChild(regenBtn);
-  el.root.appendChild(actions);
+  appendMessageActions(el.root, msgObj.content, true);
 }
 
 /* ========== 发送与流式 ========== */
 // caps 与本轮请求是否带 tools 保持一致，system prompt 才不会指引模型调用不存在的工具
+// 会话中页面可能被重新读取多次；历史里只保留最新的那一份全文，
+// 更早的全文与差异摘要统一压成一行占位——与截图的 stripImagesFromHistory 同一思路，
+// 都是「历史只留最新那一份大块内容」的 token 控制。占位里保留标题，出处仍然可追。
+function collapseSupersededPages() {
+  let lastFull = -1;
+  state.messages.forEach((m, i) => { if (m._page === 'full') lastFull = i; });
+  if (lastFull <= 0) return;
+  for (let i = 0; i < lastFull; i++) {
+    const m = state.messages[i];
+    if (!m._page) continue;
+    m.content = `${t('sys.pageSuperseded', { title: m._pageTitle || '' })}\n\n${m.displayContent || ''}`;
+    delete m._page; // 压过一次就不再重复处理（每轮请求都会调用本函数）
+  }
+}
+
+// 消息数组 → 出网形态：剔除界面辅助字段，丢掉不该进请求的空回复。
+// 必须在压缩裁剪之后调用——boundary 是原始数组的下标，先过滤会让下标漂移。
+function sanitizeMessages(messages) {
+  return messages
+    // 失败的空回复不进入请求；带 tool_calls 而 content 为空的 assistant 必须保留（历史断链会 400）
+    .filter((m) => m.role !== 'assistant' || m.content || (m.tool_calls && m.tool_calls.length))
+    .map((m) => {
+      const out = { role: m.role, content: m.content };
+      if (m.tool_calls) out.tool_calls = m.tool_calls;
+      if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
+      return out; // displayContent 与 `_` 前缀内部字段不出网
+    });
+}
+
 function buildRequestMessages(caps) {
+  collapseSupersededPages();
   return [
     { role: 'system', content: buildSystemPrompt(caps || { tools: false, vision: false, skill: null }) },
-    ...state.messages
-      // 失败的空回复不进入请求；带 tool_calls 而 content 为空的 assistant 必须保留（历史断链会 400）
-      .filter((m) => m.role !== 'assistant' || m.content || (m.tool_calls && m.tool_calls.length))
-      .map((m) => {
-        const out = { role: m.role, content: m.content };
-        if (m.tool_calls) out.tool_calls = m.tool_calls;
-        if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
-        return out; // displayContent 与 `_` 前缀内部字段不出网
-      }),
+    // 压缩过的会话只带「摘要 + 压缩点之后的新消息」；未压缩时原样带全部历史
+    ...sanitizeMessages(compactRequestTail(state.messages, state.compact)),
   ];
 }
 
+// 「发送 / 停止」按钮：流式产文与压缩摘要都算进行中，两者共用同一个中止槽位
 function updateComposer() {
-  const streaming = state.ui.phase === 'streaming';
-  els.btnSend.textContent = t(streaming ? 'ui.stop' : 'ui.send');
-  els.btnSend.classList.toggle('stop', streaming);
+  const busy = state.ui.phase !== 'idle';
+  els.btnSend.textContent = t(busy ? 'ui.stop' : 'ui.send');
+  els.btnSend.classList.toggle('stop', busy);
 }
 
 // 把历史中的截图消息替换为占位文本，返回是否有替换。
@@ -957,7 +1042,9 @@ async function runAgentLoop(el) {
       state.messages.push(msgObj);
       const aborted = streamError instanceof LlmError && streamError.kind === 'abort';
       if (streamError && !aborted) {
-        showErrorIn(el.root, describeError(streamError)); // 中止不算错误，保留已生成部分
+        // 中止不算错误，保留已生成部分；错误文案同时落在消息上，历史回放时原样重现
+        msgObj._error = describeError(streamError);
+        showErrorIn(el.root, msgObj._error);
       } else if (!acc && !streamError) {
         seg.textContent = '';
         const note = document.createElement('p');
@@ -989,15 +1076,14 @@ async function runAgentLoop(el) {
         continue;
       }
       if (batchBroken) {
+        const skipText = t('ui.skipNavigated', { name: call.name });
         state.messages.push({
           role: 'tool', tool_call_id: call.id,
           content: t('sys.batchBroken'),
+          // 活动行文案随消息落库：历史回放时不必重算当时的界面（_ 前缀字段不出网）
+          _ui: { text: skipText, ok: false, action: isAction },
         });
-        settleToolActivity(
-          appendToolActivity(el.root, '', isAction),
-          t('ui.skipNavigated', { name: call.name }),
-          false
-        );
+        settleToolActivity(appendToolActivity(el.root, '', isAction), skipText, false);
         continue;
       }
       let argsForUi = null;
@@ -1014,11 +1100,10 @@ async function runAgentLoop(el) {
         state.messages.push(followUpMessage);
         attachShotThumbnail(row, followUpMessage);
       }
-      settleToolActivity(
-        row,
-        describeToolActivity(call.name, meta.args || argsForUi, meta.ok ? 'done' : 'fail', meta.data),
-        meta.ok
-      );
+      const doneText = describeToolActivity(call.name, meta.args || argsForUi, meta.ok ? 'done' : 'fail', meta.data);
+      settleToolActivity(row, doneText, meta.ok);
+      // 定稿的活动行文案随 tool 消息落库，历史回放据此重建一模一样的活动行
+      toolMessage._ui = { text: doneText, ok: meta.ok, action: isAction };
       if (meta.data && meta.data.navigated) batchBroken = true;
       maybeScroll();
     }
@@ -1048,6 +1133,9 @@ async function runAgentLoop(el) {
   state.ui.phase = 'idle';
   updateComposer();
   maybeScroll();
+
+  // 回合收尾自动落库：正常结束、报错、中止都算——用户消息与已产出的内容都不该丢
+  await persistSession();
 }
 
 // 截图缩略图：挂在活动行下方，点击展开/收起大图
@@ -1064,6 +1152,84 @@ function attachShotThumbnail(row, followUpMessage) {
   row.insertAdjacentElement('afterend', img);
 }
 
+/* ========== 发送前的页面同步（自动完成，用户不需要点任何按钮） ========== */
+
+// 会话中累计的差异摘要上限：超过这个量说明页面已经改得面目全非，
+// 与其继续叠碎片，不如重发一次全文，让模型手上是一份完整的当前页面。
+const MAX_DIFF_CHARS = 4000;
+
+/**
+ * 每条消息发送前重新快照当前页面（打开侧边栏依然不读取，承诺不变），
+ * 再与 state.sentPage（模型上次实际看到的内容）比对，决定本条消息携带什么：
+ *   none       页面没变            → 什么都不带，沿用历史里的那一份
+ *   diff       同一网址、小幅变化  → 只带几十行差异摘要
+ *   full       首次 / 换页 / 大改  → 带最新全文（历史里更早的全文随后被压成占位）
+ *   unreadable 当前页读不到        → 不带内容；此前读过页面时交代一句免得模型拿旧页当现状
+ * 比对基准是 sentPage 而不是 state.page：AI 操作导致跳转时 state.page 早已换成新页，
+ * 只有 sentPage 才知道模型手里还停在哪一页。
+ */
+async function syncPageForSend() {
+  updateContextChip('reading');
+  const snap = await snapshotCurrentTab();
+  if (!snap) {
+    const hadPage = state.page.status === 'ok';
+    state.page = { ...initialPage(), status: 'unreadable' };
+    updateContextChip();
+    return { kind: 'unreadable', changed: hadPage };
+  }
+  applySnapshot(snap, snap.tabId);
+  updateContextChip();
+
+  const sent = state.sentPage;
+  const page = state.page;
+  if (!sent.text) return { kind: 'full', first: true };
+  // 上一条消息告诉过模型「用户切到了读不到的页面」，现在又读到了：哪怕内容与那时一字不差
+  // 也要重发一份，否则模型会一直以为用户还停在受限页上
+  if (sent.gone) return { kind: 'full', navigated: sent.url !== page.url };
+  if (sent.url !== page.url) return { kind: 'full', navigated: true };
+  if (sent.text === page.maskedText) return { kind: 'none' };
+  const diff = formatTextDiff(sent.text, page.maskedText);
+  if (diff && sent.diffChars + diff.length <= MAX_DIFF_CHARS) return { kind: 'diff', diff };
+  return { kind: 'full' };
+}
+
+// 按同步结果组装本条用户消息的真实内容，并记下「模型已经看到的页面」
+function composeSendContent(inputText, sync) {
+  if (sync.kind === 'full' || sync.kind === 'diff') {
+    const { maskedText, outlineText, url, title } = state.page;
+    // 带了差异也算模型已看到最新内容：下次以当前页面为基准比对，差异不会重复累计。
+    // 整体重建对象也顺带清掉 gone 标记——模型手上又有页面了
+    state.sentPage = {
+      text: maskedText, outline: outlineText, url, title,
+      diffChars: sync.kind === 'diff' ? state.sentPage.diffChars + sync.diff.length : 0,
+    };
+  }
+  if (sync.kind === 'full') {
+    return buildUserContent(
+      inputText, state.page.maskedText, state.page.outlineText,
+      sync.navigated ? t('prompt.leadSwitched') : ''
+    );
+  }
+  if (sync.kind === 'diff') return buildPageUpdate(inputText, sync.diff);
+  if (sync.kind === 'unreadable' && sync.changed) {
+    // 记下「已告诉模型页面没了」，等页面重新可读时无条件重发（见 syncPageForSend）
+    state.sentPage = { ...state.sentPage, gone: true };
+    return `${t('prompt.leadPageGone')}\n\n${inputText}`;
+  }
+  return inputText;
+}
+
+// 只有页面在会话中途真的变了才提示；首次读取由胶囊本身出现即可说明，不再多一行字
+function flowNoteFor(sync) {
+  if (sync.kind === 'full' && sync.navigated) {
+    return t('ui.notePageNavigated', { title: truncateTitle(state.page.title) });
+  }
+  if (sync.kind === 'full' && !sync.first) return t('ui.notePageReread');
+  if (sync.kind === 'diff') return t('ui.notePageUpdated');
+  if (sync.kind === 'unreadable' && sync.changed) return t('ui.notePageUnreadable');
+  return '';
+}
+
 async function handleSend() {
   if (state.ui.phase !== 'idle') return;
   const inputText = els.input.value.trim();
@@ -1074,6 +1240,15 @@ async function handleSend() {
     return;
   }
 
+  // /compact 是命令不是提问：不作为用户消息发出，也不读页面
+  const command = parseCompactCommand(inputText);
+  if (command) {
+    els.input.value = '';
+    autoSizeInput();
+    await runCompact(command.instruction);
+    return;
+  }
+
   state.ui.phase = 'streaming';
   updateComposer();
   els.input.value = '';
@@ -1081,32 +1256,103 @@ async function handleSend() {
   els.welcome.hidden = true;
   state.ui.autoScroll = true;
 
-  // 首条消息或用户点了「重新读取」时才执行页面快照
-  let contentForRequest;
-  if (!state.page.injected || state.page.refreshRequested) {
-    updateContextBar('reading');
-    const snap = await snapshotCurrentTab();
-    if (snap) {
-      applySnapshot(snap, snap.tabId);
-      contentForRequest = buildUserContent(inputText, state.page.maskedText, state.page.outlineText);
-    } else {
-      // 快照失败也置 injected，避免同会话每条消息都无谓重试；可用「重新读取」手动再试
-      state.page = { ...initialPage(), status: 'unreadable', injected: true };
-      contentForRequest = buildUserContent(inputText, null);
-    }
-    updateContextBar();
-  } else {
-    // 同一会话后续消息不重复注入页面内容，沿用历史里的那一份
-    contentForRequest = inputText;
-  }
+  // 每条消息都先同步一次页面：变了才带新内容，没变什么都不带（详见 syncPageForSend）
+  const sync = await syncPageForSend();
+  const contentForRequest = composeSendContent(inputText, sync);
 
-  state.messages.push({ role: 'user', content: contentForRequest, displayContent: inputText });
+  const userMsg = {
+    role: 'user',
+    content: contentForRequest,
+    displayContent: inputText,
+    // 携带页面块的消息打标：下次全量读取后，更早的这些会被压成一行占位
+    ...(sync.kind === 'full' || sync.kind === 'diff'
+      ? { _page: sync.kind, _pageTitle: state.page.title }
+      : {}),
+  };
+  state.messages.push(userMsg);
   appendUserMessage(inputText);
+  const note = flowNoteFor(sync);
+  if (note) {
+    userMsg._note = note; // 提示行随消息落库：历史回放时仍能看到「页面已切换」这类交代
+    appendFlowNote(note);
+  }
 
   const el = appendAssistantMessage();
   maybeScroll();
 
   await runAgentLoop(el);
+}
+
+/* ========== 压缩上下文（/compact） ========== */
+// 另调一次模型把此前对话收成一份摘要，之后的请求只带「摘要 + 压缩点之后的新消息」。
+// 界面上的气泡与历史回放仍是原文——变的只是请求链（见 core/compact.js）。
+// 本能力有损：中间过程、旧工具全文、精确数字都可能在摘要里丢失。
+async function runCompact(instruction = '') {
+  if (state.ui.phase !== 'idle') return;
+  if (!isConfigured()) {
+    updateConfigHint();
+    openSettings();
+    return;
+  }
+  // 没有用户消息就没有可压的东西：给一行可读提示，不调模型
+  if (!state.messages.some((m) => m.role === 'user' && m.displayContent !== undefined)) {
+    appendFlowNote(t('ui.compactEmpty'));
+    maybeScroll();
+    return;
+  }
+
+  // 用同一个中止槽位，「停止」按钮才停得住摘要请求
+  state.ui.phase = 'compacting';
+  updateComposer();
+  state.ui.autoScroll = true;
+  state.abortController = new AbortController();
+  const signal = state.abortController.signal;
+  const note = appendFlowNote(t('ui.noteCompacting'));
+  maybeScroll();
+
+  // 摘要请求自身也走压缩后的请求链：已压缩过的会话只重发旧摘要 + 压缩点之后的新消息，
+  // 否则等于把用户刚要求压掉的原文再发一遍，二次压缩最容易因此超窗失败。
+  // 这一轮不注册 tools（与「各段必须与实际注册工具严格一致」同一条铁律）。
+  collapseSupersededPages();
+  const requestMessages = [
+    { role: 'system', content: buildCompactPrompt(instruction) },
+    ...sanitizeMessages(compactRequestTail(state.messages, state.compact)),
+  ];
+  console.log('[发送内容]', requestMessages);
+
+  let summary = '';
+  let calls = null;
+  let streamError = null;
+  try {
+    for await (const ev of streamChat(state.config, requestMessages, { signal })) {
+      if (ev.type === 'delta') summary += ev.text;
+      else if (ev.type === 'tool_calls') calls = ev.calls;
+    }
+  } catch (err) {
+    streamError = err;
+  }
+
+  state.abortController = null;
+  state.ui.phase = 'idle';
+  updateComposer();
+
+  // 失败（含模型不听话仍返回 tool_calls、中止时的半截摘要）一律放弃本次压缩：
+  // 原上下文原封不动，对话照常继续。半截摘要比不压缩更危险，绝不将就使用。
+  if (streamError || calls || !summary.trim()) {
+    note.remove();
+    const aborted = streamError instanceof LlmError && streamError.kind === 'abort';
+    if (!aborted) appendFlowError(streamError ? describeError(streamError) : t('ui.compactBadReply'));
+    maybeScroll();
+    return;
+  }
+
+  state.compact = buildCompactState(summary, state.messages.length);
+  // 压缩后旧的 <页面内容> 不再进请求：清空 sentPage，让下一条用户消息无条件重发当前页全文。
+  // 不这么做的话「页面没变就什么都不带」会让模型手里只剩摘要，数字与引用会漂。
+  state.sentPage = initialSentPage();
+  note.textContent = t('ui.noteCompacted');
+  maybeScroll();
+  await persistSession();
 }
 
 // 重新生成：重发上一条用户消息，替换最后一轮 AI 产物（不重新提取页面）。
@@ -1136,6 +1382,16 @@ async function handleRegenerate() {
     if (last.role === 'user' && last.displayContent !== undefined) break;
     state.messages.pop();
   }
+  // 压缩点必须退到「被重放的这条用户消息」之前，否则请求链会把它一起裁掉（400）。
+  // 钳到弹完后的数组长度同样不行——slice 仍会切掉栈顶那条用户消息；
+  // 这里改完即写回 state.compact，由本轮收尾的 persistSession 落库，
+  // 只临时钳不落库会让下一次请求按旧 boundary 切出残缺的 tool 链。
+  if (state.compact) {
+    state.compact = {
+      ...state.compact,
+      boundary: Math.min(state.compact.boundary, state.messages.length - 1),
+    };
+  }
   const aiNodes = els.chat.querySelectorAll('.msg-ai');
   if (aiNodes.length) aiNodes[aiNodes.length - 1].remove(); // 活动行/缩略图都在其内，一并移除
 
@@ -1157,12 +1413,17 @@ function handleNewChat() {
   handleStop();
   state.messages = [];
   state.page = initialPage();
+  state.sentPage = initialSentPage();
+  state.compact = null;  // 压缩边界与摘要同为会话属性，随会话清空
   state.skillId = null; // 技能是会话属性，随会话清空
+  // 会话身份清空：旧会话已在每个回合收尾时落库，这里只是让下一段另起一条记录
+  state.sessionId = null;
+  state.sessionCreatedAt = 0;
   state.suggest.items = [];
   state.suggest.dismissed.clear(); // 「本会话不再建议」的记忆也随会话清空
-  els.chat.querySelectorAll('.msg').forEach((m) => m.remove());
+  els.chat.querySelectorAll('.msg, .flow-note, .msg-error.standalone').forEach((m) => m.remove());
   els.welcome.hidden = false;
-  updateContextBar();
+  updateContextChip();
   renderSkillChip();
   renderPlusMenu();
   evaluateSkillSuggestion(); // 对当前页重新评估建议
@@ -1170,6 +1431,8 @@ function handleNewChat() {
 
 /* ========== 设置抽屉 ========== */
 function openSettings() {
+  setCtxExpanded(false); // 抽屉与各浮层不并存
+  setHistoryOpen(false);
   fillConfigForm();
   els.testResult.textContent = '';
   els.testResult.className = 'test-result';
@@ -1208,6 +1471,244 @@ async function handleTestConnection() {
     els.testResult.textContent = describeError(err);
     els.testResult.className = 'test-result err';
   }
+}
+
+/* ========== 历史会话 ========== */
+// 机制总览：
+//   - 保存：每个回合收尾（runAgentLoop 结束）把 messages/sentPage/skillId 整体落库；
+//     没有任何用户消息不保存；标题取首条用户消息，只在首次保存时确定。
+//   - 恢复：整体替换 state 里的会话数据并重建消息流 UI（replayConversation）。
+//     state.page 归零——下一条消息照常重读页面并与恢复出的 sentPage 比对，
+//     同页未变则什么都不带、换了页自动携带新全文，现有机制无需为历史开特例。
+//   - 旧 ref 失效属预期（与 SPA 重渲染过期同一情形），模型经 list_elements 自纠。
+
+// 当前会话落库。落库失败（配额满等）只警告不打断对话——会话仍在内存里。
+async function persistSession() {
+  const firstUser = state.messages.find((m) => m.role === 'user' && m.displayContent !== undefined);
+  if (!firstUser) return; // 没有用户消息的会话不保存
+  const now = Date.now();
+  if (!state.sessionId) {
+    state.sessionId = newSessionId();
+    state.sessionCreatedAt = now;
+  }
+  const record = {
+    v: HISTORY_RECORD_VERSION,
+    id: state.sessionId,
+    createdAt: state.sessionCreatedAt,
+    updatedAt: now,
+    title: deriveSessionTitle(firstUser.displayContent),
+    turns: countTurns(state.messages),
+    messages: state.messages, // 回合收尾后的消息数组：截图已替换为占位，`_` 字段供回放
+    sentPage: state.sentPage, // 恢复后发送前的页面比对要以它为基准
+    skillId: state.skillId,   // 技能是会话属性，随会话保存与恢复
+    // 压缩边界与摘要：恢复后界面回放原文，请求链仍走摘要。
+    // 缺 compact 的旧记录按未压缩处理，因此 HISTORY_RECORD_VERSION 不必递增。
+    compact: state.compact,
+  };
+  try {
+    await historyStore.save(record);
+  } catch (err) {
+    console.warn('[历史会话] 保存失败', err);
+  }
+}
+
+// 列表里的相对时间：近的说人话，远的落到日期
+function formatHistoryTime(ts) {
+  const now = Date.now();
+  const diff = now - ts;
+  if (diff < 60000) return t('ui.timeJustNow');
+  if (diff < 3600000) return t('ui.timeMinutesAgo', { n: Math.floor(diff / 60000) });
+  const d = new Date(ts);
+  const n = new Date(now);
+  if (d.toDateString() === n.toDateString()) {
+    return t('ui.timeHoursAgo', { n: Math.floor(diff / 3600000) });
+  }
+  if (d.toDateString() === new Date(now - 86400000).toDateString()) return t('ui.timeYesterday');
+  const parts = { y: d.getFullYear(), m: d.getMonth() + 1, d: d.getDate() };
+  return t(parts.y === n.getFullYear() ? 'ui.timeDate' : 'ui.timeDateFull', parts);
+}
+
+// 渲染历史列表：只读轻量索引，不加载任何会话正文；全部 textContent 赋值，无注入面。
+// 回合进行中列表只读（切换会撕掉正在流式写入的 DOM，删除当前会话同理）。
+async function renderHistoryList() {
+  const index = await historyStore.list();
+  const busy = state.ui.phase !== 'idle';
+  els.historyList.innerHTML = '';
+  if (busy) {
+    const hint = document.createElement('div');
+    hint.className = 'history-hint';
+    hint.textContent = t('ui.historyStreaming');
+    els.historyList.appendChild(hint);
+  }
+  els.btnClearHistory.hidden = !index.length;
+  els.btnClearHistory.disabled = busy;
+  if (!index.length) {
+    const empty = document.createElement('div');
+    empty.className = 'history-empty';
+    empty.textContent = t('ui.historyEmpty');
+    els.historyList.appendChild(empty);
+    return;
+  }
+  for (const entry of index) {
+    const isCurrent = entry.id === state.sessionId;
+    const row = document.createElement('div');
+    row.className = 'history-item' + (isCurrent ? ' current' : '');
+    const main = document.createElement('button');
+    main.type = 'button';
+    main.className = 'history-item-main';
+    main.disabled = busy;
+    const title = document.createElement('span');
+    title.className = 'history-item-title';
+    title.textContent = entry.title;
+    const meta = document.createElement('span');
+    meta.className = 'history-item-meta';
+    const bits = [formatHistoryTime(entry.updatedAt), t('ui.historyTurns', { n: entry.turns })];
+    if (isCurrent) bits.unshift(t('ui.historyCurrent'));
+    meta.textContent = bits.join(' · ');
+    main.append(title, meta);
+    main.addEventListener('click', () => loadSession(entry.id));
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'history-item-del';
+    del.textContent = '✕';
+    del.title = t('ui.historyDelete');
+    del.disabled = busy;
+    del.addEventListener('click', () => deleteSession(entry.id));
+    row.append(main, del);
+    els.historyList.appendChild(row);
+  }
+}
+
+// 载入一段历史会话：整体替换会话数据并重建消息流
+async function loadSession(id) {
+  if (state.ui.phase !== 'idle') return;
+  if (id === state.sessionId) {
+    setHistoryOpen(false); // 点的就是当前会话：什么都不用做
+    return;
+  }
+  const record = await historyStore.load(id);
+  if (!record) {
+    renderHistoryList(); // 记录缺失（版本不符/被淘汰）：刷新列表让空悬项消失
+    return;
+  }
+  state.messages = record.messages || [];
+  state.sentPage = record.sentPage || initialSentPage();
+  state.compact = record.compact || null; // 旧记录没有这一项，按未压缩处理
+  state.page = initialPage(); // 页面胶囊归零：下一条消息照常重读并与 sentPage 比对
+  state.sessionId = record.id;
+  state.sessionCreatedAt = record.createdAt;
+  state.skillId = record.skillId || null;
+  state.suggest.items = [];
+  state.suggest.dismissed.clear();
+
+  els.chat.querySelectorAll('.msg, .flow-note, .msg-error.standalone').forEach((m) => m.remove());
+  els.welcome.hidden = state.messages.length > 0;
+  replayConversation(state.messages, state.compact);
+  updateContextChip();
+  renderSkillChip();
+  renderPlusMenu();
+  evaluateSkillSuggestion();
+  setHistoryOpen(false);
+  els.chat.scrollTop = els.chat.scrollHeight;
+}
+
+// 删除一段历史会话；删除的是当前会话时，消息流一并清空（它就是那段会话）
+async function deleteSession(id) {
+  if (state.ui.phase !== 'idle') return;
+  const isCurrent = id === state.sessionId;
+  if (!window.confirm(t(isCurrent ? 'ui.historyDeleteCurrentConfirm' : 'ui.historyDeleteConfirm'))) {
+    return;
+  }
+  await historyStore.remove(id);
+  if (isCurrent) handleNewChat();
+  renderHistoryList();
+}
+
+async function clearHistory() {
+  if (state.ui.phase !== 'idle') return;
+  if (!window.confirm(t('ui.historyClearConfirm'))) return;
+  const hadCurrent = Boolean(state.sessionId);
+  await historyStore.clear();
+  if (hadCurrent) handleNewChat(); // 当前会话的记录也被清掉了，消息流随之清空
+  renderHistoryList();
+}
+
+/**
+ * 从落库的消息数组重建消息流 UI（历史回放）。
+ * 只依赖消息数据本身：正文重走 renderMarkdown；活动行用落库时定稿的 _ui 文案
+ * （没有 _ui 的 tool 消息当时就没上过屏，如中止占位，回放同样不上屏）；
+ * 引用徽标对照恢复出来的 sentPage 文本重新校验；截图在落库前已是占位文本，不回放图片。
+ * 回合切分以「用户敲入的消息」为界，与实时渲染的结构一致。
+ * 「已压缩此前对话」那行提示不挂在任何消息上（压缩不产生消息），因此不靠 _note 持久化：
+ * 有 compact 就在 boundary 对应的位置补插一行，与压缩当时看到的位置一致。
+ */
+function replayConversation(messages, compact) {
+  let root = null;     // 当前 AI 回合的根节点
+  let lastSeg = null;  // 回合内最后一个正文段（引用校验的对象）
+  let lastText = '';   // 回合内最后一段正文（复制按钮用）
+
+  const closeTurn = (isLast) => {
+    if (!root) return;
+    if (!root.childElementCount) {
+      const note = document.createElement('p');
+      note.className = 'md-note';
+      note.textContent = t('ui.emptyReply');
+      root.appendChild(note);
+    }
+    if (lastSeg && lastText) applyQuoteBadges(lastSeg, state.sentPage.text);
+    appendMessageActions(root, lastText, isLast);
+    root = null;
+    lastSeg = null;
+    lastText = '';
+  };
+
+  const compactAt = compact && compact.summary ? compact.boundary : -1;
+
+  messages.forEach((m, i) => {
+    // 提示行插在 boundary 那条消息之前；此时上一回合的 root 已在文档里，
+    // 随后 closeTurn 追加的操作行落在 root 内部，因此提示行仍显示在该回合之后
+    if (i === compactAt) appendFlowNote(t('ui.noteCompacted'));
+    if (m.role === 'user' && m.displayContent !== undefined) {
+      closeTurn(false);
+      appendUserMessage(m.displayContent);
+      if (m._note) appendFlowNote(m._note);
+      return;
+    }
+    if (m.role === 'user') return; // 工具上限提示、截图占位等内部消息不上屏
+    if (m.role === 'assistant') {
+      if (!root) {
+        root = document.createElement('div');
+        root.className = 'msg msg-ai';
+        els.chat.appendChild(root);
+      }
+      if (m.content) {
+        const seg = document.createElement('div');
+        seg.className = 'ai-content';
+        seg.innerHTML = renderMarkdown(m.content);
+        root.appendChild(seg);
+        lastSeg = seg;
+        lastText = m.content;
+      }
+      if (m._error) showErrorIn(root, m._error);
+      return;
+    }
+    if (m.role === 'tool' && root && m._ui) {
+      settleToolActivity(appendToolActivity(root, '', m._ui.action), m._ui.text, m._ui.ok);
+    }
+  });
+  // 压缩点落在数组末尾（压缩后还没发过新消息）：提示行补在最后
+  if (compactAt >= messages.length) appendFlowNote(t('ui.noteCompacted'));
+  closeTurn(true);
+}
+
+// 历史浮层开合：与页面胶囊浮层同一形态（fixed 覆盖消息流，点外部或 Esc 收起）。
+// 打开时才渲染列表——索引读存储，没开就不白读一次。
+function setHistoryOpen(open) {
+  state.ui.historyOpen = Boolean(open);
+  els.historyPop.hidden = !state.ui.historyOpen;
+  els.btnHistory.classList.toggle('open', state.ui.historyOpen);
+  els.btnHistory.setAttribute('aria-expanded', String(state.ui.historyOpen));
+  if (state.ui.historyOpen) renderHistoryList();
 }
 
 /* ========== 输入区 ========== */
@@ -1289,6 +1790,7 @@ function scheduleSuggestEval() {
 // icon 为内联 SVG 字符串（16×16、stroke:currentColor），与顶部栏图标同一画风。
 // label/hint 均为函数：渲染时才取词，因而语言切换后重渲即生效。
 // keepOpen 为真的项点击后菜单不关闭（如「绑定 Skill」进入二级列表）。
+// disabled 为函数时按当前状态置灰（如回合/压缩进行中不能再压一次），菜单每次打开都重渲取新值。
 const COMPOSER_MENU_ITEMS = [
   {
     id: 'skill',
@@ -1325,6 +1827,17 @@ const COMPOSER_MENU_ITEMS = [
     icon: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="1.8" y="2.5" width="12.4" height="8.2" rx="1"/><path d="M8 10.7v2.3M5.2 13.5h5.6"/><path d="M6.8 5.2l3.4 1.5-1.6.6-.6 1.6z"/></svg>',
     onSelect: togglePageActions,
   },
+  {
+    id: 'compact',
+    label: () => t('ui.menuCompact'),
+    // hint 直接写命令名：菜单同时是 /compact 这条输入框命令的说明书
+    hint: () => t('ui.menuCompactHint'),
+    // 不标 active：压缩是可以反复执行的一次性动作，不是「开着」的状态开关；
+    // 「这段会话已压缩过」由消息流里那行提示交代（回放时也在）
+    disabled: () => state.ui.phase !== 'idle', // 回合或上一次压缩进行中不可再压
+    icon: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.2 8h11.6"/><path d="M8 1.8v3.6M6.3 3.8L8 5.4l1.7-1.6"/><path d="M8 14.2v-3.6M6.3 12.2L8 10.6l1.7 1.6"/></svg>',
+    onSelect: () => runCompact(),
+  },
 ];
 
 // 「页面操作」快捷开关：与设置抽屉里的 cfg-actions 共用同一个 config 字段，天然同步。
@@ -1352,7 +1865,9 @@ function renderPlusMenu() {
     btn.type = 'button';
     btn.className = 'plus-menu-item';
     btn.setAttribute('role', 'menuitem');
-    btn.disabled = typeof item.onSelect !== 'function';
+    btn.disabled =
+      typeof item.onSelect !== 'function' ||
+      (typeof item.disabled === 'function' && item.disabled());
     if (typeof item.active === 'function' && item.active()) btn.classList.add('active');
     btn.innerHTML = item.icon;
     const label = document.createElement('span');
@@ -1432,6 +1947,8 @@ function setPlusMenuOpen(open) {
     state.ui.plusMenuView = 'root';
     renderPlusMenu();
   }
+  // 打开时重渲一次：hint 与置灰状态（如「压缩上下文」是否可用）都按当下取值
+  if (open) renderPlusMenu();
   els.plusMenu.classList.toggle('open', open);
   els.btnPlus.classList.toggle('open', open);
   els.btnPlus.setAttribute('aria-expanded', String(open));
@@ -1458,7 +1975,7 @@ function downloadCsv(text) {
 
 function bindEvents() {
   els.btnSend.addEventListener('click', () => {
-    if (state.ui.phase === 'streaming') handleStop();
+    if (state.ui.phase !== 'idle') handleStop(); // 流式与压缩都由同一个 abortController 停住
     else handleSend();
   });
 
@@ -1467,9 +1984,15 @@ function bindEvents() {
   // 点击菜单区域以外任意位置关闭菜单（按钮自身的点击由上面的开关处理）
   document.addEventListener('click', (e) => {
     if (state.ui.plusMenuOpen && !e.target.closest('.composer-tools')) setPlusMenuOpen(false);
+    // 浮层之外任意点击都收起（胶囊/历史钮自身的点击已 stopPropagation）
+    if (state.ui.ctxExpanded && !e.target.closest('.ctx-detail')) setCtxExpanded(false);
+    if (state.ui.historyOpen && !e.target.closest('.history-pop')) setHistoryOpen(false);
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && state.ui.plusMenuOpen) setPlusMenuOpen(false);
+    if (e.key !== 'Escape') return;
+    if (state.ui.plusMenuOpen) setPlusMenuOpen(false);
+    if (state.ui.ctxExpanded) setCtxExpanded(false);
+    if (state.ui.historyOpen) setHistoryOpen(false);
   });
 
   els.input.addEventListener('input', autoSizeInput);
@@ -1482,23 +2005,26 @@ function bindEvents() {
   });
 
   els.btnNewChat.addEventListener('click', handleNewChat);
-  els.btnRefresh.addEventListener('click', () => {
-    state.page.refreshRequested = true;
-    updateContextBar();
-  });
 
-  // 点击状态条文字或箭头，展开/折叠已读取内容详情
-  const toggleCtxDetail = () => {
-    if (state.page.status !== 'ok') return;
+  // 页面胶囊：点开/收起「本次读取了什么」浮层
+  els.btnContext.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setHistoryOpen(false); // 与历史浮层不并存
     setCtxExpanded(!state.ui.ctxExpanded);
-  };
-  els.ctxText.addEventListener('click', toggleCtxDetail);
-  els.ctxCaret.addEventListener('click', toggleCtxDetail);
+  });
 
   els.btnSettings.addEventListener('click', openSettings);
   els.btnGotoSettings.addEventListener('click', openSettings);
   els.btnCloseSettings.addEventListener('click', closeSettings);
   els.settingsMask.addEventListener('click', closeSettings);
+
+  // 历史会话浮层：点按钮开合（stopPropagation 让下面的外点关闭监听不误判）
+  els.btnHistory.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setCtxExpanded(false); // 与页面胶囊浮层不并存
+    setHistoryOpen(!state.ui.historyOpen);
+  });
+  els.btnClearHistory.addEventListener('click', clearHistory);
   els.btnSave.addEventListener('click', handleSaveConfig);
   els.btnTest.addEventListener('click', handleTestConnection);
 
@@ -1548,7 +2074,7 @@ function bindEvents() {
 (async function init() {
   await loadConfig();
   renderLocaleOptions();
-  applyLocale(state.config.locale); // 静态文案 + 状态条 + 菜单 + 发送按钮一并按语言渲染
+  applyLocale(state.config.locale); // 静态文案 + 页面胶囊 + 菜单 + 发送按钮一并按语言渲染
   updateConfigHint();
   bindEvents();
   // 打开面板时若已停在名单内的页面，直接给出技能建议：只查 tab 元数据，

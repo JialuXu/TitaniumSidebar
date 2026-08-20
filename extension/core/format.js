@@ -13,6 +13,7 @@ export const BUDGETS = {
   outline: 1500,     // 结构骨架
   elements: 4000,    // 元素列表（工具结果）
   newElements: 1200, // 动作后的新增元素增量（回合内高频出现，预算收紧）
+  pageDiff: 1800,    // 页面更新摘要（同一网址内容变化时替代 12000 字全文重发）
   html: 4000,        // 单个元素的精简 HTML
   table: 50000,      // 单个表格的完整 Markdown（刻意远超正文预算，这是它存在的意义）
   snippet: 120,      // 搜索结果单条上下文半径
@@ -39,10 +40,9 @@ export function formatOutline(nodes, budget = BUDGETS.outline) {
   for (const n of nodes) {
     // 标题在所属 landmark 内再缩进一级，层级感更接近视觉结构
     const indent = '  '.repeat(Math.min(n.depth + (n.kind === 'heading' ? 1 : 0), 5));
-    const label = n.kind === 'heading' ? n.tag : n.tag;
     const name = n.name ? ` ${q(n.name)}` : '';
     const meta = n.meta ? t('fmt.metaWrap', { s: n.meta }) : '';
-    lines.push(`${indent}- ${label}${name}${meta}`);
+    lines.push(`${indent}- ${n.tag}${name}${meta}`);
   }
   let out = lines.join('\n');
   if (out.length > budget) out = out.slice(0, budget) + t('fmt.outlineTruncated');
@@ -238,4 +238,62 @@ export function formatSearchResults(result, query) {
     lines.push(`${i + 1}. ……${r.snippet}……`);
   });
   return lines.join('\n');
+}
+
+/**
+ * 两次页面文本的变化摘要——同一网址下内容变了（用户翻页/展开、AI 操作了页面）时，
+ * 用它替代 12000 字全文重发，请求体里只多出几十行。
+ *
+ * 刻意用行级多重集比较而非 LCS：这里要的是「哪些内容新出现、哪些不见了」这一提示，
+ * 不是精确补丁；多重集是 O(n)、不吃内存，位置移动的行在两侧计数相同因而不会误报为变化。
+ * 只在「变化小且能完整列全」时才给摘要——列不全的差异会让模型误以为其余部分没变，
+ * 因此变动行过多、或摘要本身省不下多少字符时一律返回 null，
+ * 交由调用方重发全文（贵但完整，正确性优先）。
+ *
+ * @param {string} oldText 模型上次实际看到的页面文本（已脱敏）
+ * @param {string} newText 本次快照的页面文本（已脱敏）
+ * @param {{ budget?: number, maxLines?: number }} [opts]
+ * @returns {string|null} 摘要文本；无变化或不适合用摘要表达时返回 null
+ */
+export function formatTextDiff(oldText, newText, { budget = BUDGETS.pageDiff, maxLines = 40 } = {}) {
+  const split = (s) => String(s || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const a = split(oldText);
+  const b = split(newText);
+  if (!a.length || !b.length) return null;
+
+  const tally = (lines) => {
+    const map = new Map();
+    for (const l of lines) map.set(l, (map.get(l) || 0) + 1);
+    return map;
+  };
+  // 出现次数超出对方计数的那几次即为新增/消失，按文档顺序输出，模型据此判断变化位置
+  const exceeding = (lines, other) => {
+    const seen = new Map();
+    const out = [];
+    for (const l of lines) {
+      const n = (seen.get(l) || 0) + 1;
+      seen.set(l, n);
+      if (n > (other.get(l) || 0)) out.push(l);
+    }
+    return out;
+  };
+  const added = exceeding(b, tally(a));
+  const removed = exceeding(a, tally(b));
+  if (!added.length && !removed.length) return null;
+  // 变动行太多：一堆无序的增删行已经不足以让模型还原页面现状，交回全文更可靠
+  if (added.length > maxLines || removed.length > maxLines) return null;
+
+  const lines = [t('fmt.diffHead')];
+  if (added.length) {
+    lines.push(t('fmt.diffAdded'));
+    for (const l of added) lines.push('+ ' + clampText(l, 200));
+  }
+  if (removed.length) {
+    lines.push(t('fmt.diffRemoved'));
+    for (const l of removed) lines.push('- ' + clampText(l, 200));
+  }
+  // 摘要必须明显比全文便宜才值得走这条路——短页面上「一句说明 + 几行差异」
+  // 往往比整页还长，那就老老实实重发全文（同样正确，还更完整）
+  const out = lines.join('\n');
+  return out.length > Math.min(budget, newText.length * 0.6) ? null : out;
 }

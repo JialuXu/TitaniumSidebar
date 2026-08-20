@@ -114,85 +114,102 @@ body {
   color: var(--accent);
 }
 
-/* ========== 上下文状态卡 ========== */
-.context-wrap {
-  padding: 12px var(--gap) 0;
-  flex-shrink: 0;
+/* ========== 页面胶囊（顶部栏左侧）与已读取内容浮层 ========== */
+/* 读取状态整个收进一颗胶囊：未读取过时整颗隐藏，读取后只留页面标题一眼可见，
+   字数/元素数/网址/正文预览全部藏进点开才出现的浮层——正文区不再被状态条占走一整行。 */
+.ctx-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto; /* 把「新对话」与设置钮顶到右侧 */
+  min-width: 0;
+  max-width: 54%;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-2);
+  cursor: pointer;
+  font-family: inherit;
 }
 
-.context-card {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 44px;
-  padding: 8px 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  font-size: 12px;
-  color: var(--text-2);
+.ctx-chip:hover:not(:disabled),
+.ctx-chip.open {
+  border-color: var(--accent);
+  color: var(--text);
 }
+
+.ctx-chip:disabled { cursor: default; }
 
 .ctx-icon {
   flex-shrink: 0;
   color: var(--accent);
 }
 
-.ctx-text {
-  flex: 1;
-  min-width: 0;
+.ctx-chip.muted .ctx-icon { color: var(--text-3); }
+
+.ctx-chip-text {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-weight: 500;
-  color: var(--text);
 }
 
-.ctx-text.clickable { cursor: pointer; }
-.ctx-text.clickable:hover { color: var(--accent); }
+/* 读取中：图标轻微呼吸即可，不额外占位置 */
+.ctx-chip.reading .ctx-icon { animation: ctx-pulse 1.1s ease-in-out infinite; }
 
-/* 展开指示箭头：展开时旋转 90 度 */
-.ctx-caret {
+@keyframes ctx-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* 脱敏命中：胶囊上只留一个主色小点，具体计数在浮层里 */
+.ctx-dot {
   flex-shrink: 0;
-  display: inline-block;
-  font-size: 10px;
-  color: var(--text-3);
-  cursor: pointer;
-  user-select: none;
-  transition: transform 0.2s ease;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
 }
 
-.ctx-caret.open { transform: rotate(90deg); }
-
-/* 已读取内容详情面板：max-height 过渡实现展开/折叠 */
-/* 折叠态必须彻底 0 高度：box-sizing 是 border-box，max-height:0 只压缩内容盒，
-   上下边框仍各占 1px，而背景默认画到 border-box，白底就会在暖纸底上留下一条横线。
-   因此白底与边框只在 .open 时给，折叠态 border-width 归零、背景透明。 */
+/* 已读取内容浮层：fixed 覆盖在消息流之上，不参与布局也就不推挤正文 */
 .ctx-detail {
-  max-height: 0;
-  overflow: hidden;
-  background: none;
-  border: 0 solid var(--border);
+  position: fixed;
+  top: 48px;
+  left: var(--gap);
+  right: var(--gap);
+  z-index: 6;
+  max-height: 52vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  transition: max-height 0.22s ease, margin-top 0.22s ease;
+  box-shadow: 0 8px 24px rgba(26, 26, 26, 0.14);
 }
 
-.ctx-detail.open {
-  max-height: 45vh;
-  overflow-y: auto;
-  margin-top: 8px;
-  background: var(--surface);
-  border-width: 1px;
+.ctx-detail-title {
+  padding: 12px 12px 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text);
+  word-break: break-word;
 }
 
 .ctx-detail-meta {
-  padding: 10px 12px 0;
+  padding: 4px 12px 0;
   font-size: 11px;
   color: var(--text-3);
   word-break: break-all;
 }
 
-.ctx-detail-meta::before { content: '读取自 '; }
+.ctx-detail-stats {
+  padding: 6px 12px 0;
+  font-size: 11px;
+  color: var(--text-2);
+}
 
 /* 结构骨架预览：等宽缩进文本，与正文预览分区 */
 .ctx-detail-outline {
@@ -217,37 +234,6 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
 }
-
-/* 脱敏徽标：主色浅底胶囊 */
-.ctx-badge {
-  flex-shrink: 0;
-  padding: 2px 8px;
-  font-size: 10px;
-  font-weight: 500;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border-radius: var(--radius-pill);
-}
-
-/* 重新读取：主色浅底胶囊按钮 */
-.ctx-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex-shrink: 0;
-  border: none;
-  height: 26px;
-  padding: 0 10px;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border-radius: var(--radius-pill);
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.ctx-btn:hover { background: rgba(143, 90, 60, 0.2); }
 
 /* ========== 消息流 ========== */
 .chat {
@@ -504,7 +490,21 @@ body {
   border-radius: var(--radius-sm);
 }
 
+/* 不挂在任何消息上的错误行（压缩上下文失败等）：直接落在消息流里，补一层下边距 */
+.msg-error.standalone {
+  margin-bottom: 10px;
+}
+
 /* 一次性提示条：降级说明等（区别于错误，用警示黄） */
+/* 页面变化、已压缩此前对话等过程提示行：一行浅色小字，不属于任何一条消息 */
+.flow-note {
+  margin: 2px 0 10px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-3);
+  text-align: center;
+}
+
 .msg-note {
   margin: 8px 0;
   padding: 7px 12px;
@@ -1078,6 +1078,140 @@ body {
 
 .test-result.ok { color: var(--positive); }
 .test-result.err { color: var(--negative); }
+
+/* ========== 历史会话浮层（与页面胶囊浮层同一形态：fixed 覆盖消息流，点外部/Esc 收起） ========== */
+.history-pop {
+  position: fixed;
+  top: 48px;
+  left: var(--gap);
+  width: min(300px, calc(100vw - var(--gap) * 2));
+  max-height: 56vh;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(26, 26, 26, 0.14);
+}
+
+/* 头部一行：标题 + 「清空全部」，不再单占底部横条 */
+.history-pop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  padding: 10px 12px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+.history-clear {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-3);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.history-clear:hover:not(:disabled) { color: var(--negative); }
+.history-clear:disabled { cursor: default; }
+
+.history-list {
+  overflow-y: auto;
+  padding: 2px 6px 8px;
+}
+
+.history-empty {
+  padding: 20px 12px 24px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-3);
+  text-align: center;
+}
+
+/* 回合进行中：列表只读的说明行 */
+.history-hint {
+  margin: 4px 2px 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--caution);
+  background: var(--caution-soft);
+  border-radius: var(--radius-sm);
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+}
+
+.history-item:hover { background: var(--neutral-soft); }
+.history-item.current { background: var(--accent-soft); }
+
+.history-item-main {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  text-align: left;
+  border: none;
+  background: none;
+  padding: 8px 4px 8px 10px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.history-item-main:disabled { cursor: default; }
+
+.history-item-title {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-item-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 删除钮：悬停该行才浮现，列表平时不满屏都是 ✕ */
+.history-item-del {
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--text-3);
+  cursor: pointer;
+  font-family: inherit;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.history-item:hover .history-item-del,
+.history-item-del:focus-visible { opacity: 1; }
+.history-item-del:hover:not(:disabled) { color: var(--negative); }
+.history-item-del:disabled { cursor: default; }
+
+/* 浮层开着时历史钮保持高亮（与页面胶囊的 .open 同语义） */
+.round-btn.open {
+  border-color: var(--accent);
+  color: var(--accent);
+}
 
 /* 滚动条（细化，贴合纸面基调） */
 ::-webkit-scrollbar { width: 8px; height: 8px; }

@@ -48,12 +48,15 @@ The settings drawer also holds: language (applies immediately), redaction before
 
 ## Usage
 
-- **When the page is read** — the current page is captured when you send your *first* message; the status bar then shows "Read: {page title} · {N} characters · {M} interactive elements". Later messages in the same conversation do not re-read it. Click the status bar to inspect exactly what was captured.
-- **Re-read** — after the page changes (for example an in-app navigation), click **Re-read** and your next message will carry the new content.
+- **When the page is read** — only when you send a message. Opening the side panel, switching tabs, or the page changing on its own never triggers a read. What was read is folded into the **page chip** at the top left (title only); click it for a popover with the URL, character and element counts, and the exact text and outline that were captured.
+- **Page changes are picked up automatically** — there is **no Re-read button**. Before every message the extension takes a fresh look at the page and decides what the model needs: nothing at all if the page is unchanged; a short "what changed" summary of a few dozen lines for small changes (you paged through a list, expanded a section, the AI operated the page); the full page again only when the URL changed or the page was rewritten. When it does re-read, a faint line in the conversation says so — and the history keeps only the most recent copy of the page, so it never piles up.
 - **Perception tools** — the model calls them on its own and the sidebar shows a live activity line for each. Ask "where is X on this page" and the AI draws a highlight box for three seconds; ask it to "extract table N in full" and you get the whole table, free of the body-text truncation limit. Requires an endpoint that supports function calling (DeepSeek and most gateways do); if it does not, the extension falls back to plain text.
 - **Source badge** — a blockquote gets the "from this page" badge only if it matches the captured page text verbatim. Treat quotes without a badge with suspicion.
-- **Shortcuts** — Enter sends, Shift+Enter inserts a newline; streaming replies can be stopped at any time; hover a reply to copy it or regenerate; **New chat** clears the history.
-- **Pages that cannot be read** — browser-internal pages (`chrome://`), extension stores and the like are off limits; the AI then answers from your question alone.
+- **Shortcuts** — Enter sends, Shift+Enter inserts a newline; streaming replies can be stopped at any time; hover a reply to copy it or regenerate; **New chat** starts a fresh conversation.
+- **Conversation history** — every completed turn is saved locally (`chrome.storage.local`, never uploaded anywhere); the history button at the top left opens a compact popover to browse, restore and delete conversations, keeping at most 50 (the oldest are evicted automatically). A restored conversation can simply continue: the next message re-reads the current page as usual and compares it against the page that conversation remembers, resending nothing if it is unchanged. Deleting the conversation you are currently viewing also clears the message flow; **Clear all** sits at the top of the popover.
+- **Compact context** — once a conversation gets long, type `/compact` in the composer (or pick **Compact context** from the "+" menu) to collapse everything so far into a summary; from then on each request carries only that summary plus the messages after the compaction point. The bubbles in the sidebar and in restored history stay as they were — all you see is one faint line reading "Earlier conversation compacted". The next message after a compaction carries the current page in full again, so figures and quotations never have to survive on the summary alone. You can steer it, e.g. `/compact keep the financial figures`; you can hit **Stop** while it runs, and a failed or stopped compaction leaves your context untouched.
+  Compaction is lossy: intermediate steps, raw tool output and some detail are dropped. The summary request itself carries almost as much history as a normal one, so **compact early rather than late** — if you wait until ordinary requests already fail on context length, the summary request fails too and only **New chat** is left. The extension never compacts on its own.
+- **Pages that cannot be read** — browser-internal pages (`chrome://`), extension stores and the like are off limits; the page chip reads "Page not readable" and the AI answers from your question alone.
 
 ## Skills (preset)
 
@@ -69,7 +72,7 @@ Attach one via the **+** menu → **Attach a Skill**, or from the suggestion bar
 
 Enable them with the "Allow page actions" toggle in the settings drawer or "Page actions" in the **+** menu next to the input box (the two are the same switch); the first time you turn it on, you get a risk confirmation. Once enabled the AI does more than look: it can click buttons, fill inputs, pick dropdown options, press Enter, scroll, navigate to a URL and open or close tabs — good for "fill this form with the details above" or "open that page and summarise it".
 
-Every action appears in the conversation as a prominent activity line, and you can hit **Stop** at any point during streaming — pending actions are skipped. For irreversible operations (transfers, payments, orders, approval submissions, deletions) the AI explains what it is about to do and waits for your explicit go-ahead. After a navigation, element numbers reset and the status bar notes that your next message will re-read the page. While the switch is off, action tools are not registered with the model at all.
+Every action appears in the conversation as a prominent activity line, and you can hit **Stop** at any point during streaming — pending actions are skipped. For irreversible operations (transfers, payments, orders, approval submissions, deletions) the AI explains what it is about to do and waits for your explicit go-ahead. After a navigation, element numbers reset, the page chip switches to the new page's title, and your next message automatically carries the new page's content. While the switch is off, action tools are not registered with the model at all.
 
 **Known limitations**: actions are dispatched as synthetic events (`isTrusted` is false), which a handful of strictly validating sites ignore; custom dropdown widgets need the AI to open them and click an option. Do not enable this while working with business data you do not want touched.
 
@@ -87,7 +90,7 @@ SSO/4A authentication, a domain allowlist, gateway-side redaction and audit logs
 | 404 error | Check that the baseUrl ends with `/v1` |
 | Network failure | Confirm the endpoint is reachable; make sure a local service is actually running |
 | "Endpoint does not support tool calling / image input, degraded" | The endpoint or model lacks that capability — this is the normal fallback; switch to one that supports it |
-| "Tab switched, please re-read" | You changed tabs mid-conversation; click **Re-read** and continue |
+| "Tab switched" | You changed tabs mid-conversation, which invalidated the tools; switch back, or simply ask again about the current page (the next message reads it automatically) |
 | Clicks / typing have no effect | A few sites ignore synthetic events; the element numbers may also be stale — ask the AI to list the elements again and retry |
 
 ## Contributing and security
