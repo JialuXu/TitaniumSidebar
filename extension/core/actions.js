@@ -16,7 +16,7 @@
 /**
  * 在页面上执行一个动作。
  * @param {{ action: 'click'|'input'|'select'|'key'|'scroll'|'extract_table'|'get_html',
- *           session?: string, ref?: number, text?: string, option?: string, key?: string,
+ *           session: string, ref?: number, text?: string, option?: string, key?: string,
  *           direction?: 'up'|'down'|'top'|'bottom', pages?: number,
  *           tableIndex?: number, maxLen?: number,
  *           i18n?: { passwordMasked, tableTruncated, htmlTruncated } }} payload
@@ -55,7 +55,10 @@ export function performAction(payload) {
   function resolveElement(ref, needVisible) {
     const store = win.__titanium;
     if (!store || !Array.isArray(store.elements)) return { err: 'stale' };
-    if (opts.session && store.session !== opts.session) return { err: 'stale' };
+    // session 必填：空 session 曾被当成「不校验」放行，于是恢复历史会话后直接「重新生成」
+    // 这类不重读页面的路径上，旧 ref 会落在当前页面某个毫不相干的元素上——
+    // 开着页面操作时那就是一次打在错误元素上的真实点击。没有凭证就是没有有效映射。
+    if (!opts.session || store.session !== opts.session) return { err: 'stale' };
     if (!Number.isInteger(ref) || ref < 1 || ref > store.elements.length) return { err: 'bad-ref' };
     const el = store.elements[ref - 1];
     if (!el || !el.isConnected) return { err: 'gone' };

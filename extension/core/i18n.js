@@ -208,6 +208,8 @@ const ZH = {
   'sys.restrictedPage': '当前页面无法读取（浏览器内部页或受限页面）。',
   'sys.tabSwitched': '当前激活的标签页已切换，与本回合读取的页面不是同一个；请告诉用户切回原页面，或让他直接就当前页面重新提问（下一条消息会自动读取当前页面）。',
   'sys.elementsUnreadable': '无法读取页面元素（页面可能已刷新或受限）。',
+  // 没有有效的 ref 映射凭证（恢复历史会话后直接重新生成等路径），动作一律不执行
+  'sys.noRefMapping': '当前没有有效的页面元素映射（本轮还没有读取过页面），动作未执行；请先调用 list_elements 读取当前页面并获取最新编号。',
   // 历史里被更新版本取代的页面内容：压成一行占位，只保留最新那一份全文（控 token）
   'sys.pageSuperseded': '（此处原有的页面内容已省略：{title}；该页面此后已更新，请以后文最新的页面内容为准）',
   'sys.searchFailed': '无法在当前页面中执行搜索（页面可能已刷新或受限）。',
@@ -702,6 +704,7 @@ const EN = {
   'sys.restrictedPage': 'This page cannot be read (a browser-internal or restricted page).',
   'sys.tabSwitched': 'The active tab has changed and is no longer the page read for this turn; tell the user to switch back, or to simply ask again about the current page (the next message reads it automatically).',
   'sys.elementsUnreadable': 'Cannot read the page elements (the page may have been reloaded or is restricted).',
+  'sys.noRefMapping': 'There is no valid element mapping for the current page (it has not been read in this turn), so the action was not performed; call list_elements first to read the page and get fresh numbers.',
   'sys.pageSuperseded': '(The page content that was here has been omitted: {title}; that page has since been updated — rely on the latest page content further down.)',
   'sys.searchFailed': 'Cannot search this page (it may have been reloaded or is restricted).',
   'sys.highlightFailed': 'Cannot highlight on this page (it may have been reloaded or is restricted).',

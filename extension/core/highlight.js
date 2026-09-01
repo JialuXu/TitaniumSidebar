@@ -24,7 +24,10 @@ export function highlightElement(payload) {
 
   const store = win.__titanium;
   if (!store || !Array.isArray(store.elements)) return { ok: false, reason: 'stale' };
-  if (opts.session && store.session !== opts.session) return { ok: false, reason: 'stale' };
+  // session 必填：空 session 不是「不校验」而是「没有有效映射」——
+  // 否则不重读页面的路径（恢复历史会话等）会拿旧 ref 命中当前页面的陌生元素。
+  // 与 actions.js 的 resolveElement、snapshot.js 的 mode:'elements' 同一条判定。
+  if (!opts.session || store.session !== opts.session) return { ok: false, reason: 'stale' };
   if (!Number.isInteger(ref) || ref < 1 || ref > store.elements.length) {
     return { ok: false, reason: 'bad-ref' };
   }
