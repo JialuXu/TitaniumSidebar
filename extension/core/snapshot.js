@@ -12,6 +12,8 @@
 // window.__titanium = {
 //   session,          // 本次 full 快照的标识，ref 的有效期凭证
 //   elements,         // 稀疏数组，下标 +1 = ref；失效元素留空槽，保证 ref 永不左移
+//   fingerprints,     // 与 elements 同下标的指纹，建店时算好——重建时靠它把编号还给同一个元素
+//   misses,           // 与 elements 同下标：该空槽连续多少次全量重建无人认领（空槽回收的依据）
 //   seenMax,          // 已序列化给模型看过的最大 ref，超过它的元素标记为「新出现」
 // }
 
@@ -21,7 +23,8 @@
  *                      并重建 window.__titanium 的 ref 映射（session 换新）。
  *                      传 inheritRefs 时尝试让新映射继承旧 ref（见下）。
  *   mode:'elements' —— 工具调用（元素列表/截图标注前）：基于既有 ref 映射增量刷新——
- *                      老元素保号、失效元素跳过、新元素续编 ref；session 不符返回 stale。
+ *                      老元素保号、失效元素跳过、新元素续编 ref；session 缺失或不符一律返回 stale
+ *                      （session 是 ref 的有效期凭证，必传）。
  * @param {{ mode?: 'full'|'elements', session?: string, inheritRefs?: boolean,
  *           maxTextLen?: number, maxElements?: number,
  *           i18n?: { textTruncated, checked, tableMeta } }} [options] 经 executeScript args 传入
@@ -35,6 +38,13 @@ export function snapshotPage(options) {
   // 字符预算与同构折叠约束。收得太紧会让增量刷新编不进新元素（动作后新出现的
   // 按钮拿不到 ref），且必须配合把 elementsTruncated 显式告知模型。
   const MAX_ELEMENTS = opts.maxElements || 1500;
+  // ref 映射表（含空槽）的长度上限。空槽是「ref 永不左移」的代价，但这份代价必须有界：
+  // 表长过了 MAX_ELEMENTS 之后，新元素改吃回收来的死槽（见 full + inheritRefs 分支），
+  // 回收也不够才继续往表尾续编，到 MAX_REFS 硬顶为止（编不进的如实计入 elementsTruncated）。
+  const MAX_REFS = MAX_ELEMENTS * 2;
+  // 连续这么多次全量重建都没有元素认领的空槽，判定为「死透」，编号可以回收。
+  // 宽限期 + 回收槽一律标 isNew，为的是模型不至于拿记忆里的旧编号打在新元素上。
+  const DEAD_GRACE = 3;
   // 文案由外壳按当前语言传入（本函数要整体序列化注入页面，不能 import core/i18n.js）；
   // 缺省值保证脱离外壳直接调用时仍可用。
   const S = Object.assign({
@@ -339,7 +349,9 @@ export function snapshotPage(options) {
   if (mode === 'elements') {
     const store = win.__titanium;
     if (!store || !Array.isArray(store.elements)) return { ok: false, reason: 'stale' };
-    if (opts.session && store.session !== opts.session) return { ok: false, reason: 'stale' };
+    // session 必填：空 session 曾被当成「不校验」放行，于是恢复历史会话这类不重读页面的
+    // 路径上，旧编号会直接落在当前页面某个毫不相干的元素上。没有凭证就是没有有效映射。
+    if (!opts.session || store.session !== opts.session) return { ok: false, reason: 'stale' };
 
     // 本次刷新之前模型已看过的最大 ref：超过它的都是「上次动作后新出现」
     const seenMax = typeof store.seenMax === 'number' ? store.seenMax : store.elements.length;
@@ -347,10 +359,16 @@ export function snapshotPage(options) {
     // 扫描当前 DOM：既有元素保号（数组下标即 ref-1），新元素续编
     const known = new Set(store.elements);
     if (!Array.isArray(store.fingerprints)) store.fingerprints = [];
+    // 名额算的是「当前存活的元素数」，不是映射表长度：表里的空槽是 ref 稳定的代价，
+    // 不该占用新元素的名额——按表长判定的话，同一页面反复重建把表撑过上限后这里恒真，
+    // 该标签页的增量刷新从此一个新元素都编不进（动作后新出现的按钮永远拿不到 ref）。
+    let budget = MAX_ELEMENTS;
+    store.elements.forEach((el) => { if (el && el.isConnected) budget--; });
     let overflow = false;
     for (const c of dedupeCandidates(collectCandidates(doc.body))) {
       if (known.has(c.el)) continue;
-      if (store.elements.length >= MAX_ELEMENTS) { overflow = true; break; }
+      if (budget <= 0 || store.elements.length >= MAX_REFS) { overflow = true; break; }
+      budget--;
       store.elements.push(c.el);
       // 指纹与元素同步入店：将来重建时靠它把编号还给同一个元素
       store.fingerprints[store.elements.length - 1] = fingerprint(c.el);
@@ -533,6 +551,8 @@ export function snapshotPage(options) {
   const canInherit = Boolean(opts.inheritRefs) && prevStore && Array.isArray(prevStore.elements);
   const liveRefs = []; // 稀疏数组，下标 +1 = ref
   const elements = [];
+  const misses = [];   // 与 liveRefs 同下标的空槽未命中计数，随店保存（仅继承分支维护）
+  let refOverflow = 0; // 映射表满、没能拿到编号的元素数（如实计入 elementsTruncated）
 
   if (canInherit) {
     // SPA 重渲染后的全量重建：指纹相同的元素继承旧 ref，模型手里的编号继续有效
@@ -548,14 +568,41 @@ export function snapshotPage(options) {
         fresh.push(c);
       }
     }
-    let next = prevStore.elements.length; // 未继承者从旧映射长度之后续编，绝不与旧 ref 撞号
-    for (const c of fresh) {
-      liveRefs[next] = c.el;
-      next++;
+    // 空槽的未命中计数：本次无人认领的老 ref 记一次，连续超过 DEAD_GRACE 次判定为死透。
+    // 同一网址上每条消息发送前都走这条继承路径，指纹对不上的元素（SPA 重渲染、虚拟列表、
+    // 带时间戳的 aria-label）每轮都算新增；只往表尾续编的话映射表单调增长，
+    // 越过上限后该标签页的增量刷新永久失效。回收死槽是让「ref 永不左移」的代价有界的办法。
+    const prevMisses = Array.isArray(prevStore.misses) ? prevStore.misses : [];
+    const recyclable = [];
+    for (let i = 0; i < prevStore.elements.length; i++) {
+      if (liveRefs[i]) continue; // 有元素认领：计数清零（不写即为 0）
+      const n = (prevMisses[i] || 0) + 1;
+      misses[i] = n;
+      if (n > DEAD_GRACE) recyclable.push(i);
     }
+
+    // 新元素的编号来源，按序：表尾续编（表长在保险丝以内时与以往完全一致，
+    // 死掉的 ref 仍报 gone，最安全）→ 回收死透的空槽 → 续编到 MAX_REFS 硬顶为止。
+    const freshRefs = new Set();
+    let next = prevStore.elements.length; // 续编从旧映射长度之后开始，绝不与旧 ref 撞号
+    for (const c of fresh) {
+      let slot = -1;
+      if (next < MAX_ELEMENTS) slot = next++;
+      else if (recyclable.length) slot = recyclable.shift();
+      else if (next < MAX_REFS) slot = next++;
+      if (slot < 0) { refOverflow++; continue; }
+      liveRefs[slot] = c.el;
+      misses[slot] = 0;
+      freshRefs.add(slot + 1);
+    }
+    // 表长只增不减：槽位身份必须跨重建稳定，否则表尾一旦缩回去，
+    // 还没熬过宽限期的死 ref 会被当作从未用过的新号直接发出去。
+    if (liveRefs.length < prevStore.elements.length) liveRefs.length = prevStore.elements.length;
+
     liveRefs.forEach((el, i) => {
       const info = elementInfo(el, i + 1);
-      if (i >= prevStore.elements.length) info.isNew = true;
+      // 续编与回收来的编号都算「新出现」；回收槽尤其要标，模型才不会拿它当记忆里的旧目标
+      if (freshRefs.has(i + 1)) info.isNew = true;
       elements.push(info);
     });
   } else {
@@ -570,7 +617,7 @@ export function snapshotPage(options) {
   const fingerprints = [];
   liveRefs.forEach((el, i) => { fingerprints[i] = fingerprint(el); });
   const session = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-  win.__titanium = { session, elements: liveRefs, fingerprints, seenMax: liveRefs.length };
+  win.__titanium = { session, elements: liveRefs, fingerprints, misses, seenMax: liveRefs.length };
 
   const title = (doc.title || '').trim();
   const url = doc.location ? doc.location.href : '';
@@ -581,7 +628,7 @@ export function snapshotPage(options) {
     stats: {
       totalElements: totalInteractive,
       textTruncated,
-      elementsTruncated: totalInteractive > capped.length,
+      elementsTruncated: totalInteractive > capped.length || refOverflow > 0,
       tables: tableCount,
       iframes: iframeCount,
     },

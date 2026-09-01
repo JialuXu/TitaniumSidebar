@@ -387,7 +387,8 @@ async function requireSnapshotTab() {
   return tab;
 }
 
-// 刷新元素快照：老元素保号、新元素续编；session 过期（页面已导航）时自动全量重建
+// 刷新元素快照：老元素保号、新元素续编；session 过期或缺失（页面已导航、
+// 或恢复历史会话后 page 已归零）时自动全量重建，模型据此拿到当前页面的有效编号
 async function refreshedElements(tab) {
   let res = await injectFunc(tab.id, snapshotPage, {
     mode: 'elements', session: state.page.session, maxElements: 1500, i18n: injectedStrings(),
@@ -400,6 +401,9 @@ async function refreshedElements(tab) {
     });
     if (full && full.ok) {
       state.page.session = full.session;
+      // session 与工作标签页是一对：只更 session 不认领 tabId 的话，page 归零后的路径
+      // （恢复历史会话 + 重新生成）会一直绕过 tabId 守卫，用户中途切页也没人拦。
+      if (state.page.tabId === null) state.page.tabId = tab.id;
       res = { ok: true, elements: full.elements, viewport: full.viewport, stats: full.stats };
     }
   }
@@ -562,6 +566,14 @@ const provider = {
     const READ_ONLY = { extract_table: 1, get_html: 1 };
     const MAY_NAVIGATE = { click: 1, key: 1 };
     const tab = await requireSnapshotTab();
+    // 没有 session 就没有有效的 ref 映射，也就没人担保「操作的是不是那一页」：
+    // 恢复历史会话后直接「重新生成」时 state.page 已归零（tabId 也是 null，守卫形同虚设），
+    // 模型重放的旧编号会落在当前页面某个陌生元素上。按 ref 的动作由 core 的 session
+    // 校验拦下，不带 ref 的 scroll/press_key 只能在这里拦——让模型先 list_elements，
+    // 那一步会重建映射并认领当前标签页。只读的提取类动作不受影响。
+    if (!state.page.session && !READ_ONLY[payload.action]) {
+      throw new Error(t('sys.noRefMapping'));
+    }
     const result = await injectFunc(tab.id, performAction, {
       ...payload, session: state.page.session, i18n: injectedStrings(),
     });
@@ -892,12 +904,13 @@ function finalizeAssistant(el, msgObj, contentEl) {
 // 会话中页面可能被重新读取多次；历史里只保留最新的那一份全文，
 // 更早的全文与差异摘要统一压成一行占位——与截图的 stripImagesFromHistory 同一思路，
 // 都是「历史只留最新那一份大块内容」的 token 控制。占位里保留标题，出处仍然可追。
-function collapseSupersededPages() {
+// messages 由调用方显式传入（回合内一律传本回合开始时捕获的那份，见 runAgentLoop）
+function collapseSupersededPages(messages) {
   let lastFull = -1;
-  state.messages.forEach((m, i) => { if (m._page === 'full') lastFull = i; });
+  messages.forEach((m, i) => { if (m._page === 'full') lastFull = i; });
   if (lastFull <= 0) return;
   for (let i = 0; i < lastFull; i++) {
-    const m = state.messages[i];
+    const m = messages[i];
     if (!m._page) continue;
     m.content = `${t('sys.pageSuperseded', { title: m._pageTitle || '' })}\n\n${m.displayContent || ''}`;
     delete m._page; // 压过一次就不再重复处理（每轮请求都会调用本函数）
@@ -918,12 +931,12 @@ function sanitizeMessages(messages) {
     });
 }
 
-function buildRequestMessages(caps) {
-  collapseSupersededPages();
+function buildRequestMessages(caps, messages) {
+  collapseSupersededPages(messages);
   return [
     { role: 'system', content: buildSystemPrompt(caps || { tools: false, vision: false, skill: null }) },
     // 压缩过的会话只带「摘要 + 压缩点之后的新消息」；未压缩时原样带全部历史
-    ...sanitizeMessages(compactRequestTail(state.messages, state.compact)),
+    ...sanitizeMessages(compactRequestTail(messages, state.compact)),
   ];
 }
 
@@ -934,11 +947,12 @@ function updateComposer() {
   els.btnSend.classList.toggle('stop', busy);
 }
 
-// 把历史中的截图消息替换为占位文本，返回是否有替换。
+// 把消息数组里的截图消息替换为占位文本，返回是否有替换。
 // 时机：新截图前（同一请求最多一张真图）与回合收尾（跨回合不携带旧图，控 token）。
-function stripImagesFromHistory() {
+// 批内待回填的截图消息还没进历史，因此调用方需要连同「待回填队列」一起传进来。
+function stripImagesFromHistory(...lists) {
   let changed = false;
-  for (const m of state.messages) {
+  for (const m of lists.flat()) {
     if (m._kind === 'tool-image' && Array.isArray(m.content)) {
       m.content = m._placeholder || t('sys.shotOmitted');
       changed = true;
@@ -952,6 +966,11 @@ function stripImagesFromHistory() {
 async function runAgentLoop(el) {
   state.abortController = new AbortController();
   const signal = state.abortController.signal;
+
+  // 本回合读写的消息数组在开始时捕获一次：「新对话」在回合进行中把 state.messages
+  // 换成新数组后，本回合仍在飞的回填（残句、tool 占位）落进这份已被弃用的旧数组，
+  // 不会污染新会话——否则孤儿 tool 消息会让新会话的第一次请求直接 400。
+  const messages = state.messages;
 
   let seg = el.content;       // 当前正文段（工具轮次间会新开段，段间夹活动行）
   let thinking = el.thinking; // 当前「思考中」指示
@@ -984,7 +1003,7 @@ async function runAgentLoop(el) {
     const vision = useTools && Boolean(state.config.visionEnabled);
     const actions = useTools && actionsOn;
     const tools = useTools ? buildToolDefs({ vision, actions }) : undefined;
-    const requestMessages = buildRequestMessages({ tools: useTools, vision, actions, skill: skillId });
+    const requestMessages = buildRequestMessages({ tools: useTools, vision, actions, skill: skillId }, messages);
     console.log('[发送内容]', requestMessages); // 验收依据：控制台可核对脱敏后的实际发送内容
 
     let acc = '';
@@ -1028,7 +1047,7 @@ async function runAgentLoop(el) {
         appendNote(el.root, t('ui.noteToolsDegraded'));
         continue; // 不带 tools 原样重试本轮
       }
-      if (!imagesRetried && stripImagesFromHistory()) {
+      if (!imagesRetried && stripImagesFromHistory(messages)) {
         imagesRetried = true;
         appendNote(el.root, t('ui.noteImageDegraded'));
         continue;
@@ -1039,7 +1058,7 @@ async function runAgentLoop(el) {
     // rounds 硬上限兜底：即使请求不带 tools，病态网关仍返回 tool_calls 也不再执行
     if (streamError || !calls || !calls.length || rounds >= roundLimit + 2) {
       const msgObj = { role: 'assistant', content: acc };
-      state.messages.push(msgObj);
+      messages.push(msgObj);
       const aborted = streamError instanceof LlmError && streamError.kind === 'abort';
       if (streamError && !aborted) {
         // 中止不算错误，保留已生成部分；错误文案同时落在消息上，历史回放时原样重现
@@ -1058,7 +1077,7 @@ async function runAgentLoop(el) {
 
     // 模型请求调用工具：assistant(tool_calls) 落历史，每个调用逐一执行并成对回填 tool 消息
     if (!acc) seg.remove(); // 本轮没有正文，空段不留
-    state.messages.push({
+    messages.push({
       role: 'assistant',
       content: acc,
       tool_calls: calls.map((c) => ({
@@ -1068,16 +1087,20 @@ async function runAgentLoop(el) {
 
     // 同一批调用里一旦发生跳转，后续动作的元素编号已全部失效，不能再盲目执行
     let batchBroken = false;
+    // 截图的多模态跟随消息（role:'user'）不能就地回填——assistant(tool_calls) 之后
+    // 必须是连续等量的 tool 消息，中间插一条 user 会把 tool 链截断，严格后端直接 400。
+    // 因此本批先攒着，等所有 tool 消息成对回填完再统一追加到历史末尾。
+    const pendingFollowUps = [];
     for (const call of calls) {
       const isAction = WRITE_TOOL_NAMES.has(call.name);
       // 中止：未执行的调用补占位 tool 消息——tool_calls 必须一一回填，否则历史不合法（下轮 400）
       if (signal.aborted) {
-        state.messages.push({ role: 'tool', tool_call_id: call.id, content: t('sys.aborted') });
+        messages.push({ role: 'tool', tool_call_id: call.id, content: t('sys.aborted') });
         continue;
       }
       if (batchBroken) {
         const skipText = t('ui.skipNavigated', { name: call.name });
-        state.messages.push({
+        messages.push({
           role: 'tool', tool_call_id: call.id,
           content: t('sys.batchBroken'),
           // 活动行文案随消息落库：历史回放时不必重算当时的界面（_ 前缀字段不出网）
@@ -1090,14 +1113,15 @@ async function runAgentLoop(el) {
       try { argsForUi = call.arguments ? JSON.parse(call.arguments) : {}; } catch { /* 文案按 null 兜底 */ }
       const row = appendToolActivity(el.root, describeToolActivity(call.name, argsForUi, 'run'), isAction);
       maybeScroll();
-      if (call.name === 'capture_screenshot') stripImagesFromHistory(); // 同一请求最多一张真图
+      // 同一请求最多一张真图：本批还没回填的那些也算在内，否则一批两次截图会漏网
+      if (call.name === 'capture_screenshot') stripImagesFromHistory(messages, pendingFollowUps);
       const { toolMessage, followUpMessage, meta } = await dispatchToolCall(call, provider);
-      state.messages.push(toolMessage);
+      messages.push(toolMessage);
       if (followUpMessage) {
         followUpMessage._placeholder = t('sys.shotOmittedMeta', {
           w: meta.data.w, h: meta.data.h, n: meta.data.markCount,
         });
-        state.messages.push(followUpMessage);
+        pendingFollowUps.push(followUpMessage); // 批结束后才进历史，见上面的注释
         attachShotThumbnail(row, followUpMessage);
       }
       const doneText = describeToolActivity(call.name, meta.args || argsForUi, meta.ok ? 'done' : 'fail', meta.data);
@@ -1107,6 +1131,8 @@ async function runAgentLoop(el) {
       if (meta.data && meta.data.navigated) batchBroken = true;
       maybeScroll();
     }
+    // tool 链已完整，此时追加截图的多模态消息才不会截断它
+    for (const followUp of pendingFollowUps) messages.push(followUp);
 
     if (signal.aborted) {
       // 中止在工具阶段发生：没有最终回复文本，只挂操作行便于「重新生成」
@@ -1117,7 +1143,7 @@ async function runAgentLoop(el) {
     rounds++;
     if (rounds === roundLimit) {
       // 达到上限：下一轮 useTools 为 false（请求不带 tools），并明确告知模型直接作答
-      state.messages.push({
+      messages.push({
         role: 'user',
         content: t('sys.toolLimit'),
         _kind: 'tool-limit',
@@ -1127,7 +1153,7 @@ async function runAgentLoop(el) {
     maybeScroll();
   }
 
-  stripImagesFromHistory(); // 回合收尾：历史不保留任何真图
+  stripImagesFromHistory(messages); // 回合收尾：历史不保留任何真图
 
   state.abortController = null;
   state.ui.phase = 'idle';
@@ -1313,7 +1339,7 @@ async function runCompact(instruction = '') {
   // 摘要请求自身也走压缩后的请求链：已压缩过的会话只重发旧摘要 + 压缩点之后的新消息，
   // 否则等于把用户刚要求压掉的原文再发一遍，二次压缩最容易因此超窗失败。
   // 这一轮不注册 tools（与「各段必须与实际注册工具严格一致」同一条铁律）。
-  collapseSupersededPages();
+  collapseSupersededPages(state.messages);
   const requestMessages = [
     { role: 'system', content: buildCompactPrompt(instruction) },
     ...sanitizeMessages(compactRequestTail(state.messages, state.compact)),
