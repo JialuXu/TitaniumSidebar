@@ -123,6 +123,28 @@
         <!-- 选项由 sidepanel.js 用 LOCALE_LABELS 渲染（各语言用自己的写法，不随界面语言变化） -->
         <select id="cfg-locale"></select>
       </label>
+
+      <!-- 模型接口：多套可切换。下拉选中的即当前使用的一套；增删改作用于抽屉草稿，「保存」才写回 -->
+      <div class="cfg-section">
+        <span data-i18n="ui.cfgProfiles">模型接口</span>
+        <span class="cfg-section-tools">
+          <button id="btn-profile-add" class="icon-btn" type="button" data-i18n-title="ui.cfgProfileAdd" title="新增一套接口">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M8 3.2v9.6M3.2 8h9.6"/></svg>
+          </button>
+          <button id="btn-profile-del" class="icon-btn" type="button" data-i18n-title="ui.cfgProfileDelete" title="删除这套接口">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.2 4.5l.6 8.5h6.4l.6-8.5M6.7 7v4M9.3 7v4"/></svg>
+          </button>
+        </span>
+      </div>
+      <div class="cfg-field">
+        <!-- 选项由 sidepanel.js 按草稿渲染（显示名 = 名称 → 模型名 → 主机名 → 「未命名」） -->
+        <select id="cfg-profile" data-i18n-aria="ui.cfgProfiles" aria-label="模型接口"></select>
+      </div>
+      <p class="cfg-hint cfg-hint-field" data-i18n="ui.cfgProfilesHint">下拉里选中的即为当前使用的一套；增删改都在点「保存」后生效。</p>
+      <label class="cfg-field">
+        <span data-i18n="ui.cfgProfileName">名称</span>
+        <input id="cfg-name" type="text" data-i18n-placeholder="ui.cfgProfileNamePlaceholder" placeholder="如 DeepSeek 官方、行内部署" spellcheck="false">
+      </label>
       <label class="cfg-field">
         <span data-i18n="ui.cfgBaseUrl">接口地址（baseUrl）</span>
         <input id="cfg-baseurl" type="text" placeholder="https://api.deepseek.com/v1" spellcheck="false">
@@ -135,27 +157,37 @@
         <span data-i18n="ui.cfgApiKey">API Key</span>
         <input id="cfg-apikey" type="password" data-i18n-placeholder="ui.cfgApiKeyPlaceholder" placeholder="可留空">
       </label>
+      <!-- 视觉是模型的属性，随接口套保存；切换套后不必再翻开关 -->
+      <label class="cfg-switch">
+        <input id="cfg-vision" type="checkbox">
+        <span data-i18n="ui.cfgVision">模型支持视觉</span>
+      </label>
+      <p class="cfg-hint" data-i18n="ui.cfgVisionHint">启用截图工具；截图无法脱敏。</p>
+
+      <div class="cfg-section"><span data-i18n="ui.cfgPrefs">偏好</span></div>
       <label class="cfg-switch">
         <input id="cfg-mask" type="checkbox" checked>
         <span data-i18n="ui.cfgMask">发送前脱敏</span>
       </label>
       <p class="cfg-hint" data-i18n="ui.cfgMaskHint">身份证 / 银行卡 / 手机号</p>
       <label class="cfg-switch">
-        <input id="cfg-vision" type="checkbox">
-        <span data-i18n="ui.cfgVision">模型支持视觉</span>
-      </label>
-      <p class="cfg-hint" data-i18n="ui.cfgVisionHint">启用截图工具；截图无法脱敏。</p>
-      <label class="cfg-switch">
         <input id="cfg-actions" type="checkbox">
         <span data-i18n="ui.cfgActions">允许页面操作</span>
       </label>
-      <p class="cfg-hint cfg-hint-warn" data-i18n="ui.cfgActionsHint">AI 可点击、输入、跳转当前页面。每步可见、可随时停止，不可逆操作会先确认。</p>
       <div class="settings-actions">
         <button id="btn-test" class="ghost-btn" type="button" data-i18n="ui.cfgTest">测试连接</button>
         <button id="btn-save" class="primary-btn" type="button" data-i18n="ui.cfgSave">保存</button>
       </div>
       <div id="test-result" class="test-result"></div>
-      <div class="credit">Titanium v0.5.0</div>
+
+      <!-- 备份与恢复：重装扩展会清空 chrome.storage.local，靠导出的 JSON 文件把配置带回来 -->
+      <div class="cfg-section"><span data-i18n="ui.cfgTransfer">备份与恢复</span></div>
+      <div class="settings-actions">
+        <button id="btn-export" class="ghost-btn" type="button" data-i18n="ui.cfgExport">导出设置</button>
+        <button id="btn-import" class="ghost-btn" type="button" data-i18n="ui.cfgImport">导入设置</button>
+        <input id="import-file" type="file" accept=".json,application/json" hidden>
+      </div>
+      <div class="credit">Titanium v1.1.0</div>
     </div>
   </aside>
 

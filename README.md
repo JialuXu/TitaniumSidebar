@@ -34,7 +34,7 @@ The extension is Manifest V3 only and uses ES2020+ with no build step or transpi
 
 ## Configuration
 
-Click the gear icon in the top-right of the sidebar, fill in the endpoint, model name and API key, optionally hit **Test connection**, then save.
+Click the gear icon in the top-right of the sidebar, fill in the endpoint, model name and API key under **Model endpoints**, optionally hit **Test connection**, then save.
 
 | Setting | DeepSeek official API | Self-hosted (Ollama / vLLM, …) |
 |---|---|---|
@@ -44,7 +44,11 @@ Click the gear icon in the top-right of the sidebar, fill in the endpoint, model
 
 > The baseUrl usually has to end with `/v1` — the extension appends `/chat/completions` to it. Check this first if the connection test returns 404.
 
+**Several endpoints, switchable** — if you move between the DeepSeek API and a local deployment, hit **+** next to **Model endpoints** to add another one and give it a name; whichever is selected in the dropdown when you save is the one in use. "Model supports vision" is stored per endpoint, so switching never means flipping that toggle again. At least one endpoint is always kept.
+
 The settings drawer also holds: language (applies immediately), redaction before sending, "model supports vision" (enables the screenshot tool — note screenshots are not redacted), and "allow page actions". The extension contains no analytics or telemetry; page content goes only to the endpoint you configured, and your settings and key live solely in `chrome.storage.local`.
+
+**Backup & restore** — uninstalling and reinstalling the extension (or loading it from a different folder) wipes `chrome.storage.local` and your settings with it. **Export settings** at the bottom of the drawer downloads `titanium-settings.json`, which holds every endpoint including the **API keys in plain text**, so keep it somewhere safe; after reinstalling, **Import settings** with that file restores everything (replacing the current settings). "Allow page actions" never travels with the file and has to be switched on by hand again. If you are only reloading after a code change, use **Reload** on the extensions page instead of removing and re-adding — settings survive that.
 
 ## Usage
 
@@ -86,6 +90,7 @@ SSO/4A authentication, a domain allowlist, gateway-side redaction and audit logs
 |---|---|
 | `CRX_REQUIRED_PROOF_MISSING` while installing | You packed the `.crx` yourself; Chrome only accepts store-signed packages. Load the unpacked `extension/` directory, or deploy through enterprise policy |
 | Installs fine but no sidebar opens | Your browser is below the version floor — check `chrome://version` (Chrome 114+, Edge 117+) |
+| Settings vanished after reinstalling | Uninstalling clears the extension's local storage. **Export settings** before reinstalling and **Import settings** afterwards; for everyday code changes use **Reload** rather than remove-and-re-add |
 | 401 error | Verify the API key |
 | 404 error | Check that the baseUrl ends with `/v1` |
 | Network failure | Confirm the endpoint is reachable; make sure a local service is actually running |
