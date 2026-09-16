@@ -1026,14 +1026,40 @@ body {
   color: var(--text-3);
 }
 
-/* 涉及风险的说明（页面操作）：警示色卡片，不能和普通说明一样一扫而过 */
-.cfg-hint-warn {
-  margin-left: 0;
-  padding: 8px 10px;
-  color: var(--caution);
-  background: var(--caution-soft);
-  border-left: 2px solid var(--caution);
-  border-radius: var(--radius-sm);
+/* 紧贴输入框/下拉框的说明行（不是开关的补充说明，不缩进） */
+.cfg-hint-field {
+  margin: -6px 0 12px;
+}
+
+/* 抽屉分组标题：细线分隔 + 右侧可放组内工具按钮（接口套的新增/删除） */
+.cfg-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 16px 0 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cfg-section-tools {
+  display: flex;
+  gap: 2px;
+}
+
+.cfg-section-tools .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 6px;
+}
+
+.cfg-section-tools .icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+  background: none;
+  color: var(--text-2);
 }
 
 .settings-actions {

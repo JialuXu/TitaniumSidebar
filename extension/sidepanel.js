@@ -14,6 +14,9 @@ import { maskSensitive } from './core/masker.js';
 import { buildSystemPrompt, buildUserContent, buildPageUpdate, buildCompactPrompt } from './core/prompt.js';
 import { parseCompactCommand, buildCompactState, compactRequestTail } from './core/compact.js';
 import { streamChat, testConnection, LlmError } from './core/llm-client.js';
+import {
+  normalizeConfig, activeProfile, emptyProfile, profileLabel, buildSettingsExport, parseSettingsImport,
+} from './core/settings.js';
 import { renderMarkdown } from './core/markdown.js';
 import { verifyQuote } from './core/citation.js';
 import { listSkills, matchSkillsByUrl, hostOfUrl } from './core/skills.js';
@@ -43,14 +46,6 @@ const storage = {
 const historyStore = createHistoryStore(storage, { maxSessions: 50 });
 
 /* ========== 全局状态 ========== */
-const DEFAULT_CONFIG = {
-  baseUrl: '', model: '', apiKey: '',
-  maskEnabled: true,
-  visionEnabled: false,
-  actionsEnabled: false, // 允许页面操作（点击/输入/跳转），默认关闭
-  locale: '',            // 界面与模型文案的语言；空串=跟随浏览器（首次启动时判定）
-};
-
 // 模型「已经看到的页面」的初值：text 为空表示还没给模型看过任何页面内容
 function initialSentPage() {
   return { text: '', outline: '', url: '', title: '', diffChars: 0 };
@@ -74,7 +69,8 @@ function initialPage() {
 }
 
 const state = {
-  config: { ...DEFAULT_CONFIG },
+  // 配置的规范形状见 core/settings.js：多套模型接口 + 当前使用的那套 + 全局偏好
+  config: normalizeConfig(),
   // 消息历史：content 是真实请求内容（首条 user 含 <页面内容> 块），
   // displayContent 只存用户敲入的原话用于渲染（不把 12000 字页面文本刷进 UI）。
   // 工具调用轮次会追加 assistant(tool_calls)/tool/截图跟随消息，`_` 前缀字段发请求前剔除。
@@ -116,8 +112,10 @@ const els = {};
   'btn-plus', 'plus-menu',
   'skill-suggest', 'skill-chip', 'skill-chip-name', 'skill-chip-remove',
   'btn-history', 'history-pop', 'history-list', 'btn-clear-history',
-  'settings-mask', 'settings', 'btn-close-settings', 'cfg-locale', 'cfg-baseurl', 'cfg-model',
-  'cfg-apikey', 'cfg-mask', 'cfg-vision', 'cfg-actions', 'btn-test', 'btn-save', 'test-result',
+  'settings-mask', 'settings', 'btn-close-settings', 'cfg-locale',
+  'cfg-profile', 'btn-profile-add', 'btn-profile-del', 'cfg-name', 'cfg-baseurl', 'cfg-model',
+  'cfg-apikey', 'cfg-vision', 'cfg-mask', 'cfg-actions', 'btn-test', 'btn-save', 'test-result',
+  'btn-export', 'btn-import', 'import-file',
 ].forEach((id) => {
   els[id.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = document.getElementById(id);
 });
@@ -166,11 +164,13 @@ function applyLocale(loc) {
   renderSkillSuggest();
   // 历史浮层开着才重渲（列表要读存储，没开就不白读一次）；消息流里的历史内容保持原语言
   if (state.ui.historyOpen) renderHistoryList();
+  if (isSettingsOpen()) renderProfileOptions(); // 下拉里「未命名」兜底文案随语言
 }
 
 /* ========== 配置 ========== */
 function isConfigured() {
-  return Boolean(state.config.baseUrl && state.config.model);
+  const p = activeProfile(state.config);
+  return Boolean(p.baseUrl && p.model);
 }
 
 function updateConfigHint() {
@@ -179,34 +179,80 @@ function updateConfigHint() {
 
 async function loadConfig() {
   const saved = await storage.get('config');
-  if (saved) state.config = { ...DEFAULT_CONFIG, ...saved };
-  // 未选过语言时按浏览器语言判定一次，并落盘（此后不再随浏览器变化）
+  // 规整成规范形状：旧版扁平配置（顶层 baseUrl/model/apiKey/visionEnabled）在这里迁移为一套接口
+  state.config = normalizeConfig(saved);
+  // 未选过语言时按浏览器语言判定一次（此后不再随浏览器变化）
   if (!LOCALES.includes(state.config.locale)) {
     state.config.locale = detectLocale(navigator.languages || navigator.language);
+  }
+  // 迁移或补齐后的形状与存储里的不同就落盘一次，下次启动直接是规范形状
+  if (JSON.stringify(state.config) !== JSON.stringify(saved)) {
     await storage.set('config', state.config);
   }
 }
 
+// 抽屉持有一份配置草稿：多套接口的增删改与下拉切换都作用于草稿，点「保存」才整体写回，
+// 关闭抽屉即丢弃。与「其他字段改了不保存就作废」的既有语义一致，「保存」仍是唯一的提交点。
+const drawer = { profiles: [], activeId: '' };
+
+function resetDrawerDraft() {
+  drawer.profiles = state.config.profiles.map((p) => ({ ...p }));
+  drawer.activeId = state.config.activeProfileId;
+}
+
+function draftProfile() {
+  return drawer.profiles.find((p) => p.id === drawer.activeId) || drawer.profiles[0];
+}
+
+// 把表单里的接口字段写回草稿中当前选中的那套（切换下拉、新增、测试、保存前都要先做）
+function commitProfileForm() {
+  const p = draftProfile();
+  p.name = els.cfgName.value.trim();
+  p.baseUrl = els.cfgBaseurl.value.trim();
+  p.model = els.cfgModel.value.trim();
+  p.apiKey = els.cfgApikey.value.trim();
+  p.visionEnabled = els.cfgVision.checked;
+}
+
+function renderProfileOptions() {
+  els.cfgProfile.innerHTML = '';
+  for (const p of drawer.profiles) {
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = profileLabel(p, t('ui.cfgProfileUnnamed'));
+    els.cfgProfile.appendChild(opt);
+  }
+  els.cfgProfile.value = drawer.activeId;
+}
+
+function fillProfileForm() {
+  const p = draftProfile();
+  els.cfgName.value = p.name;
+  els.cfgBaseurl.value = p.baseUrl;
+  els.cfgModel.value = p.model;
+  els.cfgApikey.value = p.apiKey;
+  els.cfgVision.checked = p.visionEnabled;
+  renderProfileOptions();
+  els.btnProfileDel.disabled = drawer.profiles.length <= 1; // 至少保留一套
+}
+
 function readConfigForm() {
+  commitProfileForm();
   return {
-    baseUrl: els.cfgBaseurl.value.trim(),
-    model: els.cfgModel.value.trim(),
-    apiKey: els.cfgApikey.value.trim(),
+    profiles: drawer.profiles.map((p) => ({ ...p })),
+    activeProfileId: drawer.activeId, // 下拉里选中的即为当前使用的一套
     maskEnabled: els.cfgMask.checked,
-    visionEnabled: els.cfgVision.checked,
     actionsEnabled: els.cfgActions.checked,
     locale: els.cfgLocale.value, // 语言在选中时即时生效并落盘，这里只是保持整份配置完整
   };
 }
 
 function fillConfigForm() {
+  resetDrawerDraft();
   els.cfgLocale.value = state.config.locale;
-  els.cfgBaseurl.value = state.config.baseUrl;
-  els.cfgModel.value = state.config.model;
-  els.cfgApikey.value = state.config.apiKey;
   els.cfgMask.checked = state.config.maskEnabled;
-  els.cfgVision.checked = state.config.visionEnabled;
   els.cfgActions.checked = state.config.actionsEnabled;
+  fillProfileForm();
 }
 
 /* ========== 错误文案映射（外壳职责，core 只抛结构化错误） ========== */
@@ -1000,7 +1046,7 @@ async function runAgentLoop(el) {
     // 用户在 chrome:// 新标签页上说「打开某网址并总结」，靠的就是 open_tab
     const canUseTools = state.page.status === 'ok' || actionsOn;
     const useTools = !state.toolsBroken && canUseTools && rounds < roundLimit;
-    const vision = useTools && Boolean(state.config.visionEnabled);
+    const vision = useTools && Boolean(activeProfile(state.config).visionEnabled);
     const actions = useTools && actionsOn;
     const tools = useTools ? buildToolDefs({ vision, actions }) : undefined;
     const requestMessages = buildRequestMessages({ tools: useTools, vision, actions, skill: skillId }, messages);
@@ -1020,7 +1066,7 @@ async function runAgentLoop(el) {
 
     let streamError = null;
     try {
-      for await (const ev of streamChat(state.config, requestMessages, { signal, tools })) {
+      for await (const ev of streamChat(activeProfile(state.config), requestMessages, { signal, tools })) {
         if (ev.type === 'delta') {
           if (!acc) thinking.remove(); // 首字到达即撤掉「思考中」指示
           acc += ev.text;
@@ -1350,7 +1396,7 @@ async function runCompact(instruction = '') {
   let calls = null;
   let streamError = null;
   try {
-    for await (const ev of streamChat(state.config, requestMessages, { signal })) {
+    for await (const ev of streamChat(activeProfile(state.config), requestMessages, { signal })) {
       if (ev.type === 'delta') summary += ev.text;
       else if (ev.type === 'tool_calls') calls = ev.calls;
     }
@@ -1460,8 +1506,7 @@ function openSettings() {
   setCtxExpanded(false); // 抽屉与各浮层不并存
   setHistoryOpen(false);
   fillConfigForm();
-  els.testResult.textContent = '';
-  els.testResult.className = 'test-result';
+  showSettingsResult('');
   els.settings.classList.add('open');
   els.settingsMask.classList.add('show');
 }
@@ -1471,8 +1516,18 @@ function closeSettings() {
   els.settingsMask.classList.remove('show');
 }
 
+function isSettingsOpen() {
+  return els.settings.classList.contains('open');
+}
+
+// 抽屉底部的状态行：测试连接、导入导出、移除接口套共用（kind: '' | 'ok' | 'err'）
+function showSettingsResult(text, kind = '') {
+  els.testResult.textContent = text;
+  els.testResult.className = 'test-result' + (kind ? ' ' + kind : '');
+}
+
 async function handleSaveConfig() {
-  state.config = readConfigForm();
+  state.config = normalizeConfig(readConfigForm());
   state.toolsBroken = false; // 换了接口/模型，给 tools 一次重新探测的机会
   await storage.set('config', state.config);
   updateConfigHint();
@@ -1480,23 +1535,83 @@ async function handleSaveConfig() {
   closeSettings();
 }
 
+// 测试的是表单里正在编辑的那套，不要求先保存
 async function handleTestConnection() {
-  const config = readConfigForm();
-  els.testResult.textContent = t('ui.testRunning');
-  els.testResult.className = 'test-result';
-  if (!config.baseUrl || !config.model) {
-    els.testResult.textContent = t('ui.testNeedFields');
-    els.testResult.className = 'test-result err';
+  commitProfileForm();
+  const profile = draftProfile();
+  showSettingsResult(t('ui.testRunning'));
+  if (!profile.baseUrl || !profile.model) {
+    showSettingsResult(t('ui.testNeedFields'), 'err');
     return;
   }
   try {
-    await testConnection(config);
-    els.testResult.textContent = t('ui.testOk');
-    els.testResult.className = 'test-result ok';
+    await testConnection(profile);
+    showSettingsResult(t('ui.testOk'), 'ok');
   } catch (err) {
-    els.testResult.textContent = describeError(err);
-    els.testResult.className = 'test-result err';
+    showSettingsResult(describeError(err), 'err');
   }
+}
+
+function handleProfileSwitch() {
+  commitProfileForm();
+  drawer.activeId = els.cfgProfile.value;
+  fillProfileForm();
+}
+
+function handleProfileAdd() {
+  commitProfileForm();
+  const p = emptyProfile();
+  drawer.profiles.push(p);
+  drawer.activeId = p.id;
+  fillProfileForm();
+  els.cfgName.focus();
+}
+
+// 只改草稿、不弹确认：没保存之前关掉抽屉就能反悔
+function handleProfileDelete() {
+  if (drawer.profiles.length <= 1) return;
+  const idx = drawer.profiles.findIndex((p) => p.id === drawer.activeId);
+  drawer.profiles.splice(idx, 1);
+  drawer.activeId = drawer.profiles[Math.min(idx, drawer.profiles.length - 1)].id;
+  fillProfileForm();
+  showSettingsResult(t('ui.cfgProfileRemoved'));
+}
+
+/* ========== 设置的导出与导入（重装扩展会清空 chrome.storage.local，靠文件把配置带回来） ========== */
+
+// 导出的是已保存的配置：抽屉里尚未保存的改动不算数，「保存」仍是唯一的提交点
+function handleExportSettings() {
+  const text = JSON.stringify(buildSettingsExport(state.config), null, 2);
+  downloadFile('titanium-settings.json', new Blob([text], { type: 'application/json' }));
+  showSettingsResult(t('ui.exportOk'), 'ok');
+}
+
+// 导入即整体覆盖并立即落盘（不经「保存」）：用户选完文件就是要它生效，再要求点一次保存只会让人疑惑。
+// 页面操作开关保持用户当前的状态，文件里没有这一项（见 core/settings.js）。
+async function handleImportSettings(file) {
+  let parsed;
+  try {
+    parsed = parseSettingsImport(await file.text());
+  } catch {
+    showSettingsResult(t('ui.importReadFail'), 'err');
+    return;
+  }
+  if (!parsed.ok) {
+    showSettingsResult(t('ui.importBad'), 'err');
+    return;
+  }
+  if (!window.confirm(t('ui.importConfirm'))) return;
+  state.config = {
+    ...parsed.config,
+    actionsEnabled: state.config.actionsEnabled,
+    locale: parsed.config.locale || state.config.locale, // 文件未记语言时沿用当前语言
+  };
+  state.toolsBroken = false; // 接口换了，给 tools 一次重新探测的机会
+  await storage.set('config', state.config);
+  applyLocale(state.config.locale);
+  fillConfigForm();
+  updateConfigHint();
+  showSettingsResult(t('ui.importOk', { n: state.config.profiles.length }), 'ok');
 }
 
 /* ========== 历史会话 ========== */
@@ -1989,11 +2104,15 @@ function downloadCsv(text) {
       .replace(/[\\/:*?"<>|\s]+/g, '-')
       .replace(/^-+|-+$/g, '')
       .slice(0, 40) || 'table';
-  const blob = new Blob(['\uFEFF' + text], { type: 'text/csv;charset=utf-8' });
+  downloadFile(`${base}.csv`, new Blob(['\uFEFF' + text], { type: 'text/csv;charset=utf-8' }));
+}
+
+// 触发浏览器下载（csv 代码块与设置导出共用）
+function downloadFile(filename, blob) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${base}.csv`;
+  a.download = filename;
   a.click();
   // 延迟回收：click 后立即 revoke 在部分场景会截断尚未开始的下载
   setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -2053,6 +2172,26 @@ function bindEvents() {
   els.btnClearHistory.addEventListener('click', clearHistory);
   els.btnSave.addEventListener('click', handleSaveConfig);
   els.btnTest.addEventListener('click', handleTestConnection);
+
+  // 多套接口：下拉切换 / 新增 / 删除都只动抽屉草稿；名称、地址、模型名影响下拉显示名，边敲边刷新
+  els.cfgProfile.addEventListener('change', handleProfileSwitch);
+  els.btnProfileAdd.addEventListener('click', handleProfileAdd);
+  els.btnProfileDel.addEventListener('click', handleProfileDelete);
+  for (const input of [els.cfgName, els.cfgBaseurl, els.cfgModel]) {
+    input.addEventListener('input', () => {
+      commitProfileForm();
+      renderProfileOptions();
+    });
+  }
+
+  // 导出 / 导入设置：导入走隐藏的文件选择框；选完清空 value，同一个文件再选一次也能触发 change
+  els.btnExport.addEventListener('click', handleExportSettings);
+  els.btnImport.addEventListener('click', () => els.importFile.click());
+  els.importFile.addEventListener('change', async () => {
+    const file = els.importFile.files && els.importFile.files[0];
+    els.importFile.value = '';
+    if (file) await handleImportSettings(file);
+  });
 
   // 语言即时生效并落盘（不等「保存」）：抽屉里其他字段还没填完时也能先把界面语言换过来
   els.cfgLocale.addEventListener('change', async () => {
