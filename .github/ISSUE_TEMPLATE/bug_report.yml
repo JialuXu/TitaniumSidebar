@@ -28,7 +28,7 @@ body:
     attributes:
       label: 扩展版本 / Extension version
       description: "见 `extension/manifest.json` 的 version 字段，或扩展管理页 / From `extension/manifest.json` or the extensions page"
-      placeholder: "0.3.1"
+      placeholder: "1.1.0"
     validations:
       required: true
 
