@@ -6,7 +6,8 @@
 //
 // provider 接口：
 //   —— 感知 ——
-//   searchInPage({ query, maxResults })  → searchPage 返回值
+//   searchInPage({ query, maxResults })  → snapshotPage text 模式的搜索返回值
+//   readPageText({ offset, length })     → snapshotPage text 模式的读取返回值
 //   listElements({ scope, query })       → { elements, total, viewport?, stats? }
 //   highlight({ ref })                   → highlightElement 返回值
 //   captureScreenshot()                  → { dataUrl, markCount, viewport }
@@ -25,7 +26,9 @@
 // 工具描述与工具结果都随界面语言切换（文案见 core/i18n.js）：模型看到的说明必须与
 // 用户看到的界面同语言，否则英文界面下会得到中文的工具反馈。
 
-import { formatElements, formatSearchResults, formatPageStatus, formatPageChange, formatTabs, BUDGETS } from './format.js';
+import {
+  formatElements, formatSearchResults, formatReadResult, formatPageStatus, formatPageChange, formatTabs, BUDGETS,
+} from './format.js';
 import { t, q } from './i18n.js';
 
 /** 纯感知模式下每个用户回合的最大工具轮数，超过后强制模型直接作答 */
@@ -80,6 +83,13 @@ export function buildToolDefs({ vision = false, actions = false } = {}) {
         max_results: { type: 'integer', minimum: 1, maximum: 10, description: t('tool.find.max') },
       },
       ['query']),
+
+    fn('read_page_text', t('tool.read.d'),
+      {
+        offset: { type: 'integer', minimum: 0, description: t('tool.read.offset') },
+        length: { type: 'integer', minimum: 1, maximum: BUDGETS.readMax, description: t('tool.read.length') },
+      },
+      ['offset']),
 
     fn('list_elements', t('tool.list.d'),
       {
@@ -209,17 +219,66 @@ function withChange(text, change) {
   return tail ? `${text}\n${tail}` : text;
 }
 
+/* ========== 读取正文的三道闸（详见 BUDGETS 注释） ========== */
+
+/**
+ * 把一条读取结果的 tool 消息压成占位。只改 content、摘掉 `_read` 标记——
+ * 绝不增删消息：tool_calls 与 tool 必须成对紧邻（不变式 7），
+ * 而且 compact.boundary 是下标，一动数组它就漂了。
+ */
+function collapseRead(msg) {
+  msg.content = t('sys.readOmitted', { start: msg._read.start, end: msg._read.end });
+  delete msg._read;
+}
+
+/**
+ * 换页后：最新那份页面全文之前的读取结果全部作废——位置属于旧页面，留着只会误导。
+ * @param {Array} messages 本回合读写的消息数组
+ * @param {number} beforeIndex 最新一份全文页面块的下标
+ */
+export function dropSupersededReads(messages, beforeIndex) {
+  for (let i = 0; i < beforeIndex && i < messages.length; i++) {
+    if (messages[i] && messages[i]._read) collapseRead(messages[i]);
+  }
+}
+
+/**
+ * 回合收尾：从新到旧累计保留的正文，超出预算的压成占位。
+ * 回合内一律不淘汰（模型正拿着这些内容作答），`readRetained ≥ readMax`
+ * 保证最近一次读取必然留得住，紧接着的追问不用重读。
+ */
+export function trimRetainedReads(messages, budget = BUDGETS.readRetained) {
+  let kept = 0;
+  let newest = true;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m || !m._read) continue;
+    const len = (m.content || '').length;
+    // 装得下才留，装不下就压占位；最近一次读取无条件保留——
+    // 紧接着的追问八成就是冲它来的，回收了等于逼模型再读一遍。
+    if (newest || kept + len <= budget) {
+      kept += len;
+      newest = false;
+    } else {
+      collapseRead(m);
+    }
+  }
+}
+
 /**
  * 执行一次工具调用，产出回填消息历史所需的对象。
  * @param {{ id: string, name: string, arguments: string }} call llm-client 拼装好的调用
  * @param {object} provider 外壳注入的执行接口（见文件头注释）
+ * @param {{ readChars?: number, url?: string, textTotal?: number }} [turn]
+ *   本回合的读取账本与「模型手里那份页面」的基准：外壳在回合开始时按 sentPage 填好，
+ *   读取时对不上就给模型一句告警（位置会随页面变化漂移，不变式 9）。
  * @returns {Promise<{
  *   toolMessage: { role: 'tool', tool_call_id: string, content: string },
  *   followUpMessage?: object,   // 截图工具专用：紧随 tool 消息的多模态 user 消息
  *   meta: { name: string, args: object|null, ok: boolean, data: object },
  * }>}
  */
-export async function dispatchToolCall(call, provider) {
+export async function dispatchToolCall(call, provider, turn = {}) {
   const meta = { name: call.name, args: null, ok: false, data: {} };
   const reply = (content, followUpMessage) => ({
     toolMessage: { role: 'tool', tool_call_id: call.id, content },
@@ -236,6 +295,16 @@ export async function dispatchToolCall(call, provider) {
   }
   meta.args = args;
 
+  // 跳转之后模型手里的基准就换成新页了（跳转摘要本身带着新页的正文字数），
+  // 不同步的话后面每次读取都会误报「位置可能已过期」。
+  const withChangeSynced = (text, change) => {
+    if (change && change.navigated) {
+      turn.url = change.url || '';
+      turn.textTotal = change.stats ? change.stats.textTotal : 0;
+    }
+    return withChange(text, change);
+  };
+
   // 页内动作的公共壳：失败映射中文，成功拼「结果描述 + 页面变化摘要」
   const doAct = async (payload, onSuccess, uiData) => {
     const { result, change } = await provider.act(payload);
@@ -247,7 +316,7 @@ export async function dispatchToolCall(call, provider) {
     meta.ok = true;
     meta.data.navigated = Boolean(change && change.navigated);
     Object.assign(meta.data, onSuccess.data ? onSuccess.data(result) : {});
-    return reply(provider.mask(withChange(onSuccess.text(result), change)));
+    return reply(provider.mask(withChangeSynced(onSuccess.text(result), change)));
   };
 
   try {
@@ -258,8 +327,40 @@ export async function dispatchToolCall(call, provider) {
         if (!query) return reply(t('res.missingQuery'));
         const res = await provider.searchInPage({ query, maxResults: args.max_results });
         meta.ok = Boolean(res && res.ok);
-        meta.data = { query, total: (res && res.total) || 0 };
+        const outsideTotal = (res && res.outside && res.outside.total) || 0;
+        meta.data = { query, total: ((res && res.total) || 0) + outsideTotal };
         return reply(provider.mask(formatSearchResults(res, query)));
+      }
+
+      case 'read_page_text': {
+        // 保险丝：模型一口气并行读十段会撑爆上下文窗口，而工具结果会留在历史里，
+        // 之后每一条请求都超窗 400——整个会话就此报废。宁可这一轮少读一点。
+        const used = turn.readChars || 0;
+        const left = BUDGETS.readPerTurn - used;
+        if (left < 1000) {
+          meta.data = { budget: true };
+          return reply(t('res.readBudget'));
+        }
+        const want = Math.min(Number(args.length) || BUDGETS.read, BUDGETS.readMax, left);
+        const offset = Math.max(0, Number(args.offset) || 0);
+        const res = await provider.readPageText({ offset, length: want });
+        if (!res || !res.ok) {
+          meta.data = { offset, reason: res && res.reason };
+          return reply(describeFailure(res, args));
+        }
+        // 位置是「模型上次看到的那份正文」的坐标；页面换了或长度变了就可能已经漂了
+        const drifted = (turn.url && res.url && turn.url !== res.url) ||
+          (turn.textTotal && res.total && turn.textTotal !== res.total);
+        turn.readChars = used + res.text.length;
+        turn.url = res.url;
+        turn.textTotal = res.total;
+        meta.ok = true;
+        meta.data = { start: res.start, end: res.end, total: res.total, section: res.section };
+        const text = provider.mask(formatReadResult(res, {
+          warning: drifted ? t('res.readStale') : '',
+        }));
+        // `_read` 让外壳知道这条消息是可回收的正文（换页作废 / 跨回合收口）
+        return { toolMessage: { role: 'tool', tool_call_id: call.id, content: text, _read: { start: res.start, end: res.end, url: res.url } }, meta };
       }
 
       case 'list_elements': {
@@ -398,21 +499,21 @@ export async function dispatchToolCall(call, provider) {
         const change = await provider.navigate({ url });
         meta.ok = true;
         meta.data = { url, title: change && change.title, navigated: true };
-        return reply(provider.mask(withChange(t('res.navigated', { url }), change)));
+        return reply(provider.mask(withChangeSynced(t('res.navigated', { url }), change)));
       }
 
       case 'go_back': {
         const change = await provider.goBack();
         meta.ok = true;
         meta.data = { title: change && change.title, navigated: true };
-        return reply(provider.mask(withChange(t('res.wentBack'), change)));
+        return reply(provider.mask(withChangeSynced(t('res.wentBack'), change)));
       }
 
       case 'refresh': {
         const change = await provider.refresh();
         meta.ok = true;
         meta.data = { title: change && change.title, navigated: true };
-        return reply(provider.mask(withChange(t('res.refreshed'), change)));
+        return reply(provider.mask(withChangeSynced(t('res.refreshed'), change)));
       }
 
       case 'open_tab': {
@@ -420,7 +521,7 @@ export async function dispatchToolCall(call, provider) {
         const change = await provider.openTab({ url });
         meta.ok = true;
         meta.data = { url, title: change && change.title, navigated: true };
-        return reply(provider.mask(withChange(t('res.openedTab', { url }), change)));
+        return reply(provider.mask(withChangeSynced(t('res.openedTab', { url }), change)));
       }
 
       case 'switch_tab': {
@@ -428,7 +529,7 @@ export async function dispatchToolCall(call, provider) {
         const change = await provider.switchTab({ tabId });
         meta.ok = true;
         meta.data = { tabId, title: change && change.title, navigated: true };
-        return reply(provider.mask(withChange(t('res.switchedTab', { id: tabId }), change)));
+        return reply(provider.mask(withChangeSynced(t('res.switchedTab', { id: tabId }), change)));
       }
 
       case 'close_tab': {
@@ -440,7 +541,7 @@ export async function dispatchToolCall(call, provider) {
           which: tabId == null ? t('res.closedWorkTab') : ` ${tabId}`,
           remaining: res.remaining,
         });
-        return reply(provider.mask(withChange(head, res.change)));
+        return reply(provider.mask(withChangeSynced(head, res.change)));
       }
 
       case 'list_tabs': {

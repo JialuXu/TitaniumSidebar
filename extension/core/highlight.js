@@ -9,7 +9,7 @@
 /**
  * 高亮指定 ref 的元素。
  * @param {{ ref: number, session: string, durationMs?: number, scroll?: boolean }} payload
- * @returns {{ ok: true, name: string, bbox: object }
+ * @returns {{ ok: true, name: string, bbox: object }  bbox 以元素所在文档的视口为原点
  *          | { ok: false, reason: 'stale'|'gone'|'hidden'|'bad-ref' }}
  */
 export function highlightElement(payload) {
@@ -34,7 +34,13 @@ export function highlightElement(payload) {
 
   const el = store.elements[ref - 1];
   if (!el || !el.isConnected) return { ok: false, reason: 'gone' };
-  const style = win.getComputedStyle(el);
+  // 同源框架里的元素：覆盖层画在元素自己那份文档里，fixed 定位与 getBoundingClientRect
+  // 同一原点，不必换算坐标，框架内滚动时也能就地跟随。框架被移除或跳走后旧文档
+  // 没有视图，元素按失效处理（与 actions.js / snapshot.js 同一口径）。
+  const edoc = el.ownerDocument;
+  const ewin = edoc.defaultView || (edoc === doc ? win : null);
+  if (!ewin) return { ok: false, reason: 'gone' };
+  const style = ewin.getComputedStyle(el);
   if (style && (style.display === 'none' || style.visibility === 'hidden')) {
     return { ok: false, reason: 'hidden' };
   }
@@ -46,15 +52,16 @@ export function highlightElement(payload) {
 
   // 唯一 id 覆盖层：已有旧高亮先移除（连同其监听器一起，避免叠加）
   const OVERLAY_ID = '__titanium-highlight__';
-  const old = doc.getElementById(OVERLAY_ID);
+  // 上一个覆盖层可能画在另一份文档里（上次高亮的是别的框架里的元素），句柄随店保存
+  const old = store.overlay && store.overlay.isConnected ? store.overlay : edoc.getElementById(OVERLAY_ID);
   if (old) {
     if (old.__cleanup) old.__cleanup();
     old.remove();
   }
 
-  const overlay = doc.createElement('div');
+  const overlay = edoc.createElement('div');
   overlay.id = OVERLAY_ID;
-  const label = doc.createElement('span');
+  const label = edoc.createElement('span');
   label.textContent = String(ref);
 
   function position() {
@@ -73,19 +80,21 @@ export function highlightElement(payload) {
 
   // 随滚动/缩放重定位（passive，不影响页面滚动性能）
   const reposition = () => { if (el.isConnected) position(); };
-  win.addEventListener('scroll', reposition, { passive: true, capture: true });
-  win.addEventListener('resize', reposition, { passive: true });
+  ewin.addEventListener('scroll', reposition, { passive: true, capture: true });
+  ewin.addEventListener('resize', reposition, { passive: true });
+  // 定时器挂在顶层 window：框架中途被移除时它自己的定时器不再触发，清理会落空
   const timer = win.setTimeout(() => {
     if (overlay.__cleanup) overlay.__cleanup();
     overlay.remove();
   }, durationMs);
   overlay.__cleanup = () => {
     win.clearTimeout(timer);
-    win.removeEventListener('scroll', reposition, { capture: true });
-    win.removeEventListener('resize', reposition);
+    ewin.removeEventListener('scroll', reposition, { capture: true });
+    ewin.removeEventListener('resize', reposition);
   };
 
-  doc.documentElement.appendChild(overlay);
+  edoc.documentElement.appendChild(overlay);
+  store.overlay = overlay;
 
   const name = (el.textContent || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 80);
   return {

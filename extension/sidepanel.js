@@ -2,14 +2,14 @@
 // 业务逻辑（提取/脱敏/组装/调用/渲染/校验）全部在 core/，本文件不实现任何业务规则。
 
 import { snapshotPage } from './core/snapshot.js';
-import { searchPage } from './core/search.js';
 import { highlightElement } from './core/highlight.js';
 import { performAction } from './core/actions.js';
 import {
-  buildToolDefs, dispatchToolCall, MAX_TOOL_ROUNDS, MAX_ACTION_ROUNDS, WRITE_TOOL_NAMES,
+  buildToolDefs, dispatchToolCall, dropSupersededReads, trimRetainedReads,
+  MAX_TOOL_ROUNDS, MAX_ACTION_ROUNDS, WRITE_TOOL_NAMES,
 } from './core/tools.js';
 import { annotateScreenshot } from './core/annotate.js';
-import { formatOutline, formatTextDiff } from './core/format.js';
+import { formatOutline, formatTextDiff, BUDGETS } from './core/format.js';
 import { maskSensitive } from './core/masker.js';
 import { buildSystemPrompt, buildUserContent, buildPageUpdate, buildCompactPrompt } from './core/prompt.js';
 import { parseCompactCommand, buildCompactState, compactRequestTail } from './core/compact.js';
@@ -18,7 +18,7 @@ import {
   normalizeConfig, activeProfile, emptyProfile, profileLabel, buildSettingsExport, parseSettingsImport,
 } from './core/settings.js';
 import { renderMarkdown } from './core/markdown.js';
-import { verifyQuote } from './core/citation.js';
+import { verifyQuote, buildQuoteCorpus } from './core/citation.js';
 import { listSkills, matchSkillsByUrl, hostOfUrl } from './core/skills.js';
 import {
   createHistoryStore, newSessionId, deriveSessionTitle, countTurns, HISTORY_RECORD_VERSION,
@@ -48,7 +48,9 @@ const historyStore = createHistoryStore(storage, { maxSessions: 50 });
 /* ========== 全局状态 ========== */
 // 模型「已经看到的页面」的初值：text 为空表示还没给模型看过任何页面内容
 function initialSentPage() {
-  return { text: '', outline: '', url: '', title: '', diffChars: 0 };
+  // textTotal：模型看到的那份页面有多长。位置是否还作数以它为基准（不变式 6），
+  // 因此只在真的重发了全文（kind:'full'）时更新。
+  return { text: '', outline: '', url: '', title: '', diffChars: 0, textTotal: 0, textCapped: false };
 }
 
 function initialPage() {
@@ -59,6 +61,9 @@ function initialPage() {
     maskedText: '',          // 脱敏后的页面文本：注入 prompt 与引用校验共用同一份
     outlineText: '',         // 脱敏后的结构骨架文本（注入 prompt + 详情面板展示）
     elementCount: 0,         // 快照时的可交互元素数（状态条展示）
+    textTotal: 0,            // 完整正文字数（未截断时为 0）——胶囊展示 + 位置漂移判定
+    textShown: 0,            // 其中已注入给模型的前多少字
+    textCapped: false,       // 正文超出采集上限，总字数只是「至少这么多」
     session: '',             // ref 映射的会话标识，页面侧 window.__titanium 持有同名值
     // 工作标签页：快照来源，也是所有感知与动作的作用对象。
     // open_tab/switch_tab 会把它转移到新标签页（并同步激活），
@@ -324,9 +329,9 @@ function updateContextChip(transient) {
   // 浮层内容与当前读取结果保持同步（textContent 赋值，无注入风险）
   els.ctxDetailTitle.textContent = page.title || t('ui.untitled');
   els.ctxDetailUrl.textContent = t('ui.ctxReadFrom', { url: page.url });
-  els.ctxDetailStats.textContent = t('ui.ctxMeta', {
-    chars: page.maskedText.length, n: page.elementCount,
-  });
+  els.ctxDetailStats.textContent = page.textTotal
+    ? t('ui.ctxMetaTruncated', { chars: page.textShown, total: page.textTotal, n: page.elementCount })
+    : t('ui.ctxMeta', { chars: page.maskedText.length, n: page.elementCount });
   els.ctxDetailOutline.textContent = page.outlineText;
   els.ctxDetailOutline.hidden = !page.outlineText;
   els.ctxDetailText.textContent = page.maskedText;
@@ -364,7 +369,7 @@ async function getActiveTab() {
   return tab;
 }
 
-// 对目标标签页注入 core 导出的自包含函数（snapshotPage/searchPage/highlightElement），
+// 对目标标签页注入 core 导出的自包含函数（snapshotPage/highlightElement/performAction），
 // args 需为 JSON 可序列化数据。失败统一返回 null，由调用方归一处理。
 async function injectFunc(tabId, func, args) {
   try {
@@ -379,6 +384,19 @@ async function injectFunc(tabId, func, args) {
   }
 }
 
+// 「读一份完整页面」的注入参数。三处全量快照（发送前重读、动作跳转后重建、
+// 本函数）必须传同一套，否则正文总字数、截断点这些口径会在两条路径上悄悄分叉。
+// maxScan 是「采到完整正文」的开关：不传它的调用方（refreshedElements 只要元素映射）
+// 采不到全文，stats 里也就不会出现 textTotal，免得报出假的总字数。
+const fullSnapshotArgs = (extra = {}) => ({
+  mode: 'full',
+  maxTextLen: BUDGETS.text,
+  maxScan: BUDGETS.scan,
+  maxElements: 1500,
+  i18n: injectedStrings(),
+  ...extra,
+});
+
 // 完整快照当前激活标签页（文本 + 结构骨架 + 元素映射重建）。
 // 失败（受限页/注入被拒/无可读内容）统一返回 null，由调用方归一为「页面不可读」。
 async function snapshotCurrentTab() {
@@ -387,9 +405,7 @@ async function snapshotCurrentTab() {
   // 每条消息发送前都会走这里重读一次。仍是同一标签页的同一网址时按指纹继承旧编号，
   // 模型在会话中已经见过的 ref 才不会因为一次例行重读而集体作废；换了页面则干净重编。
   const inheritRefs = tab.id === state.page.tabId && tab.url === state.page.url;
-  const result = await injectFunc(tab.id, snapshotPage, {
-    mode: 'full', maxTextLen: 12000, maxElements: 1500, inheritRefs, i18n: injectedStrings(),
-  });
+  const result = await injectFunc(tab.id, snapshotPage, fullSnapshotArgs({ inheritRefs }));
   if (!result || !result.ok || !result.text) return null;
   return { ...result, tabId: tab.id };
 }
@@ -409,6 +425,9 @@ function applySnapshot(snap, tabId) {
     maskedText: textRes.text,
     outlineText: outlineRes.text,
     elementCount: snap.stats.totalElements,
+    textTotal: snap.stats.textTruncated ? snap.stats.textTotal : 0,
+    textShown: snap.stats.textShown || 0,
+    textCapped: Boolean(snap.stats.textCapped),
     session: snap.session,
     tabId,
     hits: textRes.hits
@@ -482,9 +501,7 @@ async function rebuildPageAfterNavigation(tab) {
     updateContextChip();
     return { navigated: true, restricted: true };
   }
-  const snap = await injectFunc(tab.id, snapshotPage, {
-    mode: 'full', maxTextLen: 12000, maxElements: 1500, i18n: injectedStrings(),
-  });
+  const snap = await injectFunc(tab.id, snapshotPage, fullSnapshotArgs());
   if (!snap || !snap.ok) {
     state.page = { ...state.page, status: 'unreadable', tabId: tab.id };
     updateContextChip();
@@ -556,8 +573,22 @@ const provider = {
 
   async searchInPage({ query, maxResults }) {
     const tab = await requireSnapshotTab();
-    const res = await injectFunc(tab.id, searchPage, { query, maxResults });
+    // text 模式与 <页面内容> 走同一段文本通道，命中位置因此与骨架里的 @位置同一坐标系
+    const res = await injectFunc(tab.id, snapshotPage, {
+      mode: 'text', maxScan: BUDGETS.scan, query, maxResults, i18n: injectedStrings(),
+    });
     if (!res) throw new Error(t('sys.searchFailed'));
+    return res;
+  },
+
+  async readPageText({ offset, length }) {
+    const tab = await requireSnapshotTab();
+    // text 模式不碰 window.__titanium、不需要 session：恢复历史会话后（page 已归零）
+    // 照样能读，这一点与搜索一致；也因此不在这里认领 tabId。
+    const res = await injectFunc(tab.id, snapshotPage, {
+      mode: 'text', maxScan: BUDGETS.scan, offset, length, i18n: injectedStrings(),
+    });
+    if (!res) throw new Error(t('sys.readFailed'));
     return res;
   },
 
@@ -798,6 +829,13 @@ function describeToolActivity(name, args, phase, data = {}) {
       if (phase === 'fail') return t('act.find.fail', { query });
       return t(data.total ? 'act.find.done' : 'act.find.none', { query, total: data.total });
     }
+    case 'read_page_text': {
+      if (phase === 'run') return t('act.read.run');
+      if (phase === 'fail') return t('act.read.fail');
+      return t(data.section ? 'act.read.doneIn' : 'act.read.done', {
+        section: data.section, start: data.start, end: data.end,
+      });
+    }
     case 'list_elements':
       if (phase === 'run') return t('act.list.run');
       if (phase === 'fail') return t('act.list.fail');
@@ -937,10 +975,12 @@ function appendMessageActions(root, contentText, withRegen) {
 // 流结束后的收尾：引用块出处校验 + 操作行。
 // 徽标必须在流结束后一次性插入——流式过程中每帧全量重渲会把它抹掉。
 // contentEl 为最终回答所在的正文段（工具轮次会产生多段，只校验最后一段）。
-function finalizeAssistant(el, msgObj, contentEl) {
+function finalizeAssistant(el, msgObj, contentEl, messages) {
   const target = contentEl || el.content;
   if (msgObj.content && state.page.status === 'ok') {
-    applyQuoteBadges(target, state.page.maskedText);
+    // 校验对象是「页面文本 + 本会话读到的同一页正文」：只比对截断后的 12000 字的话，
+    // 模型引用截断之外的真原文反而拿不到徽标（messages 用回合捕获的那份，不变式 4）
+    applyQuoteBadges(target, buildQuoteCorpus(state.page.maskedText, state.page.url, messages || state.messages));
   }
   appendMessageActions(el.root, msgObj.content, true);
 }
@@ -961,6 +1001,8 @@ function collapseSupersededPages(messages) {
     m.content = `${t('sys.pageSuperseded', { title: m._pageTitle || '' })}\n\n${m.displayContent || ''}`;
     delete m._page; // 压过一次就不再重复处理（每轮请求都会调用本函数）
   }
+  // 读到的正文片段同理：位置属于旧页面，新全文一到它们就该作废
+  dropSupersededReads(messages, lastFull);
 }
 
 // 消息数组 → 出网形态：剔除界面辅助字段，丢掉不该进请求的空回复。
@@ -1030,6 +1072,10 @@ async function runAgentLoop(el) {
 
   // 技能在回合开始时快照：流式过程中切换/摘除不影响进行中的回合，下一条消息生效
   const skillId = state.skillId;
+
+  // 本回合的读取账本 + 「模型手里那份页面」的基准。基准取 sentPage 而不是 state.page：
+  // 位置是否还作数，要看模型上次实际看到的是哪一页、多长（不变式 6）。
+  const turn = { readChars: 0, url: state.sentPage.url, textTotal: state.sentPage.textTotal || 0 };
 
   const newSegment = () => {
     seg = document.createElement('div');
@@ -1117,7 +1163,7 @@ async function runAgentLoop(el) {
         note.textContent = t('ui.emptyReply');
         seg.appendChild(note);
       }
-      finalizeAssistant(el, msgObj, seg);
+      finalizeAssistant(el, msgObj, seg, messages);
       break;
     }
 
@@ -1161,7 +1207,7 @@ async function runAgentLoop(el) {
       maybeScroll();
       // 同一请求最多一张真图：本批还没回填的那些也算在内，否则一批两次截图会漏网
       if (call.name === 'capture_screenshot') stripImagesFromHistory(messages, pendingFollowUps);
-      const { toolMessage, followUpMessage, meta } = await dispatchToolCall(call, provider);
+      const { toolMessage, followUpMessage, meta } = await dispatchToolCall(call, provider, turn);
       messages.push(toolMessage);
       if (followUpMessage) {
         followUpMessage._placeholder = t('sys.shotOmittedMeta', {
@@ -1182,7 +1228,7 @@ async function runAgentLoop(el) {
 
     if (signal.aborted) {
       // 中止在工具阶段发生：没有最终回复文本，只挂操作行便于「重新生成」
-      finalizeAssistant(el, { role: 'assistant', content: '' }, seg);
+      finalizeAssistant(el, { role: 'assistant', content: '' }, seg, messages);
       break;
     }
 
@@ -1200,6 +1246,7 @@ async function runAgentLoop(el) {
   }
 
   stripImagesFromHistory(messages); // 回合收尾：历史不保留任何真图
+  trimRetainedReads(messages);      // 同理，读到的正文跨回合只保留最近的那些
 
   state.abortController = null;
   state.ui.phase = 'idle';
@@ -1274,12 +1321,18 @@ function composeSendContent(inputText, sync) {
     state.sentPage = {
       text: maskedText, outline: outlineText, url, title,
       diffChars: sync.kind === 'diff' ? state.sentPage.diffChars + sync.diff.length : 0,
+      // 差异块不重发骨架也不重发全文，模型手里那份页面的长度没变，基准照旧
+      textTotal: sync.kind === 'full' ? state.page.textTotal : state.sentPage.textTotal,
+      textCapped: sync.kind === 'full' ? state.page.textCapped : state.sentPage.textCapped,
     };
   }
   if (sync.kind === 'full') {
     return buildUserContent(
       inputText, state.page.maskedText, state.page.outlineText,
-      sync.navigated ? t('prompt.leadSwitched') : ''
+      sync.navigated ? t('prompt.leadSwitched') : '',
+      state.page.textTotal
+        ? { total: state.page.textTotal, shown: state.page.textShown, capped: state.page.textCapped }
+        : null
     );
   }
   if (sync.kind === 'diff') return buildPageUpdate(inputText, sync.diff);
@@ -1796,7 +1849,7 @@ function replayConversation(messages, compact) {
       note.textContent = t('ui.emptyReply');
       root.appendChild(note);
     }
-    if (lastSeg && lastText) applyQuoteBadges(lastSeg, state.sentPage.text);
+    if (lastSeg && lastText) applyQuoteBadges(lastSeg, buildQuoteCorpus(state.sentPage.text, state.sentPage.url, messages));
     appendMessageActions(root, lastText, isLast);
     root = null;
     lastSeg = null;

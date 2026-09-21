@@ -10,7 +10,9 @@ import { t, q } from './i18n.js';
 
 export const BUDGETS = {
   text: 12000,       // 页面正文（snapshot 内部已按此截断，这里仅作统一出处）
+  scan: 200000,      // 正文采集上限（read_page_text / find_in_page 能够到的范围）
   outline: 1500,     // 结构骨架
+  outlineBeyond: 1500, // 骨架里「截断之外」那段的独立预算（见 formatOutline）
   elements: 4000,    // 元素列表（工具结果）
   newElements: 1200, // 动作后的新增元素增量（回合内高频出现，预算收紧）
   pageDiff: 1800,    // 页面更新摘要（同一网址内容变化时替代 12000 字全文重发）
@@ -18,6 +20,11 @@ export const BUDGETS = {
   table: 50000,      // 单个表格的完整 Markdown（刻意远超正文预算，这是它存在的意义）
   snippet: 120,      // 搜索结果单条上下文半径
   name: 80,          // 元素可访问名
+  // —— read_page_text 的三道闸：单次、每回合、跨回合 ——
+  read: 6000,        // 单次读取的默认长度
+  readMax: 12000,    // 单次读取的上限
+  readPerTurn: 24000, // 每个用户回合读取总量的保险丝（并行读十段会撑爆上下文窗口）
+  readRetained: 12000, // 跨回合保留的读取正文总量；≥ readMax 保证最近一次读取必留
 };
 
 /** 通用截断：超长切断并追加后缀 */
@@ -32,21 +39,57 @@ export function clampText(s, max, suffix = '…') {
  *   - main
  *     - h1 「2024 年度报告」
  *       - table（12行×5列）
- * @param {Array<{kind, tag, level?, name, depth, meta?}>} nodes snapshotPage 返回的 outline
+ *       - h2 「第六章 评估表」 @21040
+ * 带 pos 的标题（正文截断之外的那些）附字符位置，模型据此直接 read_page_text。
+ *
+ * 两条预算规则都是为了这些位置服务的：
+ * 一、按整行截断。按字符硬切会把 `@21040` 切成 `@210`——一个看起来合法的错位置。
+ * 二、截断之外的那段另给一份预算。长文档的骨架前半截就能把 1500 字吃光，
+ *     而恰恰是后半截的标题才带位置、才是本工具要用的；超预算时先丢 h4 再丢 h3。
+ * @param {Array<{kind, tag, level?, name, depth, meta?, pos?}>} nodes snapshotPage 返回的 outline
  */
-export function formatOutline(nodes, budget = BUDGETS.outline) {
+export function formatOutline(nodes, budget = BUDGETS.outline, beyondBudget = BUDGETS.outlineBeyond) {
   if (!nodes || !nodes.length) return '';
-  const lines = [];
-  for (const n of nodes) {
+  const render = (n) => {
     // 标题在所属 landmark 内再缩进一级，层级感更接近视觉结构
     const indent = '  '.repeat(Math.min(n.depth + (n.kind === 'heading' ? 1 : 0), 5));
     const name = n.name ? ` ${q(n.name)}` : '';
     const meta = n.meta ? t('fmt.metaWrap', { s: n.meta }) : '';
-    lines.push(`${indent}- ${n.tag}${name}${meta}`);
-  }
-  let out = lines.join('\n');
-  if (out.length > budget) out = out.slice(0, budget) + t('fmt.outlineTruncated');
-  return out;
+    const pos = typeof n.pos === 'number' ? ` @${n.pos}` : '';
+    return `${indent}- ${n.tag}${name}${meta}${pos}`;
+  };
+
+  // 第一个带位置的节点即「截断之外」的起点
+  const cut = nodes.findIndex((n) => typeof n.pos === 'number');
+  const head = cut === -1 ? nodes : nodes.slice(0, cut);
+  const beyond = cut === -1 ? [] : nodes.slice(cut);
+
+  const fit = (list, max) => {
+    const rendered = list.map(render);
+    const keep = rendered.map(() => true);
+    // 当前这些行 join('\n') 之后的长度
+    const size = () => rendered.reduce((n, s, i) => (keep[i] ? n + s.length + 1 : n), -1);
+    let omitted = 0;
+    const drop = (i) => { keep[i] = false; omitted++; };
+
+    // 先丢最细的层级：h4 携带的信息最少，丢掉它通常就够了；还超再丢 h3
+    for (const level of [4, 3]) {
+      for (let i = 0; i < list.length && size() > max; i++) {
+        if (keep[i] && list[i].level === level) drop(i);
+      }
+    }
+    // 仍然超预算就从尾部截（此时丢的是同级标题，只能按顺序取舍）
+    for (let i = list.length - 1; i >= 0 && size() > max; i--) {
+      if (keep[i]) drop(i);
+    }
+    return { text: rendered.filter((_, i) => keep[i]).join('\n'), omitted };
+  };
+
+  const a = fit(head, budget);
+  const b = fit(beyond, beyondBudget);
+  const omitted = a.omitted + b.omitted;
+  const out = [a.text, b.text].filter(Boolean).join('\n');
+  return omitted ? out + '\n' + t('fmt.outlineOmitted', { n: omitted }) : out;
 }
 
 /**
@@ -161,6 +204,9 @@ export function formatPageStatus(viewport, stats) {
   if (stats) {
     const parts = [];
     if (typeof stats.totalElements === 'number') parts.push(t('fmt.statElements', { n: stats.totalElements }));
+    // 正文字数只有在超出已注入的那一份时才值得说——回合内跳转后模型手里没有新页全文，
+    // 这一句是它知道「还能按位置把正文读回来」的唯一入口
+    if (stats.textTotal && stats.textTruncated) parts.push(t('fmt.statText', { n: stats.textTotal, shown: stats.textShown }));
     if (stats.tables) parts.push(t('fmt.statTables', { n: stats.tables }));
     if (stats.iframes) parts.push(t('fmt.statIframes', { n: stats.iframes }));
     if (parts.length) lines.push(t('fmt.statsPrefix') + parts.join(' · '));
@@ -220,24 +266,66 @@ export function formatTabs(tabs) {
 
 /**
  * 页面搜索结果 → 文本（工具结果）。
- * @param {{ ok, total?, results?: Array<{index, snippet}>, reason? }} result searchPage 返回值
+ * 每处命中都带 @字符位置与所在小节：搜索的职责是「定位」，读正文交给 read_page_text，
+ * 模型不必再靠一连串短搜索把一节内容拼出来。
+ * @param {{ ok, total?, results?: Array<{index, snippet, section}>,
+ *           outside?: { total, results }, reason? }} result snapshotPage text 模式的返回值
  * @param {string} query 原始搜索词（用于文案）
  */
 export function formatSearchResults(result, query) {
   if (!result || !result.ok) {
-    return t(result && result.reason === 'empty-query' ? 'fmt.searchFailEmpty' : 'fmt.searchFailUnreadable');
+    const reason = result && result.reason;
+    if (reason === 'empty-query') return t('fmt.searchFailEmpty');
+    if (reason === 'bad-query') return t('fmt.searchFailBadQuery');
+    return t('fmt.searchFailUnreadable');
   }
-  if (!result.total) return t('fmt.searchNone', { query });
-  const partial = result.results.length < result.total;
-  const lines = [
-    partial
+  const outside = result.outside || { total: 0, results: [] };
+  if (!result.total && !outside.total) return t('fmt.searchNone', { query });
+
+  const lines = [];
+  if (result.total) {
+    const partial = result.results.length < result.total;
+    lines.push(partial
       ? t('fmt.searchHeadMore', { total: result.total, query, shown: result.results.length })
-      : t('fmt.searchHead', { total: result.total, query }),
-  ];
-  result.results.forEach((r, i) => {
-    lines.push(`${i + 1}. ……${r.snippet}……`);
-  });
+      : t('fmt.searchHead', { total: result.total, query }));
+    result.results.forEach((r, i) => {
+      // 片段跨行、跨表格单元格时原样带出会很碎，压成单行只影响可读性不影响位置
+      const snippet = (r.snippet || '').replace(/\s+/g, ' ').trim();
+      const where = r.section ? t('fmt.metaWrap', { s: r.section }) : '';
+      lines.push(`${i + 1}. @${r.index}${where} ……${snippet}……`);
+    });
+  } else {
+    lines.push(t('fmt.searchNoneInBody', { query }));
+  }
+
+  // 页眉/导航/页脚里的命中没有正文位置（它们本来就不在 <页面内容> 里），如实说明
+  if (outside.total) {
+    lines.push(t('fmt.searchOutside', { n: outside.total }));
+    outside.results.forEach((r) => {
+      lines.push(`- ……${(r.snippet || '').replace(/\s+/g, ' ').trim()}……`);
+    });
+  }
   return lines.join('\n');
+}
+
+/**
+ * 按位置读取正文的结果 → 文本（read_page_text 工具结果）。
+ * 头尾两行都是给模型的自述：读到了哪一段、还剩多少、下一段从哪儿接。
+ * @param {{ text, start, end, total, capped, section }} res snapshotPage text 模式的读取返回值
+ * @param {{ warning?: string }} [opts] 位置可能已过期时的告警（拼在最前面）
+ */
+export function formatReadResult(res, { warning = '' } = {}) {
+  const where = res.section ? t('fmt.readIn', { s: res.section }) : '';
+  const head = t('res.readHead', {
+    start: res.start, end: res.end,
+    total: res.capped ? t('res.readAtLeast', { n: res.total }) : String(res.total),
+    where,
+  });
+  const rest = res.total - res.end;
+  const tail = rest > 0
+    ? t('res.readMore', { n: rest, next: res.end })
+    : (res.capped ? t('res.readCappedEnd') : t('res.readEnd'));
+  return [warning, head, res.text, tail].filter(Boolean).join('\n');
 }
 
 /**

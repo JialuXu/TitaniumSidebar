@@ -48,7 +48,7 @@ The reason for all this: the same capabilities will later be packaged as an embe
 
 ### Injected functions must stay self-contained
 
-`core/snapshot.js`, `search.js`, `highlight.js` and `actions.js` export functions that get serialised whole and injected into the page via `chrome.scripting.executeScript({ func, args })`. Inside those function bodies: **zero module-level references** — no imports, no shared helpers, no constants from the module scope. Return values must be JSON-serialisable; element handles only ever live in the page-side `window.__titanium` (isolated world).
+`core/snapshot.js`, `highlight.js` and `actions.js` export functions that get serialised whole and injected into the page via `chrome.scripting.executeScript({ func, args })`. Inside those function bodies: **zero module-level references** — no imports, no shared helpers, no constants from the module scope. Return values must be JSON-serialisable; element handles only ever live in the page-side `window.__titanium` (isolated world).
 
 This means some logic — the validation chain, table-to-Markdown conversion — exists twice, in `snapshot.js` and again in `actions.js`. **That duplication is deliberate. Do not refactor it into a shared module.** A PR whose whole point is "de-duplicate the injected helpers" will be declined.
 
@@ -156,7 +156,7 @@ Chrome / Edge ≥ 114，ES2020+，不做老浏览器降级、不加 polyfill。�
 
 ### 注入函数必须保持自包含
 
-`core/snapshot.js`、`search.js`、`highlight.js`、`actions.js` 导出的函数会被整体序列化，经 `chrome.scripting.executeScript({ func, args })` 注入页面。这些函数体内：**零模块级引用** —— 不能 import、不能调外部辅助函数、不能用模块作用域的常量。返回值必须 JSON 可序列化；元素句柄只存在于页面侧 isolated world 的 `window.__titanium` 里。
+`core/snapshot.js`、`highlight.js`、`actions.js` 导出的函数会被整体序列化，经 `chrome.scripting.executeScript({ func, args })` 注入页面。这些函数体内：**零模块级引用** —— 不能 import、不能调外部辅助函数、不能用模块作用域的常量。返回值必须 JSON 可序列化；元素句柄只存在于页面侧 isolated world 的 `window.__titanium` 里。
 
 这意味着有些逻辑 —— 校验链、表格转 Markdown —— 在 `snapshot.js` 和 `actions.js` 里各存了一份。**这份重复是刻意为之，不要抽成公共模块。** 以「消除注入函数里的重复代码」为目的的 PR 会被拒绝。
 
