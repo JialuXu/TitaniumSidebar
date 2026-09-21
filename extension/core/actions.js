@@ -51,7 +51,41 @@ export function performAction(payload) {
     return t.length > max ? t.slice(0, max) + '…' : t;
   }
 
-  // ref → 元素句柄，校验链与 highlight.js 保持一致（stale/bad-ref/gone/hidden）
+  // 元素所在文档的视图。同源框架里的元素，样式、事件、选区都归框架自己的 window/document；
+  // 框架被移除或跳走之后旧文档的 defaultView 为 null，据此判定元素已失效（与 snapshot.js 同一口径）。
+  function viewOf(el) {
+    const d = el.ownerDocument;
+    return (d && d.defaultView) || (d === doc ? win : null);
+  }
+
+  // 内嵌框架的可读正文根（与 snapshot.js 的 frameRoot 同一算法，自包含约束下各存一份）
+  function frameRoot(frame) {
+    let inner = null;
+    try { inner = frame.contentDocument; } catch { inner = null; }
+    if (inner && inner.body) return inner.body;
+    const src = frame.getAttribute('srcdoc');
+    if (src && win.DOMParser) {
+      try {
+        const parsed = new win.DOMParser().parseFromString(src, 'text/html');
+        if (parsed && parsed.body) return parsed.body;
+      } catch { /* 解析失败按读不到处理 */ }
+    }
+    return null;
+  }
+
+  // 可见性粗判（与 snapshot.js 的 visibleStyle 同一口径；离线解析件没有视图，只看属性与行内样式）
+  function isHidden(el) {
+    const view = viewOf(el);
+    if (!view) {
+      const inline = el.style || {};
+      return el.hasAttribute('hidden') || inline.display === 'none' || inline.visibility === 'hidden';
+    }
+    const style = view.getComputedStyle(el);
+    return !style || style.display === 'none' || style.visibility === 'hidden';
+  }
+
+  // ref → 元素句柄，校验链与 highlight.js 保持一致（stale/bad-ref/gone/hidden）。
+  // 成功时一并返回元素所在的 view：框架内元素的事件与选区不能用顶层 window 构造。
   function resolveElement(ref, needVisible) {
     const store = win.__titanium;
     if (!store || !Array.isArray(store.elements)) return { err: 'stale' };
@@ -61,14 +95,15 @@ export function performAction(payload) {
     if (!opts.session || store.session !== opts.session) return { err: 'stale' };
     if (!Number.isInteger(ref) || ref < 1 || ref > store.elements.length) return { err: 'bad-ref' };
     const el = store.elements[ref - 1];
-    if (!el || !el.isConnected) return { err: 'gone' };
+    const view = el && el.isConnected ? viewOf(el) : null;
+    if (!view) return { err: 'gone' };
     if (needVisible !== false) {
-      const style = win.getComputedStyle(el);
+      const style = view.getComputedStyle(el);
       if (style && (style.display === 'none' || style.visibility === 'hidden')) return { err: 'hidden' };
       const r = el.getBoundingClientRect();
       if (r.width === 0 && r.height === 0) return { err: 'hidden' };
     }
-    return { el };
+    return { el, view };
   }
 
   function nameOf(el) {
@@ -91,10 +126,34 @@ export function performAction(payload) {
     return v === '' || (v || '').toLowerCase() === 'true';
   }
 
+  // 焦点落在同源框架内时，顶层的 activeElement 只是那个 <iframe>，逐层下钻才是真正的焦点元素
+  function activeElement() {
+    let a = doc.activeElement;
+    while (a && (a.tagName === 'IFRAME' || a.tagName === 'FRAME')) {
+      let inner = null;
+      try { inner = a.contentDocument; } catch { inner = null; }
+      if (!inner || !inner.activeElement) break;
+      a = inner.activeElement;
+    }
+    return a;
+  }
+
   function describeFocus() {
-    const a = doc.activeElement;
-    if (!a || a === doc.body || a === doc.documentElement) return null;
+    const a = activeElement();
+    if (!a) return null;
+    // body 即「没有焦点」；富文本编辑器框架的 body 本身可编辑，是真焦点
+    const d = a.ownerDocument;
+    if ((a === d.body || a === d.documentElement) && !selfEditable(a)) return null;
     return { tag: a.tagName.toLowerCase(), name: nameOf(a) };
+  }
+
+  // 元素是否在用户看不见的地方：先看它在自己那一层视口里的位置，再逐层看所在框架
+  function offscreen(node) {
+    const view = viewOf(node);
+    if (!view) return false;
+    const r = node.getBoundingClientRect();
+    if (r.bottom < 0 || r.top > view.innerHeight || r.right < 0 || r.left > view.innerWidth) return true;
+    return view !== win && view.frameElement ? offscreen(view.frameElement) : false;
   }
 
   function viewportInfo() {
@@ -110,16 +169,16 @@ export function performAction(payload) {
   // 直接赋值可能被它的 value tracker 吞掉而不触发 onChange。取原型描述符可绕过。
   // （扩展的 ISOLATED world 看不到主世界的实例级描述符，本就安全；
   //   这样写是为了未来 SDK 形态直接跑在主世界时同样正确。）
-  function setNativeValue(el, value) {
+  function setNativeValue(el, value, view) {
     const tag = el.tagName.toUpperCase();
-    const proto = tag === 'TEXTAREA' ? win.HTMLTextAreaElement.prototype
-      : tag === 'SELECT' ? win.HTMLSelectElement.prototype
-        : win.HTMLInputElement.prototype;
+    const proto = tag === 'TEXTAREA' ? view.HTMLTextAreaElement.prototype
+      : tag === 'SELECT' ? view.HTMLSelectElement.prototype
+        : view.HTMLInputElement.prototype;
     const desc = Object.getOwnPropertyDescriptor(proto, 'value');
     if (desc && desc.set) desc.set.call(el, value);
     else el.value = value;
-    el.dispatchEvent(new win.Event('input', { bubbles: true }));
-    el.dispatchEvent(new win.Event('change', { bubbles: true }));
+    el.dispatchEvent(new view.Event('input', { bubbles: true }));
+    el.dispatchEvent(new view.Event('change', { bubbles: true }));
   }
 
   // 统一成功返回：附带动作前后 URL（同文档路由变化可当场测到，
@@ -133,15 +192,19 @@ export function performAction(payload) {
     }, extra || {});
   }
 
-  // 可见表格收集：遍历顺序与剪枝规则必须与 snapshot.js 完全一致，
+  // 可见表格收集：遍历顺序与剪枝规则必须与 snapshot.js 完全一致（含内嵌框架的下钻），
   // 否则 table_index 会与页面结构里标注的 #N 对不上
   function collectTables() {
     const out = [];
     (function walk(node) {
       const tag = node.tagName ? node.tagName.toUpperCase() : '';
-      if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'SVG' || tag === 'IFRAME') return;
-      const style = win.getComputedStyle(node);
-      if (style && (style.display === 'none' || style.visibility === 'hidden')) return;
+      if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'SVG') return;
+      if (isHidden(node)) return;
+      if (tag === 'IFRAME' || tag === 'FRAME') {
+        const body = frameRoot(node);
+        if (body) walk(body);
+        return;
+      }
       if (tag === 'TABLE') out.push(node);
       for (const child of node.children) walk(child);
     })(doc.body);
@@ -186,28 +249,27 @@ export function performAction(payload) {
       const got = resolveElement(opts.ref, true);
       if (got.err) return { ok: false, reason: got.err };
       const el = got.el;
+      const ewin = got.view;
       const name = nameOf(el);
       if (isDisabled(el)) return { ok: false, reason: 'disabled', name };
 
       // 视口外先滚到中央；instant 避免平滑滚动与随后的坐标测量产生竞态
-      const r0 = el.getBoundingClientRect();
-      if (r0.bottom < 0 || r0.top > win.innerHeight || r0.right < 0 || r0.left > win.innerWidth) {
-        el.scrollIntoView({ block: 'center', behavior: 'instant' });
-      }
+      if (offscreen(el)) el.scrollIntoView({ block: 'center', behavior: 'instant' });
+      // 事件坐标以元素所在文档的视口为原点，框架内元素不必换算到顶层
       const r = el.getBoundingClientRect();
       const cx = Math.round(r.left + r.width / 2);
       const cy = Math.round(r.top + r.height / 2);
       const base = {
-        bubbles: true, cancelable: true, composed: true, view: win,
+        bubbles: true, cancelable: true, composed: true, view: ewin,
         clientX: cx, clientY: cy, screenX: cx, screenY: cy, button: 0,
       };
       const pointer = { pointerId: 1, pointerType: 'mouse', isPrimary: true };
       try { el.focus({ preventScroll: true }); } catch { /* 不可聚焦元素忽略 */ }
       // 完整还原真实鼠标事件序列：只发 click 会让依赖 mousedown 的菜单/拖拽组件失效
-      el.dispatchEvent(new win.PointerEvent('pointerdown', { ...base, ...pointer, buttons: 1 }));
-      el.dispatchEvent(new win.MouseEvent('mousedown', { ...base, buttons: 1 }));
-      el.dispatchEvent(new win.PointerEvent('pointerup', { ...base, ...pointer, buttons: 0 }));
-      el.dispatchEvent(new win.MouseEvent('mouseup', { ...base, buttons: 0 }));
+      el.dispatchEvent(new ewin.PointerEvent('pointerdown', { ...base, ...pointer, buttons: 1 }));
+      el.dispatchEvent(new ewin.MouseEvent('mousedown', { ...base, buttons: 1 }));
+      el.dispatchEvent(new ewin.PointerEvent('pointerup', { ...base, ...pointer, buttons: 0 }));
+      el.dispatchEvent(new ewin.MouseEvent('mouseup', { ...base, buttons: 0 }));
       // 收尾用原生 click()：链接跳转、表单提交、勾选态切换等默认行为最稳
       el.click();
 
@@ -221,6 +283,7 @@ export function performAction(payload) {
       const got = resolveElement(opts.ref, true);
       if (got.err) return { ok: false, reason: got.err };
       const el = got.el;
+      const ewin = got.view;
       const name = nameOf(el);
       if (isDisabled(el) || el.readOnly) return { ok: false, reason: 'disabled', name };
 
@@ -230,21 +293,22 @@ export function performAction(payload) {
       try { el.focus({ preventScroll: true }); } catch { /* 忽略 */ }
 
       if (tag === 'INPUT' || tag === 'TEXTAREA') {
-        setNativeValue(el, text);
+        setNativeValue(el, text, ewin);
       } else if (selfEditable(el)) {
-        // 富文本编辑器：execCommand 产生真实 InputEvent，编辑器的内部模型与撤销栈才会同步
+        // 富文本编辑器：execCommand 产生真实 InputEvent，编辑器的内部模型与撤销栈才会同步。
+        // 选区与 execCommand 都是按文档的：编辑区在框架里（TinyMCE 等）就得用框架自己的那一份
         let done = false;
         try {
-          const sel = win.getSelection();
-          const range = doc.createRange();
+          const sel = ewin.getSelection();
+          const range = el.ownerDocument.createRange();
           range.selectNodeContents(el);
           sel.removeAllRanges();
           sel.addRange(range);
-          done = doc.execCommand('insertText', false, text);
+          done = el.ownerDocument.execCommand('insertText', false, text);
         } catch { done = false; }
         if (!done) {
           el.textContent = text;
-          el.dispatchEvent(new win.InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
+          el.dispatchEvent(new ewin.InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
         }
       } else {
         return { ok: false, reason: 'not-editable', name };
@@ -284,8 +348,8 @@ export function performAction(payload) {
       }
 
       el.selectedIndex = hit;
-      el.dispatchEvent(new win.Event('input', { bubbles: true }));
-      el.dispatchEvent(new win.Event('change', { bubbles: true }));
+      el.dispatchEvent(new got.view.Event('input', { bubbles: true }));
+      el.dispatchEvent(new got.view.Event('change', { bubbles: true }));
       return finish({ ref: opts.ref, name, value: options[hit].text || options[hit].value });
     }
 
@@ -316,17 +380,19 @@ export function performAction(payload) {
         target = got.el;
         try { target.focus({ preventScroll: true }); } catch { /* 忽略 */ }
       } else {
-        target = doc.activeElement || doc.body;
+        target = activeElement() || doc.body;
       }
+      const twin = viewOf(target) || win;
+      const tdoc = target.ownerDocument || doc;
 
       // keyCode/which 已废弃但必须带：行内大量 jQuery 老系统仍在读它们
       const init = {
         key: spec.key, code: spec.code, keyCode: spec.keyCode, which: spec.keyCode,
-        bubbles: true, cancelable: true, composed: true, view: win,
+        bubbles: true, cancelable: true, composed: true, view: twin,
       };
-      const prevented = !target.dispatchEvent(new win.KeyboardEvent('keydown', init));
-      if (spec.key === 'Enter') target.dispatchEvent(new win.KeyboardEvent('keypress', init));
-      target.dispatchEvent(new win.KeyboardEvent('keyup', init));
+      const prevented = !target.dispatchEvent(new twin.KeyboardEvent('keydown', init));
+      if (spec.key === 'Enter') target.dispatchEvent(new twin.KeyboardEvent('keypress', init));
+      target.dispatchEvent(new twin.KeyboardEvent('keyup', init));
 
       // 合成键盘事件不触发浏览器默认行为，这里按键语义手动补全（页面已 preventDefault 的不补）
       let submitted = false;
@@ -345,12 +411,12 @@ export function performAction(payload) {
       }
       if (!prevented && spec.key === 'Tab') {
         const list = Array.prototype.filter.call(
-          doc.querySelectorAll('a[href],button,input,select,textarea,summary,[tabindex]'),
+          tdoc.querySelectorAll('a[href],button,input,select,textarea,summary,[tabindex]'),
           (e) => {
             if (e.disabled) return false;
             const ti = e.getAttribute('tabindex');
             if (ti !== null && parseInt(ti, 10) < 0) return false;
-            const st = win.getComputedStyle(e);
+            const st = twin.getComputedStyle(e);
             if (st && (st.display === 'none' || st.visibility === 'hidden')) return false;
             const rect = e.getBoundingClientRect();
             return rect.width > 0 || rect.height > 0;

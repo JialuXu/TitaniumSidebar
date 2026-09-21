@@ -46,14 +46,24 @@ export function buildCompactPrompt(instruction = '') {
  * @param {string|null} pageText 脱敏后的页面文本，null 表示不携带
  * @param {string|null} [outlineText] 脱敏后的结构骨架文本，可缺省
  * @param {string} [lead] 页面块之前的一句说明（如「用户已切换到新页面」），可缺省
+ * @param {{ total, shown, capped }|null} [truncation] 正文被截断时的字数事实；
+ *   只陈述事实、不提任何工具名——接口降级为纯文本后这条消息仍在历史里，
+ *   提了工具名就成了指引模型调用不存在的工具（不变式 2）。怎么用位置写在 prompt.tools。
+ *   它放在 <页面内容> 标签**之外**：标签内是页面来的不可信文本，这句是系统的陈述。
  */
-export function buildUserContent(userInput, pageText, outlineText, lead) {
+export function buildUserContent(userInput, pageText, outlineText, lead, truncation) {
   if (!pageText) return userInput;
   const cTag = t('tag.content');
   const oTag = t('tag.outline');
   const leadBlock = lead ? `${lead}\n\n` : '';
   const outlineBlock = outlineText ? `<${oTag}>\n${outlineText}\n</${oTag}>\n\n` : '';
-  return `${leadBlock}<${cTag}>\n${pageText}\n</${cTag}>\n\n${outlineBlock}${userInput}`;
+  const totalBlock = truncation && truncation.total
+    ? t('prompt.pageTotal', {
+      total: truncation.capped ? t('res.readAtLeast', { n: truncation.total }) : String(truncation.total),
+      shown: truncation.shown,
+    }) + '\n\n'
+    : '';
+  return `${leadBlock}<${cTag}>\n${pageText}\n</${cTag}>\n\n${totalBlock}${outlineBlock}${userInput}`;
 }
 
 /**

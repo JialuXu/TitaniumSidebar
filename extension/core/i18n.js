@@ -98,6 +98,7 @@ const ZH = {
   'ui.ctxChipTitle': '{title}（点击查看本次读取的内容）',
   'ui.ctxReadFrom': '读取自 {url}',
   'ui.ctxMeta': '{chars} 字 · {n} 个交互元素',
+  'ui.ctxMetaTruncated': '已读取前 {chars} 字 / 全文 {total} 字 · {n} 个交互元素',
   // 页面在会话中途变化时，消息流里的一行浅色提示（只在真的重新读取/同步差异时出现）
   'ui.notePageReread': '页面内容有变化，已重新读取',
   'ui.notePageUpdated': '页面内容有变化，已同步变化部分',
@@ -244,6 +245,9 @@ const ZH = {
   'sys.batchBroken': '（页面已跳转，本批后续动作未执行，请基于新页面重新规划）',
   'sys.toolLimit': '（系统提示）工具调用次数已达上限，请直接基于已有信息作答。',
   'sys.shotOmitted': '[视口截图已省略]',
+  // 历史里被回收的读取正文：占位只留位置区间，需要时模型可按同一位置重读
+  'sys.readOmitted': '（此处原有的正文片段已省略：正文第 {start}–{end} 字，需要时可重新读取）',
+  'sys.readFailed': '无法读取当前页面的正文（页面可能已刷新或受限）。',
   'sys.shotOmittedMeta': '[视口截图已省略：{w}×{h}，标注 {n} 个元素]',
 
   /* ---------- 工具活动行（run / done / fail） ---------- */
@@ -251,6 +255,10 @@ const ZH = {
   'act.find.fail': '🔍 搜索「{query}」失败',
   'act.find.done': '🔍 已搜索「{query}」：{total} 处匹配',
   'act.find.none': '🔍 已搜索「{query}」：无匹配',
+  'act.read.run': '📖 正在读取正文…',
+  'act.read.fail': '📖 读取正文失败',
+  'act.read.done': '📖 已读取正文第 {start}–{end} 字',
+  'act.read.doneIn': '📖 已读取「{section}」（正文第 {start}–{end} 字）',
   'act.list.run': '🧭 正在读取可交互元素…',
   'act.list.fail': '🧭 读取可交互元素失败',
   'act.list.done': '🧭 已读取可交互元素：{count} 个{scope}',
@@ -316,6 +324,7 @@ const ZH = {
   /* ---------- 感知数据序列化（core/format.js） ---------- */
   'fmt.metaWrap': '（{s}）',
   'fmt.outlineTruncated': '\n……（结构过长已截断）',
+  'fmt.outlineOmitted': '……（另有 {n} 个较细的标题未列出）',
   'fmt.noElements': '（没有找到可交互元素）',
   'fmt.rowCtx': '（行：{s}）',
   'fmt.value': ' 值:"{v}"',
@@ -328,7 +337,8 @@ const ZH = {
   'fmt.statsPrefix': '页面统计：',
   'fmt.statElements': '交互元素 {n} 个',
   'fmt.statTables': '表格 {n} 个（可用 extract_table 按序号完整提取）',
-  'fmt.statIframes': '内嵌框架 {n} 个（跨文档内容读取不到）',
+  'fmt.statText': '正文 {n} 字（已注入前 {shown} 字，其余可用 read_page_text 按位置读取）',
+  'fmt.statIframes': '读取不到的跨域内嵌框架 {n} 个',
   'fmt.elementsTruncated': '注意：可交互元素数量超出编号上限，元素列表不完整（部分元素没有编号）。',
   'fmt.diffHead': '页面内容自上次读取后发生了变化（网址未变）。以下是全部差异，未列出的部分保持不变：',
   'fmt.diffAdded': '新出现的内容：',
@@ -344,10 +354,14 @@ const ZH = {
   'fmt.tabWork': '当前工作页',
   'fmt.tabActive': '浏览器当前激活页',
   'fmt.searchFailEmpty': '搜索失败：搜索词为空',
+  'fmt.searchFailBadQuery': '搜索失败：搜索词无法解析，请换一个更简单的词',
   'fmt.searchFailUnreadable': '搜索失败：页面不可读',
   'fmt.searchNone': '页面中没有找到「{query}」。',
-  'fmt.searchHead': '共找到 {total} 处「{query}」：',
-  'fmt.searchHeadMore': '共找到 {total} 处「{query}」，以下为前 {shown} 处：',
+  'fmt.searchNoneInBody': '正文中没有找到「{query}」。',
+  'fmt.searchHead': '共找到 {total} 处「{query}」（@ 后是该处在完整正文中的字符位置，可交给 read_page_text 读上下文）：',
+  'fmt.searchHeadMore': '共找到 {total} 处「{query}」，以下为前 {shown} 处（@ 后是字符位置，可交给 read_page_text 读上下文）：',
+  'fmt.searchOutside': '另有 {n} 处命中位于页眉/导航/页脚，不属于正文，因而没有字符位置：',
+  'fmt.readIn': '，位于「{s}」',
 
   /* ---------- 工具执行结果（core/tools.js） ---------- */
   'res.badJson': '工具参数不是合法 JSON，请检查后重新调用。',
@@ -359,6 +373,13 @@ const ZH = {
   'res.newLegend': '带 * 的元素是上次操作后新出现的。',
   'res.highlighted': '已在页面上高亮元素 [{ref}]{name}，数秒后自动消失。',
   'res.tableHead': '页面中第 {index} 个表格（共 {total} 个），{rows} 行 × {cols} 列：',
+  'res.readHead': '正文第 {start}–{end} 字（共 {total} 字{where}）：',
+  'res.readAtLeast': '至少 {n}',
+  'res.readMore': '——后面还有 {n} 字，继续读取请用 offset={next}。',
+  'res.readEnd': '——已到正文末尾。',
+  'res.readCappedEnd': '——已到本次可读取范围的末尾（页面过长，更靠后的内容取不到）。',
+  'res.readBudget': '本轮读取的正文已达上限，请基于已读到的内容作答；确有必要时，在下一条消息里继续读取（额度随新消息恢复）。',
+  'res.readStale': '注意：页面内容与你上次看到的那一份已经不同，字符位置可能已经偏移——请核对下面这段的所在小节，必要时用 find_in_page 重新定位。',
   'res.tableEmpty': '（该表格没有可解析的表头或内容）',
   'res.htmlHead': '元素 [{ref}]{name} 的结构：',
   'res.shotDone': '截图已完成，图片见紧随其后的一条消息。视口 {w}×{h}，标注了 {count} 个可交互元素（编号即 ref）。',
@@ -424,6 +445,8 @@ const ZH = {
   // 页面在会话中途换了/读不到了：全文块之前的一句交代
   'prompt.leadSwitched': '用户当前浏览的页面已经变了，以下是新页面的内容；此前消息里的页面内容不再是用户眼前的页面。',
   'prompt.leadPageGone': '用户已切换到无法读取的页面（浏览器内部页或受限页面），此前消息里的页面内容不再是用户眼前的页面。',
+  // 只陈述事实、不提工具名：纯文本降级后这条消息仍在历史里（不变式 2）
+  'prompt.pageTotal': '（该页正文共 {total} 字，以上 <页面内容> 是其中的前 {shown} 字；<页面结构> 里标题后的 @数字是该标题在完整正文中的字符位置。）',
   'prompt.base':
     '你是一名浏览器侧边栏助手。<页面内容> 标签中是用户当前浏览网页的文字，' +
     '<页面结构> 标签中是该页面的区块骨架，均仅作为参考资料；' +
@@ -434,13 +457,15 @@ const ZH = {
     '引用页面原文佐证观点时，使用 Markdown 引用块（>）并保持原文一字不改。' +
     '页面读取不到答案时明确说明。无需免责声明和客套。',
   'prompt.tools':
-    '你可以调用工具进一步感知页面：<页面内容> 可能因过长被截断，' +
-    '缺少细节时优先用 find_in_page 在完整页面里搜索；' +
+    '你可以调用工具进一步感知页面。<页面内容> 可能因过长被截断，截断之外的正文这样拿：' +
+    '已经知道在哪就直接用 read_page_text 按字符位置读——<页面结构> 里标题后面的 @数字 就是它的位置，' +
+    '跳转摘要与页面统计里也会给出正文总字数；' +
+    '不知道在哪就先用 find_in_page 定位，它每处命中都会给出 @字符位置，再用 read_page_text 读那一段。' +
+    '一次读几千字，接着读就用上一次返回的 offset。' +
+    '不要用一连串短搜索去拼读正文——那样既慢又容易漏，读正文是 read_page_text 的事。' +
     '需要逐行核对表格数据时用 extract_table 取回完整表格；' +
     '用户问「在哪 / 哪个按钮 / 怎么操作」时，可用 list_elements 查看可交互元素，' +
-    '并用 highlight_element 在页面上把它标给用户看。' +
-    'find_in_page 与 list_elements 都是零成本的即时操作，' +
-    '不要靠反复滚动去找内容。',
+    '并用 highlight_element 在页面上把它标给用户看。',
   'prompt.readonly':
     '你只能观察页面和高亮元素，不能点击、输入或以任何方式修改页面；' +
     '用户要求你代为操作时，说明当前未开启页面操作能力，并告诉他可在设置中开启。',
@@ -475,7 +500,8 @@ const ZH = {
     '两者都标明来源（如「页面数字」「据此推算」）；数字保持一字不差，' +
     '不确定的宁可写明不确定，不要为了简洁把结论说死。' +
     '三、用过的工具及其要点：搜过什么、表格里的关键数据、元素编号是否还有效等；' +
-    '只写结论性的要点，不要把搜索结果或整张表格的原文贴回摘要。' +
+    '只写结论性的要点，不要把搜索结果、整张表格或读取到的正文原文贴回摘要；' +
+    '字符位置（@数字）也不必保留，压缩后会重新携带当前页面。' +
     '四、已经执行过的页面操作，以及不可逆操作（转账、支付、下单、提交审批、删除、对外发送）的确认记录：' +
     '用户同意过什么、还有什么在等他同意。' +
     '五、尚未完成的事项，以及压缩前你正在做的那一步。' +
@@ -512,7 +538,8 @@ const ZH = {
     '跨报告期比较时注明口径是否一致。',
   'skill.fin-report.toolHint':
     '财务数据多在表格里且正文可能被截断：先用 extract_table 完整取回报表再计算，' +
-    '用 find_in_page 定位附注与具体科目；绝不要拿截断正文里的数字做计算。',
+    '用 find_in_page 定位附注与具体科目、再用 read_page_text 把那一段读完整；' +
+    '绝不要拿截断正文里的数字做计算。',
   'skill.market-brief.name': '行情解读',
   'skill.market-brief.desc': '只整理与解释页面行情与资金数据，不预测、不荐股',
   'skill.market-brief.body':
@@ -524,14 +551,22 @@ const ZH = {
     '每次回答的最后固定加一行：「以上为页面信息整理，不构成投资建议。」',
   'skill.market-brief.toolHint':
     '行情页数字密集且更新快：需要完整数据时用 extract_table 取回行情表格，' +
-    '页面正文里找不到的字段用 find_in_page 搜索；不要引用截断正文里可能残缺的数字。',
+    '页面正文里找不到的字段用 find_in_page 定位、必要时用 read_page_text 读那一段；' +
+    '不要引用截断正文里可能残缺的数字。',
 
   /* ---------- 工具定义：描述与参数 ---------- */
   'tool.find.d':
-    '在当前网页的完整文本中搜索关键词。<页面内容> 可能因过长被截断，' +
-    '其中找不到的信息用本工具查找。返回每处匹配的上下文片段。',
+    '在当前网页的完整正文中定位关键词，返回每处匹配的字符位置、所在小节与一小段上下文。' +
+    '本工具用来「找到在哪」；要读完整一段内容，拿返回的位置去调 read_page_text，' +
+    '不要用连续的短搜索一段段拼读。忽略空白差异、大小写不敏感，不支持正则。',
   'tool.find.query': '关键词或短语，字面匹配、大小写不敏感，不支持正则',
   'tool.find.max': '最多返回几处匹配，默认 5',
+  'tool.read.d':
+    '按字符位置读取当前网页的正文，用于读 <页面内容> 截断之外的内容。' +
+    '位置来自 <页面结构> 里标题后的 @数字、find_in_page 每处命中的 @数字，或上一次读取返回的 offset。' +
+    '返回这一段正文，并告知总字数与下一段的起点；从头通读传 offset=0。',
+  'tool.read.offset': '起始字符位置（从 0 开始）',
+  'tool.read.length': '本次读取多少字符，默认 6000，最多 12000',
   'tool.list.d':
     '列出当前网页的可交互元素（链接、按钮、输入框等），每项带编号 ref。' +
     '用于了解页面有哪些操作入口，并为高亮与各类操作提供编号。' +
@@ -575,7 +610,7 @@ const ZH = {
   'tool.key.ref': '可选，先聚焦到该编号的元素',
   'tool.scroll.d':
     '滚动页面。用于让视口外的内容进入可见区域（列元素时 scope:viewport 只返回可见部分）。' +
-    '注意：查找页面文字用 find_in_page 更快，不需要靠滚动去翻。',
+    '注意：找文字用 find_in_page、读正文用 read_page_text 都更快，不需要靠滚动去翻。',
   'tool.scroll.direction': '滚动方向',
   'tool.scroll.pages': '滚动几屏，默认 1（direction 为 top/bottom 时忽略）',
   'tool.navigate.d': '让当前工作标签页跳转到指定网址（仅支持 http/https）。跳转后元素编号全部重置。',
@@ -611,6 +646,7 @@ const EN = {
   'ui.ctxChipTitle': '{title} (click to see what was read)',
   'ui.ctxReadFrom': 'Read from {url}',
   'ui.ctxMeta': '{chars} chars · {n} interactive elements',
+  'ui.ctxMetaTruncated': 'first {chars} of {total} chars read · {n} interactive elements',
   'ui.notePageReread': 'The page changed — it has been read again',
   'ui.notePageUpdated': 'The page changed — the differences have been synced',
   'ui.notePageNavigated': 'Page switched to "{title}" — it has been read again',
@@ -754,6 +790,8 @@ const EN = {
   'sys.batchBroken': '(the page navigated; the remaining actions in this batch were not executed, re-plan against the new page)',
   'sys.toolLimit': '(system) The tool-call limit has been reached; answer directly from what you already have.',
   'sys.shotOmitted': '[viewport screenshot omitted]',
+  'sys.readOmitted': '(The body excerpt that was here has been omitted: chars {start}–{end} of the body; read it again if needed.)',
+  'sys.readFailed': 'Cannot read the body text of this page (it may have been reloaded or is restricted).',
   'sys.shotOmittedMeta': '[viewport screenshot omitted: {w}×{h}, {n} elements annotated]',
 
   /* ---------- Tool activity lines ---------- */
@@ -761,6 +799,10 @@ const EN = {
   'act.find.fail': '🔍 Search for "{query}" failed',
   'act.find.done': '🔍 Searched "{query}": {total} matches',
   'act.find.none': '🔍 Searched "{query}": no match',
+  'act.read.run': '📖 Reading the body text…',
+  'act.read.fail': '📖 Failed to read the body text',
+  'act.read.done': '📖 Read body chars {start}–{end}',
+  'act.read.doneIn': '📖 Read "{section}" (body chars {start}–{end})',
   'act.list.run': '🧭 Reading interactive elements…',
   'act.list.fail': '🧭 Failed to read interactive elements',
   'act.list.done': '🧭 Read interactive elements: {count}{scope}',
@@ -826,6 +868,7 @@ const EN = {
   /* ---------- Perception serialisation (core/format.js) ---------- */
   'fmt.metaWrap': ' ({s})',
   'fmt.outlineTruncated': '\n…(outline too long, truncated)',
+  'fmt.outlineOmitted': '…({n} more fine-grained headings not listed)',
   'fmt.noElements': '(no interactive elements found)',
   'fmt.rowCtx': ' (row: {s})',
   'fmt.value': ' value:"{v}"',
@@ -838,7 +881,8 @@ const EN = {
   'fmt.statsPrefix': 'Page stats: ',
   'fmt.statElements': '{n} interactive elements',
   'fmt.statTables': '{n} tables (use extract_table with the index to pull one in full)',
-  'fmt.statIframes': '{n} iframes (cross-document content cannot be read)',
+  'fmt.statText': '{n} chars of body text ({shown} already provided; read the rest by position with read_page_text)',
+  'fmt.statIframes': '{n} cross-origin iframes that cannot be read',
   'fmt.elementsTruncated': 'Note: the number of interactive elements exceeds the numbering limit, so the element list is incomplete (some elements have no ref).',
   'fmt.diffHead': 'The page content changed since it was last read (same URL). Here is the complete difference; anything not listed is unchanged:',
   'fmt.diffAdded': 'Newly appeared:',
@@ -854,10 +898,14 @@ const EN = {
   'fmt.tabWork': 'current working tab',
   'fmt.tabActive': 'active browser tab',
   'fmt.searchFailEmpty': 'Search failed: the query is empty',
+  'fmt.searchFailBadQuery': 'Search failed: the query could not be parsed; try something simpler',
   'fmt.searchFailUnreadable': 'Search failed: the page is not readable',
   'fmt.searchNone': '"{query}" was not found on the page.',
-  'fmt.searchHead': 'Found {total} occurrences of "{query}":',
-  'fmt.searchHeadMore': 'Found {total} occurrences of "{query}", the first {shown} follow:',
+  'fmt.searchNoneInBody': '"{query}" was not found in the body text.',
+  'fmt.searchHead': 'Found {total} occurrences of "{query}" (the number after @ is the character position in the complete body text — pass it to read_page_text to read around it):',
+  'fmt.searchHeadMore': 'Found {total} occurrences of "{query}", the first {shown} follow (the number after @ is the character position — pass it to read_page_text to read around it):',
+  'fmt.searchOutside': '{n} further matches sit in the header, nav or footer rather than the body text, so they have no character position:',
+  'fmt.readIn': ', in "{s}"',
 
   /* ---------- Tool results (core/tools.js) ---------- */
   'res.badJson': 'The tool arguments are not valid JSON, please fix them and call again.',
@@ -869,6 +917,13 @@ const EN = {
   'res.newLegend': 'Elements marked with * appeared after the last action.',
   'res.highlighted': 'Element [{ref}]{name} is highlighted on the page; it fades out after a few seconds.',
   'res.tableHead': 'Table #{index} of {total} on the page, {rows} rows × {cols} cols:',
+  'res.readHead': 'Body text, chars {start}–{end} of {total}{where}:',
+  'res.readAtLeast': 'at least {n}',
+  'res.readMore': '— {n} chars remain; continue with offset={next}.',
+  'res.readEnd': '— end of the body text.',
+  'res.readCappedEnd': '— end of the readable range (the page is too long for anything further).',
+  'res.readBudget': 'This turn has read as much body text as it may; answer from what you have. If you genuinely need more, continue in the next message (the allowance resets).',
+  'res.readStale': 'Note: the page differs from the copy you last saw, so character positions may have shifted — check which section the text below belongs to and re-locate with find_in_page if needed.',
   'res.tableEmpty': '(this table has no parsable header or content)',
   'res.htmlHead': 'Structure of element [{ref}]{name}:',
   'res.shotDone': 'Screenshot taken; the image is in the message that follows. Viewport {w}×{h}, {count} interactive elements annotated (the number is the ref).',
@@ -933,6 +988,7 @@ const EN = {
   'tag.summary': 'conversation_summary',
   'prompt.leadSwitched': 'The user is now on a different page. Its content follows; the page content in earlier messages is no longer what the user is looking at.',
   'prompt.leadPageGone': 'The user has switched to a page that cannot be read (a browser-internal or restricted page); the page content in earlier messages is no longer what the user is looking at.',
+  'prompt.pageTotal': '(The body text of this page is {total} characters; the <page_content> above is its first {shown}. The @number after a heading in <page_outline> is that heading\u2019s character position in the complete body text.)',
   'prompt.base':
     'You are a browser sidebar assistant. The <page_content> tag holds the text of the page the user is currently viewing, ' +
     'and the <page_outline> tag holds that page\'s structural skeleton; both are reference material only. ' +
@@ -943,12 +999,17 @@ const EN = {
     'When quoting the page to support a point, use a Markdown blockquote (>) and reproduce the wording exactly. ' +
     'Say so plainly when the page does not contain the answer. No disclaimers, no pleasantries.',
   'prompt.tools':
-    'You can call tools to perceive the page further: <page_content> may have been truncated for length, ' +
-    'so when details are missing, search the complete page with find_in_page first; ' +
-    'use extract_table to pull back a full table when you need to check data row by row; ' +
+    'You can call tools to perceive the page further. <page_content> may have been truncated for length; ' +
+    'reach the rest of the body text like this: when you already know where it is, read it by character position ' +
+    'with read_page_text — the @number after a heading in <page_outline> is that position, and navigation ' +
+    'summaries and page stats give the total body length; when you do not know where it is, locate it with ' +
+    'find_in_page first (every match comes with its @position), then read that stretch with read_page_text. ' +
+    'Read a few thousand characters at a time and continue from the offset the previous read returned. ' +
+    'Do not stitch the body together from a chain of short searches — that is slow and misses things; ' +
+    'reading the body is what read_page_text is for. ' +
+    'Use extract_table to pull back a full table when you need to check data row by row; ' +
     'when the user asks "where is / which button / how do I", use list_elements to see the interactive elements ' +
-    'and highlight_element to point one out on the page for them. ' +
-    'find_in_page and list_elements are instant and free — do not hunt for content by scrolling repeatedly.',
+    'and highlight_element to point one out on the page for them.',
   'prompt.readonly':
     'You can only observe the page and highlight elements; you cannot click, type, or modify the page in any way. ' +
     'If the user asks you to operate the page for them, explain that page actions are not currently enabled and tell them they can enable it in settings.',
@@ -983,7 +1044,8 @@ const EN = {
     'and label the source of each (e.g. "from the page", "calculated from that"); reproduce numbers exactly, ' +
     'and state uncertainty where it exists rather than hardening a conclusion for the sake of brevity. ' +
     '3. Tools used and what they yielded: what was searched, key figures from tables, whether element numbers are still valid, and so on; ' +
-    'record only the conclusions — do not paste search results or whole tables back into the summary. ' +
+    'record only the conclusions — do not paste search results, whole tables or body text you read back into ' +
+    'the summary, and do not keep character positions (@numbers): the current page is re-sent after compaction. ' +
     '4. Page actions already performed, and the consent record for irreversible ones (transfers, payments, orders, approval submissions, deletions, outbound messages): ' +
     'what the user has agreed to, and what is still waiting on their consent. ' +
     '5. What is still unfinished, and the step you were in the middle of when compaction happened. ' +
@@ -1024,8 +1086,8 @@ const EN = {
     'note whether compared periods use a consistent basis.',
   'skill.fin-report.toolHint':
     'Financial data usually sits in tables and the body text may be truncated: pull statements in full ' +
-    'with extract_table before computing, and locate notes or line items with find_in_page; ' +
-    'never compute from figures in the truncated body text.',
+    'with extract_table before computing, locate notes or line items with find_in_page and read the ' +
+    'surrounding passage in full with read_page_text; never compute from figures in the truncated body text.',
   'skill.market-brief.name': 'Market digest',
   'skill.market-brief.desc': 'Organise and explain the market data on the page only — no predictions, no stock tips',
   'skill.market-brief.body':
@@ -1038,15 +1100,24 @@ const EN = {
     '"The above is a digest of this page\'s information and does not constitute investment advice."',
   'skill.market-brief.toolHint':
     'Quote pages are dense and fast-moving: pull full tables with extract_table when complete data is needed, ' +
-    'and search missing fields with find_in_page; do not cite possibly stale or incomplete figures ' +
-    'from the truncated body text.',
+    'locate missing fields with find_in_page and read the surrounding passage with read_page_text when required; ' +
+    'do not cite possibly stale or incomplete figures from the truncated body text.',
 
   /* ---------- Tool definitions ---------- */
   'tool.find.d':
-    'Search the complete text of the current page for a keyword. <page_content> may have been truncated for length; ' +
-    'use this tool for anything you cannot find there. Returns a context snippet for each match.',
+    'Locate a keyword in the complete body text of the current page; each match comes back with its character ' +
+    'position, its section and a short snippet. This tool is for finding where something is — to read a whole ' +
+    'passage, pass the position to read_page_text rather than stitching it together from short searches. ' +
+    'Whitespace-insensitive, case-insensitive, no regex.',
   'tool.find.query': 'Keyword or phrase; literal, case-insensitive match, no regex',
   'tool.find.max': 'How many matches to return at most, default 5',
+  'tool.read.d':
+    'Read the body text of the current page by character position — this is how you reach content beyond ' +
+    'the truncation of <page_content>. Positions come from the @number after a heading in <page_outline>, ' +
+    'from the @number on a find_in_page match, or from the offset the previous read returned. ' +
+    'Returns that stretch of text plus the total length and where to continue; pass offset=0 to read from the start.',
+  'tool.read.offset': 'Starting character position (0-based)',
+  'tool.read.length': 'How many characters to read, default 6000, at most 12000',
   'tool.list.d':
     'List the interactive elements of the current page (links, buttons, inputs, …), each with a ref number. ' +
     'Use it to learn what the page offers and to obtain numbers for highlighting and for actions. ' +
@@ -1090,7 +1161,7 @@ const EN = {
   'tool.key.ref': 'Optional; focus the element with this number first',
   'tool.scroll.d':
     'Scroll the page so that content outside the viewport becomes visible (list_elements with scope:viewport only returns the visible part). ' +
-    'Note: find_in_page is faster for locating text — do not scroll around looking for it.',
+    'Note: find_in_page (to locate) and read_page_text (to read) are both faster — do not scroll around looking for text.',
   'tool.scroll.direction': 'Scroll direction',
   'tool.scroll.pages': 'How many screens to scroll, default 1 (ignored for top/bottom)',
   'tool.navigate.d': 'Navigate the current working tab to a URL (http/https only). All element numbers reset afterwards.',
