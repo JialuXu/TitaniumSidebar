@@ -219,31 +219,49 @@ export function formatPageStatus(viewport, stats) {
 }
 
 /**
+ * 「页面可能仍在加载」的提醒（动作后与显式等待的摘要共用）。
+ * 看得见加载指示器时说得笃定；只是内容一直在变动时说得留有余地——行情刷新、
+ * 滚动字幕这类页面永远静不下来，不能每次都断言它「在加载」。
+ * @param {{ busy: number, waitedMs: number }|null|undefined} loading 等待结果，稳定时为空
+ */
+function formatLoadingNote(loading) {
+  if (!loading) return '';
+  const s = Math.max(1, Math.round(loading.waitedMs / 1000));
+  return t(loading.busy ? 'fmt.chgBusy' : 'fmt.chgUnstable', { s, n: loading.busy });
+}
+
+/**
  * 动作执行后的页面变化摘要（动作类工具结果的统一尾巴）。
  * 导航后刻意不带新页全文——那会让回合内 token 迅速膨胀；
  * 模型需要细节时自行调 find_in_page / list_elements。
- * @param {{ navigated, restricted?, title?, url?, newElements?, viewport?, stats? }} change
+ * @param {{ navigated, restricted?, title?, url?, newElements?, viewport?, stats?,
+ *           loading?: { busy: number, waitedMs: number }|null }} change
+ *   loading 非空表示等待上限内页面没有稳定下来，摘要末尾提醒模型占位文字不可当结论
  */
 export function formatPageChange(change) {
   if (!change) return '';
   if (change.restricted) {
     return t('fmt.chgRestricted');
   }
+  const lines = [];
   if (change.navigated) {
-    const head = t('fmt.chgNavigated', { title: change.title || t('ui.untitled'), url: change.url || '' });
-    const status = formatPageStatus(change.viewport, change.stats);
-    return status ? head + '\n' + status : head;
+    lines.push(t('fmt.chgNavigated', { title: change.title || t('ui.untitled'), url: change.url || '' }));
+    lines.push(formatPageStatus(change.viewport, change.stats));
+  } else {
+    const fresh = change.newElements || [];
+    // 名额耗尽时「没有新增」是假象（新元素编不进号），必须区分说法——
+    // Gmail 勾选邮件后工具栏按钮找不到，根因正是这句误导性的「没有新增」
+    const truncated = change.stats && change.stats.elementsTruncated ? t('fmt.chgTruncNote') : '';
+    if (!fresh.length) {
+      lines.push(truncated ? t('fmt.chgNoNewTrunc') : t('fmt.chgNoNew'));
+    } else {
+      lines.push(t('fmt.chgNew', { n: fresh.length }));
+      lines.push(formatElements(fresh, { budget: BUDGETS.newElements }));
+    }
+    lines.push(truncated);
   }
-  const fresh = change.newElements || [];
-  // 名额耗尽时「没有新增」是假象（新元素编不进号），必须区分说法——
-  // Gmail 勾选邮件后工具栏按钮找不到，根因正是这句误导性的「没有新增」
-  const truncated = change.stats && change.stats.elementsTruncated ? t('fmt.chgTruncNote') : '';
-  if (!fresh.length) {
-    return truncated ? `${t('fmt.chgNoNewTrunc')}\n${truncated}` : t('fmt.chgNoNew');
-  }
-  const head = t('fmt.chgNew', { n: fresh.length }) + '\n' +
-    formatElements(fresh, { budget: BUDGETS.newElements });
-  return truncated ? `${head}\n${truncated}` : head;
+  lines.push(formatLoadingNote(change.loading));
+  return lines.filter(Boolean).join('\n');
 }
 
 /**
