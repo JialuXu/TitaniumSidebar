@@ -14,6 +14,9 @@ CLAUDE.md
 # 设计稿源文件（.pen，体积大且为不可读格式，本地保留）
 /Design
 
+# 录屏原片（转成 docs/media 下的 GIF 后不入库）
+*.mov
+
 # 编辑器杂项
 .vscode/
 .idea/
