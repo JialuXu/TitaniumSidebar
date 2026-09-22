@@ -18,12 +18,13 @@
   --text-3: #8f8d8a;
   --text-inverse: #ffffff;
   --border: #d6d3cf;
+  --rail: rgba(26, 26, 26, 0.16);         /* 过程时间轴的竖线：比分隔线深一档，否则在暖纸底上看不见 */
   --positive: #3f6c46;
   --caution: #b3862f;
   --caution-soft: rgba(179, 134, 47, 0.08);
   --negative: #a63b2a;
   --negative-soft: rgba(166, 59, 42, 0.06);
-  --neutral-soft: rgba(26, 26, 26, 0.04); /* 中性浅底：感知活动行、状态胶囊 */
+  --neutral-soft: rgba(26, 26, 26, 0.04); /* 中性浅底：菜单/列表 hover、状态胶囊 */
   --code-bg: #f1eee9;                     /* 代码底：纸色系 */
   /* 圆角与间距 */
   --radius-sm: 8px;
@@ -516,44 +517,129 @@ body {
   border-radius: var(--radius-sm);
 }
 
-/* 工具调用活动行：AI 回复内部、两段正文之间的状态说明（左侧彩边小卡） */
-.tool-activity {
-  margin: 6px 0;
-  padding: 7px 12px;
+/* ========== 过程时间轴 ========== */
+/* 一条回复里最终回答之前的过程（活动行 + 中途说明段）收进 .tool-trace，整体向右缩进，
+   左栏一条浅色竖线把各步串起来，图标压在线上作节点；回合结束后折叠成一行摘要，点击展开。
+   左栏几何：图标 13px 落在 4–17px、竖线 1px 落在 10px（与图标同心），文字从 30px 起排；
+   每项上下各 4px 内边距，行距 26px——再紧一点图标之间就只剩几像素线段，竖线连不成线。 */
+.tool-trace {
+  margin: 6px 0 10px;
+}
+
+/* 摘要行：进行中不显示（过程本身就在眼前），回合结束后出现；本身就是折叠开关 */
+.trace-head {
+  display: none;
+  position: relative;
+  width: 100%;
+  padding: 4px 0 4px 30px;
+  border: none;
+  background: none;
+  font-family: inherit;
   font-size: 11.5px;
-  line-height: 1.5;
+  line-height: 1.6;
+  text-align: left;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.tool-trace.done > .trace-head { display: block; }
+.trace-head:hover { color: var(--accent); }
+
+/* 含页面操作的摘要沿用动作行的字色字重：折叠后「AI 改过页面」仍一眼可见 */
+.trace-head.action {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.trace-head .tool-icon {
+  transform: rotate(90deg); /* 展开态箭头向下 */
+  transition: transform 0.15s;
+}
+
+.tool-trace.collapsed > .trace-head .tool-icon { transform: none; }
+.tool-trace.collapsed > .trace-body { display: none; }
+
+/* 工具调用活动行：时间轴上的一步。
+   无底色无边框，只用字色与字重分层：感知行浅灰细字、动作行深色中粗、失败红字、进行中主色呼吸。
+   卡片式会把一次表单填写的八九步堆成一列色块，压过正文；纯文字行才像过程日志。 */
+.tool-activity {
+  position: relative;
+  padding: 4px 0 4px 30px;
+  font-size: 11.5px;
+  line-height: 1.6;
   color: var(--text-2);
-  background: var(--neutral-soft);
-  border-left: 2px solid var(--text-3);
-  border-radius: var(--radius-sm);
+}
+
+/* 行首线性图标：描边随字色（进行中/失败/动作态一起变色），绝对定位压在竖线上，顶部微调对齐首行文字 */
+.tool-icon {
+  position: absolute;
+  left: 4px;
+  top: 6.5px;
+  width: 13px;
+  height: 13px;
+}
+
+.tool-text {
+  display: block;
+  min-width: 0;
+  word-break: break-word;
+}
+
+/* 竖线由每一步自己画：从本步图标下沿到下一步图标上沿（越过本步底边 5px，两端各留 1.5px 空隙），末步不画。
+   不用容器上一条通到底的线：图标要盖住线得铺底色，而面板底是渐变，铺不出一致的底色。 */
+.tool-activity::before,
+.trace-body > .ai-content::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: 21px;
+  bottom: -5px;
+  width: 1px;
+  background: var(--rail);
+}
+
+/* 下一步是说明段时节点在更靠下的位置（圆点对齐首行中心 11.5px），竖线多伸 5px 接上 */
+.tool-activity:has(+ .ai-content)::before { bottom: -10px; }
+.trace-body > :last-child::before { display: none; }
+
+/* 中途说明段：字号与字色都比最终回答轻一档，读起来是过程记录而不是结论；节点是一个小圆点 */
+.trace-body > .ai-content {
+  position: relative;
+  padding: 4px 0 4px 30px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.trace-body > .ai-content::before { top: 18px; }
+.trace-body > .ai-content > :first-child { margin-top: 0; }
+.trace-body > .ai-content > :last-child { margin-bottom: 0; }
+
+.trace-body > .ai-content::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 11.5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--rail);
 }
 
 .tool-activity.running {
   color: var(--accent);
-  border-left-color: var(--accent);
   animation: tool-pulse 1.2s ease-in-out infinite;
 }
 
-.tool-activity.failed {
-  color: var(--negative);
-  background: var(--negative-soft);
-  border-left-color: var(--negative);
-}
+.tool-activity.failed { color: var(--negative); }
 
-/* 动作类活动行：AI 改动了页面，必须比只读感知更醒目 */
+/* 动作类活动行：AI 改动了页面，必须比只读感知更醒目——同样不加底色，靠字色加深、字重加粗区分 */
 .tool-activity.action {
   color: var(--text);
-  background: var(--caution-soft);
-  border-left-color: var(--caution);
   font-weight: 500;
 }
 
 .tool-activity.action.running { color: var(--caution); }
-.tool-activity.action.failed {
-  color: var(--negative);
-  background: var(--negative-soft);
-  border-left-color: var(--negative);
-}
+.tool-activity.action.failed { color: var(--negative); }
 
 @keyframes tool-pulse {
   50% { opacity: 0.55; }

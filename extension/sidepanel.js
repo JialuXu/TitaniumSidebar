@@ -4,15 +4,19 @@
 import { snapshotPage } from './core/snapshot.js';
 import { highlightElement } from './core/highlight.js';
 import { performAction } from './core/actions.js';
+import { waitForSettle } from './core/settle.js';
 import {
-  buildToolDefs, dispatchToolCall, dropSupersededReads, trimRetainedReads,
-  MAX_TOOL_ROUNDS, MAX_ACTION_ROUNDS, WRITE_TOOL_NAMES,
+  buildToolDefs, dispatchToolCall, MAX_TOOL_ROUNDS, MAX_ACTION_ROUNDS, WRITE_TOOL_NAMES,
 } from './core/tools.js';
+import { describeToolActivity } from './core/activity.js';
 import { annotateScreenshot } from './core/annotate.js';
-import { formatOutline, formatTextDiff, BUDGETS } from './core/format.js';
+import { formatOutline, BUDGETS } from './core/format.js';
 import { maskSensitive } from './core/masker.js';
-import { buildSystemPrompt, buildUserContent, buildPageUpdate, buildCompactPrompt } from './core/prompt.js';
-import { parseCompactCommand, buildCompactState, compactRequestTail } from './core/compact.js';
+import {
+  buildRequestMessages, buildCompactRequest, stripImagesFromHistory, trimRetainedReads,
+} from './core/conversation.js';
+import { initialSentPage, decidePageSync, composeSendContent } from './core/page-sync.js';
+import { parseCompactCommand, buildCompactState } from './core/compact.js';
 import { streamChat, testConnection, LlmError } from './core/llm-client.js';
 import {
   normalizeConfig, activeProfile, emptyProfile, profileLabel, buildSettingsExport, parseSettingsImport,
@@ -46,13 +50,6 @@ const storage = {
 const historyStore = createHistoryStore(storage, { maxSessions: 50 });
 
 /* ========== 全局状态 ========== */
-// 模型「已经看到的页面」的初值：text 为空表示还没给模型看过任何页面内容
-function initialSentPage() {
-  // textTotal：模型看到的那份页面有多长。位置是否还作数以它为基准（不变式 6），
-  // 因此只在真的重发了全文（kind:'full'）时更新。
-  return { text: '', outline: '', url: '', title: '', diffChars: 0, textTotal: 0, textCapped: false };
-}
-
 function initialPage() {
   return {
     status: 'none',          // none 未读取 | ok 已读取 | unreadable 无法读取
@@ -399,15 +396,23 @@ const fullSnapshotArgs = (extra = {}) => ({
 
 // 完整快照当前激活标签页（文本 + 结构骨架 + 元素映射重建）。
 // 失败（受限页/注入被拒/无可读内容）统一返回 null，由调用方归一为「页面不可读」。
+// 返回值另带 loading：页面在预算内没有稳定下来（见 awaitPageReady），调用方据此在
+// 消息里交代一句，免得模型把「暂无数据」当成页面的真实内容。
 async function snapshotCurrentTab() {
-  const tab = await getActiveTab();
-  if (!tab) return null;
+  const active = await getActiveTab();
+  if (!active) return null;
+  // 用户常常是刚点开一个页面就提问，此刻文档未必加载完、数据多半还没回来。
+  // 发送前的等待预算给得紧（用户在等回复）：静下来就立刻读，等不到就带着标记读。
+  // 等文档 complete 的上限也收紧：挂着长轮询 iframe 的页面 status 会一直是 loading，
+  // 不能让这种页每次发送都白等；文档本身是否解析完由稳定判定里的 readyState 兜住。
+  const { tab, settle } = await awaitPageReady(active.id, SETTLE.send, 1500);
+  if (!tab || isRestrictedUrl(tab.url)) return null;
   // 每条消息发送前都会走这里重读一次。仍是同一标签页的同一网址时按指纹继承旧编号，
   // 模型在会话中已经见过的 ref 才不会因为一次例行重读而集体作废；换了页面则干净重编。
   const inheritRefs = tab.id === state.page.tabId && tab.url === state.page.url;
   const result = await injectFunc(tab.id, snapshotPage, fullSnapshotArgs({ inheritRefs }));
   if (!result || !result.ok || !result.text) return null;
-  return { ...result, tabId: tab.id };
+  return { ...result, tabId: tab.id, loading: loadingOf(settle) };
 }
 
 // 把一次 full 快照写入 state.page（脱敏 + 命中合并）。
@@ -492,6 +497,44 @@ async function waitForTabComplete(tabId, timeoutMs) {
   try { return await chrome.tabs.get(tabId); } catch { return null; }
 }
 
+// 「等页面内容就位」的预算。文档 complete 不等于内容就位：SPA 与后台系统的数据随后才由
+// 接口拉回，这段时间页面上是骨架屏与「暂无数据」占位，此刻拍快照模型就会把占位当结论。
+// 发送前的等待要快（用户在等回复）；动作后可以多等一会，那是模型在等。
+const SETTLE = {
+  send: { quietMs: 400, maxMs: 2500 },
+  action: { quietMs: 600, maxMs: 5000 },
+};
+
+// 注入 core/settle.js 的稳定判定；注入失败（受限页、文档中途被换掉）返回 null
+async function settleTab(tabId, budget) {
+  const res = await injectFunc(tabId, waitForSettle, budget);
+  return res && res.ok ? res : null;
+}
+
+// 稳定判定 → 变化摘要里的 loading 字段（formatPageChange 与发送前的交代语据此提醒模型）；
+// 稳定了或没判定成功都是 null——判定不了不能当「仍在加载」到处报警
+function loadingOf(settle) {
+  if (!settle || settle.settled) return null;
+  return { busy: settle.busy, waitedMs: settle.waitedMs };
+}
+
+// 等到页面就位：先等文档加载完成，再等内容稳定。稳定判定注入在导航中途会失败
+// （旧文档被换掉），那就等新文档完成后再判一次；仍不成就带着「未稳定」继续——
+// 等待只能让结果更准，不能卡住回合。返回的 tab 是等待之后重新取的：SPA 的 pushState
+// 往往发生在等待期间，url 得以此为准。loadTimeoutMs 为 0 表示不等文档（输入类动作）。
+async function awaitPageReady(tabId, budget, loadTimeoutMs) {
+  let tab = await waitForTabComplete(tabId, loadTimeoutMs);
+  if (!tab) return { tab: null, settle: null };
+  let settle = await settleTab(tabId, budget);
+  if (!settle && loadTimeoutMs > 0) {
+    tab = await waitForTabComplete(tabId, loadTimeoutMs);
+    if (!tab) return { tab: null, settle: null };
+    settle = await settleTab(tabId, budget);
+  }
+  try { tab = await chrome.tabs.get(tabId); } catch { return { tab: null, settle: null }; }
+  return { tab, settle };
+}
+
 // 页面已跳转：全量重建快照并整体更新 state.page。
 // 新页全文刻意不在本回合塞给模型（回合内 token 会爆，tool 消息对之间也插不进 user 消息），
 // 而是留给下一条用户消息——那时 state.sentPage 与新页网址不符，自动携带新页全文。
@@ -516,9 +559,11 @@ async function rebuildPageAfterNavigation(tab) {
 }
 
 // 动作执行后感知页面变化，产出给模型的变化摘要。
-// mayNavigate：点击/回车这类可能触发跳转的动作要等加载完成，输入/选择则无需等待。
-async function syncAfterAction({ mayNavigate }) {
-  await sleep(300); // 静默期：给 SPA 重渲染或导航启动留出时间
+// mayNavigate：点击/回车这类可能触发跳转的动作要等文档加载完成；输入/选择不等文档，
+// 但同样等内容稳定——联想下拉、校验提示都是输入后几百毫秒才出现的。
+// budget：稳定判定的预算，wait_for_page 按模型要求的秒数传入。
+async function syncAfterAction({ mayNavigate, budget = SETTLE.action }) {
+  if (mayNavigate) await sleep(300); // 静默期：给导航启动留出时间，否则会读到旧页面的 complete 状态
 
   // target=_blank 的链接与 window.open 会把激活页换成新标签页，收养它为新的工作页
   let active = null;
@@ -526,13 +571,12 @@ async function syncAfterAction({ mayNavigate }) {
   const adopted = Boolean(active && active.id && active.id !== state.page.tabId);
   if (adopted) state.page.tabId = active.id;
 
-  const tab = mayNavigate || adopted
-    ? await waitForTabComplete(state.page.tabId, 8000)
-    : await chrome.tabs.get(state.page.tabId).catch(() => null);
+  const { tab, settle } = await awaitPageReady(state.page.tabId, budget, mayNavigate || adopted ? 8000 : 0);
   if (!tab) return { navigated: true, restricted: true };
+  const loading = loadingOf(settle);
 
   if (adopted || (tab.url && tab.url !== state.page.url)) {
-    return await rebuildPageAfterNavigation(tab);
+    return { ...(await rebuildPageAfterNavigation(tab)), loading };
   }
 
   // 未跳转：增量刷新，把新出现的元素（带 * 标记）报告给模型
@@ -543,18 +587,19 @@ async function syncAfterAction({ mayNavigate }) {
       newElements: snap.elements.filter((e) => e.isNew),
       viewport: snap.viewport,
       stats: snap.stats,
+      loading,
     };
   } catch {
-    return { navigated: false, newElements: [] };
+    return { navigated: false, newElements: [], loading };
   }
 }
 
-// 导航类动作的统一收尾：等加载完成 → 全量重建 → 返回变化摘要
+// 导航类动作的统一收尾：等文档加载完成、内容就位 → 全量重建 → 返回变化摘要
 async function afterNavigation(tabId) {
   state.page.tabId = tabId;
   await sleep(400); // 让导航真正开始，否则会读到旧页面的 complete 状态
-  const tab = await waitForTabComplete(tabId, 10000);
-  return await rebuildPageAfterNavigation(tab);
+  const { tab, settle } = await awaitPageReady(tabId, SETTLE.action, 10000);
+  return { ...(await rebuildPageAfterNavigation(tab)), loading: loadingOf(settle) };
 }
 
 function requireHttpUrl(url) {
@@ -634,6 +679,21 @@ const provider = {
       .map(({ ref, bbox }) => ({ ref, bbox }));
     const { dataUrl, markCount } = await annotateScreenshot(raw, marks, snap.viewport);
     return { dataUrl, markCount, viewport: snap.viewport };
+  },
+
+  // 模型主动等页面加载：与动作后的同步走同一条路（等文档 → 等内容稳定 → 判定跳转 →
+  // 增量刷新或全量重建），只是稳定判定的上限换成模型要的秒数。
+  async waitForPage({ seconds }) {
+    const tab = await requireSnapshotTab();
+    // 恢复历史会话后 page 已归零（tabId 为 null），先认领当前标签页，
+    // 否则下面按 state.page.tabId 取标签页会落空、被当成跳到了受限页
+    if (state.page.tabId === null) state.page.tabId = tab.id;
+    const started = Date.now();
+    const change = await syncAfterAction({
+      mayNavigate: true,
+      budget: { quietMs: SETTLE.action.quietMs, maxMs: seconds * 1000 },
+    });
+    return { ...change, waitedMs: Date.now() - started };
   },
 
   /* ---------- 页内动作（注入 core/actions.js 的 performAction） ---------- */
@@ -800,11 +860,59 @@ function appendNote(root, text) {
 }
 
 /* ========== 工具调用活动行 ========== */
-// 有副作用的动作用 .action 样式强调——用户必须一眼看出 AI 改动了页面
-function appendToolActivity(root, text, isAction) {
+// 活动行行首的线性图标：按工具名取，24 视口、描边随字色。不用 emoji——各系统字形不一、
+// 无法着色、也无法随进行中/失败态统一变色。路径全是本地常量，不依赖任何外部资源。
+const TOOL_ICONS = {
+  find_in_page: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  read_page_text: '<path d="M2 4h6a4 4 0 0 1 4 4v12a3 3 0 0 0-3-3H2z"/><path d="M22 4h-6a4 4 0 0 0-4 4v12a3 3 0 0 1 3-3h7z"/>',
+  list_elements: '<path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/>',
+  highlight_element: '<circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>',
+  capture_screenshot: '<path d="M3 8a2 2 0 0 1 2-2h2l2-3h6l2 3h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="3.5"/>',
+  extract_table: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M10 4v16"/>',
+  get_element_html: '<path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/>',
+  wait_for_page: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  click_element: '<path d="M5 3 19 10.5 13 12.2 10.5 19z"/><path d="m13 12.2 6 6"/>',
+  input_text: '<path d="M4 7V4h16v3"/><path d="M12 4v16"/><path d="M9 20h6"/>',
+  select_option: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m9 11 3 3 3-3"/>',
+  press_key: '<path d="M20 4v7a4 4 0 0 1-4 4H4"/><path d="m9 10-5 5 5 5"/>',
+  scroll_page: '<path d="M12 3v18"/><path d="m8 7 4-4 4 4M8 17l4 4 4-4"/>',
+  navigate: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><ellipse cx="12" cy="12" rx="4" ry="9"/>',
+  go_back: '<path d="M19 12H5"/><path d="m12 5-7 7 7 7"/>',
+  refresh: '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>',
+  open_tab: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M7 6.5h.01"/>',
+  switch_tab: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M7 6.5h.01"/>',
+  close_tab: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M7 6.5h.01"/>',
+  list_tabs: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M7 6.5h.01"/>',
+  // 未登记的工具名：三点占位
+  generic: '<circle cx="12" cy="12" r="9"/><path d="M8 12h.01M12 12h.01M16 12h.01"/>',
+  // 过程时间轴摘要行的折叠箭头（不是工具）：向右为折叠，CSS 旋转 90° 为展开
+  chevron: '<path d="m9 6 6 6-6 6"/>',
+};
+
+function toolIcon(name) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'tool-icon');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.8');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.innerHTML = TOOL_ICONS[name] || TOOL_ICONS.generic; // 只写入上面的本地常量
+  return svg;
+}
+
+// 有副作用的动作用 .action 样式强调——用户必须一眼看出 AI 改动了页面。
+// 行 = 图标 + 文字 span；文字单独成节点，定稿时改文字不动图标。
+function appendToolActivity(root, text, isAction, name) {
   const div = document.createElement('div');
   div.className = 'tool-activity running' + (isAction ? ' action' : '');
-  div.textContent = text;
+  div.appendChild(toolIcon(name));
+  const span = document.createElement('span');
+  span.className = 'tool-text';
+  span.textContent = text;
+  div.appendChild(span);
   root.appendChild(div);
   return div;
 }
@@ -812,115 +920,52 @@ function appendToolActivity(root, text, isAction) {
 function settleToolActivity(div, text, ok) {
   div.classList.remove('running');
   if (!ok) div.classList.add('failed');
-  div.textContent = text;
+  div.querySelector('.tool-text').textContent = text;
 }
 
-// 活动行文案（外壳职责，core 只回传结构化 meta）。phase: run | done | fail
-function describeToolActivity(name, args, phase, data = {}) {
-  const a = args || {};
-  // run/fail 阶段只有调用参数，done 阶段以工具回传的 meta.data 为准
-  const ref = data.ref ?? a.ref ?? '?';
-  const named = data.name ? ` "${data.name}"` : '';
-  const jumped = data.navigated ? t('act.jumped') : '';
-  switch (name) {
-    case 'find_in_page': {
-      const query = phase === 'done' ? data.query : (a.query || '');
-      if (phase === 'run') return t('act.find.run', { query });
-      if (phase === 'fail') return t('act.find.fail', { query });
-      return t(data.total ? 'act.find.done' : 'act.find.none', { query, total: data.total });
-    }
-    case 'read_page_text': {
-      if (phase === 'run') return t('act.read.run');
-      if (phase === 'fail') return t('act.read.fail');
-      return t(data.section ? 'act.read.doneIn' : 'act.read.done', {
-        section: data.section, start: data.start, end: data.end,
-      });
-    }
-    case 'list_elements':
-      if (phase === 'run') return t('act.list.run');
-      if (phase === 'fail') return t('act.list.fail');
-      return t('act.list.done', {
-        count: data.count,
-        scope: data.scope === 'viewport' ? t('act.list.viewport') : '',
-      });
-    case 'highlight_element':
-      if (phase === 'run') return t('act.highlight.run', { ref });
-      if (phase === 'fail') return t('act.highlight.fail', { ref });
-      return t('act.highlight.done', { ref, name: named });
-    case 'capture_screenshot':
-      if (phase === 'run') return t('act.shot.run');
-      if (phase === 'fail') return t('act.shot.fail');
-      return t('act.shot.done', { count: data.markCount });
-    case 'extract_table': {
-      const index = data.tableIndex ?? a.table_index ?? '?';
-      if (phase === 'run') return t('act.table.run', { index });
-      if (phase === 'fail') return t('act.table.fail', { index });
-      return t('act.table.done', { index, rows: data.rowCount, cols: data.colCount });
-    }
-    case 'get_element_html':
-      if (phase === 'run') return t('act.html.run', { ref });
-      if (phase === 'fail') return t('act.html.fail', { ref });
-      return t('act.html.done', { ref, name: named });
-
-    /* —— 动作类：文案更醒目，用户要能一眼看清 AI 对页面做了什么 —— */
-    case 'click_element':
-      if (phase === 'run') return t('act.click.run', { ref });
-      if (phase === 'fail') return t('act.click.fail', { ref });
-      return t('act.click.done', { ref, name: named, jumped });
-    case 'input_text': {
-      const text = String(a.text || '');
-      const preview = text.slice(0, 20) + (text.length > 20 ? '…' : '');
-      if (phase === 'run') return t('act.input.run', { ref, preview });
-      if (phase === 'fail') return t('act.input.fail', { ref });
-      return t('act.input.done', { ref, name: named, preview, jumped });
-    }
-    case 'select_option':
-      if (phase === 'run') return t('act.select.run', { ref, option: a.option || '' });
-      if (phase === 'fail') return t('act.select.fail', { ref, option: a.option || '' });
-      return t('act.select.done', { ref, name: named, value: data.value, jumped });
-    case 'press_key': {
-      const key = phase === 'done' ? data.key : (a.key || '');
-      if (phase === 'run') return t('act.key.run', { key });
-      if (phase === 'fail') return t('act.key.fail', { key });
-      return t('act.key.done', { key, submitted: data.submitted ? t('act.key.submitted') : '', jumped });
-    }
-    case 'scroll_page': {
-      const label = t('act.scroll.' + (a.direction || 'down'));
-      if (phase === 'run') return t('act.scroll.run', { label });
-      if (phase === 'fail') return t('act.scroll.fail');
-      return t('act.scroll.done', { label });
-    }
-    case 'navigate':
-      if (phase === 'run') return t('act.navigate.run', { url: a.url || '' });
-      if (phase === 'fail') return t('act.navigate.fail', { url: a.url || '' });
-      return t('act.navigate.done', { title: data.title || a.url || '' });
-    case 'go_back':
-      if (phase === 'run') return t('act.back.run');
-      if (phase === 'fail') return t('act.back.fail');
-      return t('act.back.done', { title: data.title || '' });
-    case 'refresh':
-      if (phase === 'run') return t('act.refresh.run');
-      if (phase === 'fail') return t('act.refresh.fail');
-      return t('act.refresh.done', { title: data.title || '' });
-    case 'open_tab':
-      if (phase === 'run') return t('act.openTab.run', { url: a.url || '' });
-      if (phase === 'fail') return t('act.openTab.fail');
-      return t('act.openTab.done', { title: data.title || a.url || '' });
-    case 'switch_tab':
-      if (phase === 'run') return t('act.switchTab.run', { id: a.tab_id ?? '?' });
-      if (phase === 'fail') return t('act.switchTab.fail');
-      return t('act.switchTab.done', { title: data.title || '' });
-    case 'close_tab':
-      if (phase === 'run') return t('act.closeTab.run');
-      if (phase === 'fail') return t('act.closeTab.fail');
-      return t('act.closeTab.done');
-    case 'list_tabs':
-      if (phase === 'run') return t('act.listTabs.run');
-      if (phase === 'fail') return t('act.listTabs.fail');
-      return t('act.listTabs.done', { count: data.count });
-    default:
-      return t(`act.generic.${phase === 'run' ? 'run' : phase === 'fail' ? 'fail' : 'done'}`, { name });
+/* ========== 过程时间轴 ========== */
+// 一条 AI 回复里最终回答之前的全部过程——活动行与中途的说明段——收进 .tool-trace，
+// 左侧一条浅色竖线把各步串成时间轴；回合结束后 settleTrace 配上摘要行并折叠，点击展开。
+// 容器在首次出现工具调用时才建：多数回答没有工具轮次，不该平白多一层。
+function traceBody(root) {
+  let trace = root.querySelector(':scope > .tool-trace');
+  if (!trace) {
+    trace = document.createElement('div');
+    trace.className = 'tool-trace';
+    const head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'trace-head';
+    head.title = t('ui.traceToggle');
+    head.appendChild(toolIcon('chevron'));
+    const label = document.createElement('span');
+    label.className = 'tool-text';
+    head.appendChild(label);
+    head.addEventListener('click', () => trace.classList.toggle('collapsed'));
+    const body = document.createElement('div');
+    body.className = 'trace-body';
+    trace.append(head, body);
+    root.appendChild(trace);
   }
+  return trace.lastElementChild;
+}
+
+// 回合收尾：摘要行写「已执行 N 步」（含页面操作数与失败数），有结论才折叠——
+// 中止或报错时若没有最终回答，过程就是全部内容，保持展开。
+function settleTrace(root) {
+  const trace = root.querySelector(':scope > .tool-trace');
+  if (!trace) return;
+  const steps = trace.querySelectorAll('.tool-activity').length;
+  const actions = trace.querySelectorAll('.tool-activity.action').length;
+  const failed = trace.querySelectorAll('.tool-activity.failed').length;
+  let text = t(steps === 1 ? 'ui.traceStep' : 'ui.traceSteps', { n: steps });
+  if (actions) text += t(actions === 1 ? 'ui.traceAction' : 'ui.traceActions', { n: actions });
+  if (failed) text += t('ui.traceFailed', { n: failed });
+  const head = trace.firstElementChild;
+  head.querySelector('.tool-text').textContent = text;
+  head.classList.toggle('action', actions > 0); // 含页面操作的摘要沿用动作行的字重，折叠后仍一眼可见
+  trace.classList.add('done');
+  const concluded = [...root.querySelectorAll(':scope > .ai-content')].some((s) => s.textContent.trim());
+  trace.classList.toggle('collapsed', concluded);
 }
 
 // 引用块出处校验：命中给定页面文本的引用卡片加「来自当前页面」徽标。
@@ -982,71 +1027,16 @@ function finalizeAssistant(el, msgObj, contentEl, messages) {
     // 模型引用截断之外的真原文反而拿不到徽标（messages 用回合捕获的那份，不变式 4）
     applyQuoteBadges(target, buildQuoteCorpus(state.page.maskedText, state.page.url, messages || state.messages));
   }
+  settleTrace(el.root);
   appendMessageActions(el.root, msgObj.content, true);
 }
 
 /* ========== 发送与流式 ========== */
-// caps 与本轮请求是否带 tools 保持一致，system prompt 才不会指引模型调用不存在的工具
-// 会话中页面可能被重新读取多次；历史里只保留最新的那一份全文，
-// 更早的全文与差异摘要统一压成一行占位——与截图的 stripImagesFromHistory 同一思路，
-// 都是「历史只留最新那一份大块内容」的 token 控制。占位里保留标题，出处仍然可追。
-// messages 由调用方显式传入（回合内一律传本回合开始时捕获的那份，见 runAgentLoop）
-function collapseSupersededPages(messages) {
-  let lastFull = -1;
-  messages.forEach((m, i) => { if (m._page === 'full') lastFull = i; });
-  if (lastFull <= 0) return;
-  for (let i = 0; i < lastFull; i++) {
-    const m = messages[i];
-    if (!m._page) continue;
-    m.content = `${t('sys.pageSuperseded', { title: m._pageTitle || '' })}\n\n${m.displayContent || ''}`;
-    delete m._page; // 压过一次就不再重复处理（每轮请求都会调用本函数）
-  }
-  // 读到的正文片段同理：位置属于旧页面，新全文一到它们就该作废
-  dropSupersededReads(messages, lastFull);
-}
-
-// 消息数组 → 出网形态：剔除界面辅助字段，丢掉不该进请求的空回复。
-// 必须在压缩裁剪之后调用——boundary 是原始数组的下标，先过滤会让下标漂移。
-function sanitizeMessages(messages) {
-  return messages
-    // 失败的空回复不进入请求；带 tool_calls 而 content 为空的 assistant 必须保留（历史断链会 400）
-    .filter((m) => m.role !== 'assistant' || m.content || (m.tool_calls && m.tool_calls.length))
-    .map((m) => {
-      const out = { role: m.role, content: m.content };
-      if (m.tool_calls) out.tool_calls = m.tool_calls;
-      if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
-      return out; // displayContent 与 `_` 前缀内部字段不出网
-    });
-}
-
-function buildRequestMessages(caps, messages) {
-  collapseSupersededPages(messages);
-  return [
-    { role: 'system', content: buildSystemPrompt(caps || { tools: false, vision: false, skill: null }) },
-    // 压缩过的会话只带「摘要 + 压缩点之后的新消息」；未压缩时原样带全部历史
-    ...sanitizeMessages(compactRequestTail(messages, state.compact)),
-  ];
-}
-
 // 「发送 / 停止」按钮：流式产文与压缩摘要都算进行中，两者共用同一个中止槽位
 function updateComposer() {
   const busy = state.ui.phase !== 'idle';
   els.btnSend.textContent = t(busy ? 'ui.stop' : 'ui.send');
   els.btnSend.classList.toggle('stop', busy);
-}
-
-// 把消息数组里的截图消息替换为占位文本，返回是否有替换。
-// 时机：新截图前（同一请求最多一张真图）与回合收尾（跨回合不携带旧图，控 token）。
-// 批内待回填的截图消息还没进历史，因此调用方需要连同「待回填队列」一起传进来。
-function stripImagesFromHistory(...lists) {
-  let changed = false;
-  for (const m of lists.flat()) {
-    if (m._kind === 'tool-image' && Array.isArray(m.content)) {
-      m.content = m._placeholder || t('sys.shotOmitted');
-      changed = true;
-    }
-  }
-  return changed;
 }
 
 // Agent 循环：流式产文 → 模型请求工具 → 执行并回填 → 再次请求，最多 MAX_TOOL_ROUNDS 轮。
@@ -1095,7 +1085,7 @@ async function runAgentLoop(el) {
     const vision = useTools && Boolean(activeProfile(state.config).visionEnabled);
     const actions = useTools && actionsOn;
     const tools = useTools ? buildToolDefs({ vision, actions }) : undefined;
-    const requestMessages = buildRequestMessages({ tools: useTools, vision, actions, skill: skillId }, messages);
+    const requestMessages = buildRequestMessages({ tools: useTools, vision, actions, skill: skillId }, messages, state.compact);
     console.log('[发送内容]', requestMessages); // 验收依据：控制台可核对脱敏后的实际发送内容
 
     let acc = '';
@@ -1167,8 +1157,10 @@ async function runAgentLoop(el) {
       break;
     }
 
-    // 模型请求调用工具：assistant(tool_calls) 落历史，每个调用逐一执行并成对回填 tool 消息
-    if (!acc) seg.remove(); // 本轮没有正文，空段不留
+    // 模型请求调用工具：assistant(tool_calls) 落历史，每个调用逐一执行并成对回填 tool 消息。
+    // 本轮正文只是中途说明，与随后的活动行一起收进过程时间轴；空段不留
+    const body = traceBody(el.root);
+    if (acc) body.appendChild(seg); else seg.remove();
     messages.push({
       role: 'assistant',
       content: acc,
@@ -1198,12 +1190,12 @@ async function runAgentLoop(el) {
           // 活动行文案随消息落库：历史回放时不必重算当时的界面（_ 前缀字段不出网）
           _ui: { text: skipText, ok: false, action: isAction },
         });
-        settleToolActivity(appendToolActivity(el.root, '', isAction), skipText, false);
+        settleToolActivity(appendToolActivity(body, '', isAction, call.name), skipText, false);
         continue;
       }
       let argsForUi = null;
       try { argsForUi = call.arguments ? JSON.parse(call.arguments) : {}; } catch { /* 文案按 null 兜底 */ }
-      const row = appendToolActivity(el.root, describeToolActivity(call.name, argsForUi, 'run'), isAction);
+      const row = appendToolActivity(body, describeToolActivity(call.name, argsForUi, 'run'), isAction, call.name);
       maybeScroll();
       // 同一请求最多一张真图：本批还没回填的那些也算在内，否则一批两次截图会漏网
       if (call.name === 'capture_screenshot') stripImagesFromHistory(messages, pendingFollowUps);
@@ -1257,7 +1249,7 @@ async function runAgentLoop(el) {
   await persistSession();
 }
 
-// 截图缩略图：挂在活动行下方，点击展开/收起大图
+// 截图缩略图：挂在活动行文字的下方（行内），时间轴的竖线随行一起延伸；点击展开/收起大图
 function attachShotThumbnail(row, followUpMessage) {
   const part = Array.isArray(followUpMessage.content) &&
     followUpMessage.content.find((p) => p.type === 'image_url');
@@ -1268,25 +1260,14 @@ function attachShotThumbnail(row, followUpMessage) {
   img.alt = t('ui.shotAlt');
   img.title = t('ui.shotTitle');
   img.addEventListener('click', () => img.classList.toggle('expanded'));
-  row.insertAdjacentElement('afterend', img);
+  row.querySelector('.tool-text').appendChild(img);
 }
 
 /* ========== 发送前的页面同步（自动完成，用户不需要点任何按钮） ========== */
 
-// 会话中累计的差异摘要上限：超过这个量说明页面已经改得面目全非，
-// 与其继续叠碎片，不如重发一次全文，让模型手上是一份完整的当前页面。
-const MAX_DIFF_CHARS = 4000;
-
-/**
- * 每条消息发送前重新快照当前页面（打开侧边栏依然不读取，承诺不变），
- * 再与 state.sentPage（模型上次实际看到的内容）比对，决定本条消息携带什么：
- *   none       页面没变            → 什么都不带，沿用历史里的那一份
- *   diff       同一网址、小幅变化  → 只带几十行差异摘要
- *   full       首次 / 换页 / 大改  → 带最新全文（历史里更早的全文随后被压成占位）
- *   unreadable 当前页读不到        → 不带内容；此前读过页面时交代一句免得模型拿旧页当现状
- * 比对基准是 sentPage 而不是 state.page：AI 操作导致跳转时 state.page 早已换成新页，
- * 只有 sentPage 才知道模型手里还停在哪一页。
- */
+// 每条消息发送前重新快照当前页面（打开侧边栏依然不读取，承诺不变），
+// 再与 state.sentPage 比对决定本条消息携带什么（四种携带方式见 core/page-sync.js）。
+// 快照失败的 unreadable 在这里给出：此前读过页面时 changed 为 true，交代一句免得模型拿旧页当现状。
 async function syncPageForSend() {
   updateContextChip('reading');
   const snap = await snapshotCurrentTab();
@@ -1298,61 +1279,25 @@ async function syncPageForSend() {
   }
   applySnapshot(snap, snap.tabId);
   updateContextChip();
-
-  const sent = state.sentPage;
-  const page = state.page;
-  if (!sent.text) return { kind: 'full', first: true };
-  // 上一条消息告诉过模型「用户切到了读不到的页面」，现在又读到了：哪怕内容与那时一字不差
-  // 也要重发一份，否则模型会一直以为用户还停在受限页上
-  if (sent.gone) return { kind: 'full', navigated: sent.url !== page.url };
-  if (sent.url !== page.url) return { kind: 'full', navigated: true };
-  if (sent.text === page.maskedText) return { kind: 'none' };
-  const diff = formatTextDiff(sent.text, page.maskedText);
-  if (diff && sent.diffChars + diff.length <= MAX_DIFF_CHARS) return { kind: 'diff', diff };
-  return { kind: 'full' };
-}
-
-// 按同步结果组装本条用户消息的真实内容，并记下「模型已经看到的页面」
-function composeSendContent(inputText, sync) {
-  if (sync.kind === 'full' || sync.kind === 'diff') {
-    const { maskedText, outlineText, url, title } = state.page;
-    // 带了差异也算模型已看到最新内容：下次以当前页面为基准比对，差异不会重复累计。
-    // 整体重建对象也顺带清掉 gone 标记——模型手上又有页面了
-    state.sentPage = {
-      text: maskedText, outline: outlineText, url, title,
-      diffChars: sync.kind === 'diff' ? state.sentPage.diffChars + sync.diff.length : 0,
-      // 差异块不重发骨架也不重发全文，模型手里那份页面的长度没变，基准照旧
-      textTotal: sync.kind === 'full' ? state.page.textTotal : state.sentPage.textTotal,
-      textCapped: sync.kind === 'full' ? state.page.textCapped : state.sentPage.textCapped,
-    };
-  }
-  if (sync.kind === 'full') {
-    return buildUserContent(
-      inputText, state.page.maskedText, state.page.outlineText,
-      sync.navigated ? t('prompt.leadSwitched') : '',
-      state.page.textTotal
-        ? { total: state.page.textTotal, shown: state.page.textShown, capped: state.page.textCapped }
-        : null
-    );
-  }
-  if (sync.kind === 'diff') return buildPageUpdate(inputText, sync.diff);
-  if (sync.kind === 'unreadable' && sync.changed) {
-    // 记下「已告诉模型页面没了」，等页面重新可读时无条件重发（见 syncPageForSend）
-    state.sentPage = { ...state.sentPage, gone: true };
-    return `${t('prompt.leadPageGone')}\n\n${inputText}`;
-  }
-  return inputText;
+  // 读取时页面仍在加载：随判定结果一起带出去，凡是携带了页面内容的消息都交代一句
+  return decidePageSync(state.sentPage, state.page, Boolean(snap.loading));
 }
 
 // 只有页面在会话中途真的变了才提示；首次读取由胶囊本身出现即可说明，不再多一行字
 function flowNoteFor(sync) {
+  let note = '';
   if (sync.kind === 'full' && sync.navigated) {
-    return t('ui.notePageNavigated', { title: truncateTitle(state.page.title) });
+    note = t('ui.notePageNavigated', { title: truncateTitle(state.page.title) });
+  } else if (sync.kind === 'full' && !sync.first) {
+    note = t('ui.notePageReread');
+  } else if (sync.kind === 'diff') {
+    note = t('ui.notePageUpdated');
+  } else if (sync.kind === 'unreadable' && sync.changed) {
+    note = t('ui.notePageUnreadable');
   }
-  if (sync.kind === 'full' && !sync.first) return t('ui.notePageReread');
-  if (sync.kind === 'diff') return t('ui.notePageUpdated');
-  if (sync.kind === 'unreadable' && sync.changed) return t('ui.notePageUnreadable');
-  return '';
+  // 读取时页面还没加载完也要让用户知道：否则回答里的「暂无数据」看起来像是 AI 读错了
+  if (sync.loading) note = note ? `${note} · ${t('ui.notePageLoading')}` : t('ui.notePageLoading');
+  return note;
 }
 
 async function handleSend() {
@@ -1381,13 +1326,14 @@ async function handleSend() {
   els.welcome.hidden = true;
   state.ui.autoScroll = true;
 
-  // 每条消息都先同步一次页面：变了才带新内容，没变什么都不带（详见 syncPageForSend）
+  // 每条消息都先同步一次页面：变了才带新内容，没变什么都不带（详见 core/page-sync.js）
   const sync = await syncPageForSend();
-  const contentForRequest = composeSendContent(inputText, sync);
+  const { content, sentPage } = composeSendContent(inputText, state.page, state.sentPage, sync);
+  state.sentPage = sentPage; // 记下「模型已经看到的页面」，下一条消息以它为基准比对
 
   const userMsg = {
     role: 'user',
-    content: contentForRequest,
+    content,
     displayContent: inputText,
     // 携带页面块的消息打标：下次全量读取后，更早的这些会被压成一行占位
     ...(sync.kind === 'full' || sync.kind === 'diff'
@@ -1435,14 +1381,8 @@ async function runCompact(instruction = '') {
   const note = appendFlowNote(t('ui.noteCompacting'));
   maybeScroll();
 
-  // 摘要请求自身也走压缩后的请求链：已压缩过的会话只重发旧摘要 + 压缩点之后的新消息，
-  // 否则等于把用户刚要求压掉的原文再发一遍，二次压缩最容易因此超窗失败。
-  // 这一轮不注册 tools（与「各段必须与实际注册工具严格一致」同一条铁律）。
-  collapseSupersededPages(state.messages);
-  const requestMessages = [
-    { role: 'system', content: buildCompactPrompt(instruction) },
-    ...sanitizeMessages(compactRequestTail(state.messages, state.compact)),
-  ];
+  // 这一轮不注册 tools；请求链的组装（含二次压缩只重发旧摘要）见 core/conversation.js
+  const requestMessages = buildCompactRequest(instruction, state.messages, state.compact);
   console.log('[发送内容]', requestMessages);
 
   let summary = '';
@@ -1840,6 +1780,8 @@ function replayConversation(messages, compact) {
   let root = null;     // 当前 AI 回合的根节点
   let lastSeg = null;  // 回合内最后一个正文段（引用校验的对象）
   let lastText = '';   // 回合内最后一段正文（复制按钮用）
+  // tool_call_id → 工具名：活动行图标按工具名取，_ui 里不存图标，旧记录同样能画出来
+  const toolNames = new Map();
 
   const closeTurn = (isLast) => {
     if (!root) return;
@@ -1850,6 +1792,7 @@ function replayConversation(messages, compact) {
       root.appendChild(note);
     }
     if (lastSeg && lastText) applyQuoteBadges(lastSeg, buildQuoteCorpus(state.sentPage.text, state.sentPage.url, messages));
+    settleTrace(root);
     appendMessageActions(root, lastText, isLast);
     root = null;
     lastSeg = null;
@@ -1875,8 +1818,9 @@ function replayConversation(messages, compact) {
         root.className = 'msg msg-ai';
         els.chat.appendChild(root);
       }
+      let seg = null;
       if (m.content) {
-        const seg = document.createElement('div');
+        seg = document.createElement('div');
         seg.className = 'ai-content';
         seg.innerHTML = renderMarkdown(m.content);
         root.appendChild(seg);
@@ -1884,10 +1828,16 @@ function replayConversation(messages, compact) {
         lastText = m.content;
       }
       if (m._error) showErrorIn(root, m._error);
+      if (m.tool_calls && m.tool_calls.length) {
+        // 带工具调用的正文是中途说明，与随后的活动行一起进过程时间轴（与实时回合同一结构）
+        if (seg) traceBody(root).appendChild(seg);
+        for (const c of m.tool_calls) toolNames.set(c.id, c.function && c.function.name);
+      }
       return;
     }
     if (m.role === 'tool' && root && m._ui) {
-      settleToolActivity(appendToolActivity(root, '', m._ui.action), m._ui.text, m._ui.ok);
+      const row = appendToolActivity(traceBody(root), '', m._ui.action, toolNames.get(m.tool_call_id));
+      settleToolActivity(row, m._ui.text, m._ui.ok);
     }
   });
   // 压缩点落在数组末尾（压缩后还没发过新消息）：提示行补在最后

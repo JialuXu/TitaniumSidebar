@@ -11,6 +11,7 @@
 //   listElements({ scope, query })       → { elements, total, viewport?, stats? }
 //   highlight({ ref })                   → highlightElement 返回值
 //   captureScreenshot()                  → { dataUrl, markCount, viewport }
+//   waitForPage({ seconds })             → 页面变化（另带 waitedMs：实际等了多久）
 //   mask(text)                           → string（未开脱敏时为恒等函数）
 //   —— 页内动作（注入 performAction）——
 //   act(payload)                         → { result: performAction 返回值, change: 页面变化|null }
@@ -50,6 +51,12 @@ export const WRITE_TOOL_NAMES = new Set([
   'click_element', 'input_text', 'select_option', 'press_key',
   'navigate', 'go_back', 'refresh', 'open_tab', 'switch_tab', 'close_tab',
 ]);
+
+/**
+ * wait_for_page 单次最长等待秒数。后台接口慢到十几秒的都有，再长就该让模型
+ * 分几次等并如实告诉用户，而不是一次挂住半分钟。
+ */
+export const MAX_WAIT_SECONDS = 15;
 
 /** 动作工具允许的按键（与 core/actions.js 的 KEYS 表保持一致） */
 const ALLOWED_KEYS = [
@@ -111,6 +118,10 @@ export function buildToolDefs({ vision = false, actions = false } = {}) {
         max_len: { type: 'integer', description: t('tool.html.max') },
       },
       ['ref']),
+
+    // 等待不改动页面，归感知组：只读模式下用户刚点开的页面同样可能还没加载完
+    fn('wait_for_page', t('tool.wait.d'),
+      { seconds: { type: 'integer', minimum: 1, maximum: MAX_WAIT_SECONDS, description: t('tool.wait.seconds') } }),
   ];
 
   /* ---------- 视觉组 ---------- */
@@ -219,52 +230,6 @@ function withChange(text, change) {
   return tail ? `${text}\n${tail}` : text;
 }
 
-/* ========== 读取正文的三道闸（详见 BUDGETS 注释） ========== */
-
-/**
- * 把一条读取结果的 tool 消息压成占位。只改 content、摘掉 `_read` 标记——
- * 绝不增删消息：tool_calls 与 tool 必须成对紧邻（不变式 7），
- * 而且 compact.boundary 是下标，一动数组它就漂了。
- */
-function collapseRead(msg) {
-  msg.content = t('sys.readOmitted', { start: msg._read.start, end: msg._read.end });
-  delete msg._read;
-}
-
-/**
- * 换页后：最新那份页面全文之前的读取结果全部作废——位置属于旧页面，留着只会误导。
- * @param {Array} messages 本回合读写的消息数组
- * @param {number} beforeIndex 最新一份全文页面块的下标
- */
-export function dropSupersededReads(messages, beforeIndex) {
-  for (let i = 0; i < beforeIndex && i < messages.length; i++) {
-    if (messages[i] && messages[i]._read) collapseRead(messages[i]);
-  }
-}
-
-/**
- * 回合收尾：从新到旧累计保留的正文，超出预算的压成占位。
- * 回合内一律不淘汰（模型正拿着这些内容作答），`readRetained ≥ readMax`
- * 保证最近一次读取必然留得住，紧接着的追问不用重读。
- */
-export function trimRetainedReads(messages, budget = BUDGETS.readRetained) {
-  let kept = 0;
-  let newest = true;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (!m || !m._read) continue;
-    const len = (m.content || '').length;
-    // 装得下才留，装不下就压占位；最近一次读取无条件保留——
-    // 紧接着的追问八成就是冲它来的，回收了等于逼模型再读一遍。
-    if (newest || kept + len <= budget) {
-      kept += len;
-      newest = false;
-    } else {
-      collapseRead(m);
-    }
-  }
-}
-
 /**
  * 执行一次工具调用，产出回填消息历史所需的对象。
  * @param {{ id: string, name: string, arguments: string }} call llm-client 拼装好的调用
@@ -359,7 +324,7 @@ export async function dispatchToolCall(call, provider, turn = {}) {
         const text = provider.mask(formatReadResult(res, {
           warning: drifted ? t('res.readStale') : '',
         }));
-        // `_read` 让外壳知道这条消息是可回收的正文（换页作废 / 跨回合收口）
+        // `_read` 标记这条消息是可回收的正文（换页作废 / 跨回合收口，见 core/conversation.js）
         return { toolMessage: { role: 'tool', tool_call_id: call.id, content: text, _read: { start: res.start, end: res.end, url: res.url } }, meta };
       }
 
@@ -420,6 +385,17 @@ export async function dispatchToolCall(call, provider, turn = {}) {
         meta.data = { ref, name: result.name };
         const head = t('res.htmlHead', { ref, name: result.name ? ` "${result.name}"` : '' });
         return reply(provider.mask(`${head}\n${result.data}`));
+      }
+
+      case 'wait_for_page': {
+        const seconds = Math.min(Math.max(Math.round(Number(args.seconds)) || 3, 1), MAX_WAIT_SECONDS);
+        const change = await provider.waitForPage({ seconds });
+        const waited = Math.max(1, Math.round((change.waitedMs || 0) / 1000));
+        meta.ok = true;
+        meta.data = { seconds: waited, settled: !change.loading, navigated: Boolean(change.navigated) };
+        // 稳定了就明说；没稳定的话 formatPageChange 末尾会带上「仍在加载」的提醒
+        const head = t('res.waited', { s: waited, settled: change.loading ? '' : t('res.waitedSettled') });
+        return reply(provider.mask(withChangeSynced(head, change)));
       }
 
       case 'capture_screenshot': {
