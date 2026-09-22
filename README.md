@@ -2,112 +2,94 @@
 
 **English** | [中文](README.zh-CN.md)
 
-A lightweight Chrome / Edge extension: open a sidebar on any web page and chat with an AI about it. When you send a message, the extension reads the text of the current page and passes it along as context, so the AI answers with the page in hand.
+A Chrome / Edge extension that opens a sidebar on any web page and lets you chat with an AI about it. When you send a message, the extension reads the current page and hands it to the model as context — your own OpenAI-compatible endpoint (DeepSeek, self-hosted Ollama / vLLM, …), your key stays in the browser.
 
-- **Bring your own model** — any OpenAI-compatible endpoint (DeepSeek, self-hosted Ollama / vLLM, …); your API key never leaves your browser
-- **Reads the page only on demand** — captured when you send a message; opening the sidebar fires no requests
-- **Hybrid perception** — page text plus a structural outline by default, and the model can call tools as needed: full-text search, reading the body by character position (so a long page is not limited to the first 12,000 characters), interactive element list, highlight on page, full table extraction, element HTML inspection, viewport screenshots (optional, needs a vision model)
-- **Page actions** (off by default) — once enabled the AI can click, type, select, press keys, scroll, navigate and manage tabs
-- **Redaction before sending** — phone numbers, national ID numbers and bank card numbers are masked by default (screenshots excepted)
-- **Verifiable quotes** — a passage only earns the "from this page" badge if it matches the captured page text verbatim, including anything read back from beyond the truncation point
-- **Fully bilingual (English / 简体中文)** — interface, system prompt, tool text and the AI's answer language switch together; picked from your browser language on first run, changeable in settings
-- **Zero dependencies** — plain HTML/CSS/JS, no build step, no third-party libraries, no CDN; installs and runs fully offline
+![Page actions: the AI searches Wikipedia, clicks a table-of-contents entry and quotes the section; every step shows as an activity line](docs/media/actions-en.gif)
 
-## Installation
+- **Bring your own model** — any OpenAI-compatible endpoint; nothing is sent anywhere else, no analytics
+- **Reads the page only when you send** — never on opening the sidebar; page changes are picked up automatically before each message
+- **Sees beyond the first screen** — the model can search the page, read the body by position, list interactive elements, highlight one, extract a whole table, or take a screenshot (vision models)
+- **Page actions, off by default** — once enabled the AI can click, type, select, press keys, scroll, navigate and manage tabs
+- **Redaction before sending** — phone, national ID and bank card numbers are masked (screenshots excepted)
+- **Verifiable quotes** — a blockquote gets the "from this page" badge only if it matches the page text verbatim
+- **Bilingual, zero dependencies** — English / 简体中文 across UI, prompts and answers; plain HTML/CSS/JS, no build step, no CDN, runs offline
 
-1. Download or clone this repository
-2. Open `chrome://extensions` or `edge://extensions` and turn on **Developer mode** in the top-right corner
-3. Click **Load unpacked** and select this repository's `extension/` directory
-4. Click the extension icon in the toolbar to open the sidebar
+## Quick start
 
-> Load the **unpacked** `extension/` directory. Do not use "Pack extension" and then drag the resulting `.crx` in — Chrome only accepts CRX files signed by the Web Store and rejects self-packed ones with `CRX_REQUIRED_PROOF_MISSING`. To roll the extension out across an organisation, force-install it through enterprise policy (`ExtensionInstallForcelist` pointing at a self-hosted update manifest) or publish it to the store as unlisted; policy-installed extensions skip that signature check.
+**Install** — download or clone this repository, open `chrome://extensions` (or `edge://extensions`), turn on **Developer mode**, click **Load unpacked** and pick the `extension/` directory. The toolbar icon opens the sidebar.
 
-### Browser support
+> Load the **unpacked** directory. A self-packed `.crx` is rejected with `CRX_REQUIRED_PROOF_MISSING` — Chrome only accepts store-signed packages. For organisation-wide rollout use enterprise policy (`ExtensionInstallForcelist`) or an unlisted store listing.
 
-| Browser | Requirement |
-|---|---|
-| Chrome / Chromium | **114 or newer.** The `chrome.sidePanel` API arrived in 114; the manifest declares `minimum_chrome_version: 114`, so older builds refuse to install. |
-| Microsoft Edge | **117 or newer recommended.** Edge rolled the sidebar API out to stable in stages from 115 onwards; on 114–116 the extension may install yet never show a panel. |
-| Firefox / Safari | Not supported. Neither offers the Manifest V3 side panel API, and Firefox is out of scope by design. |
+Requires **Chrome 114+** or **Edge 117+** (the `chrome.sidePanel` API). Firefox and Safari have no Manifest V3 side panel and are not supported.
 
-The extension is Manifest V3 only and uses ES2020+ with no build step or transpilation — there is no legacy fallback path. Check your build under `chrome://version` or `edge://version`.
-
-## Configuration
-
-Click the gear icon in the top-right of the sidebar, fill in the endpoint, model name and API key under **Model endpoints**, optionally hit **Test connection**, then save.
+**Configure** — click the gear icon, fill in an endpoint under **Model endpoints**, optionally **Test connection**, then save.
 
 | Setting | DeepSeek official API | Self-hosted (Ollama / vLLM, …) |
 |---|---|---|
 | Endpoint (baseUrl) | `https://api.deepseek.com/v1` | e.g. `http://localhost:11434/v1` |
 | Model name | `deepseek-chat` | whatever you deployed, e.g. `qwen2.5:14b` |
-| API key | create one at the [DeepSeek platform](https://platform.deepseek.com) | leave empty if the service needs no auth |
+| API key | from the [DeepSeek platform](https://platform.deepseek.com) | empty if the service needs no auth |
 
-> The baseUrl usually has to end with `/v1` — the extension appends `/chat/completions` to it. Check this first if the connection test returns 404.
+> The baseUrl normally ends with `/v1`; the extension appends `/chat/completions`. A 404 on the connection test almost always means this.
 
-**Several endpoints, switchable** — if you move between the DeepSeek API and a local deployment, hit **+** next to **Model endpoints** to add another one and give it a name; whichever is selected in the dropdown when you save is the one in use. "Model supports vision" is stored per endpoint, so switching never means flipping that toggle again. At least one endpoint is always kept.
+- **Several endpoints** — **+** next to "Model endpoints" adds another; the one selected in the dropdown when you save is in use. "Model supports vision" (enables the screenshot tool; screenshots are not redacted) is stored per endpoint.
+- **Backup** — uninstalling the extension wipes its storage. **Export settings** writes `titanium-settings.json` with every endpoint and the **API keys in plain text**; **Import settings** restores it. "Allow page actions" is never exported and must be switched on by hand. After a code change use **Reload** on the extensions page — settings survive that.
 
-The settings drawer also holds: language (applies immediately), redaction before sending, "model supports vision" (enables the screenshot tool — note screenshots are not redacted), and "allow page actions". The extension contains no analytics or telemetry; page content goes only to the endpoint you configured, and your settings and key live solely in `chrome.storage.local`.
+## Day-to-day use
 
-**Backup & restore** — uninstalling and reinstalling the extension (or loading it from a different folder) wipes `chrome.storage.local` and your settings with it. **Export settings** at the bottom of the drawer downloads `titanium-settings.json`, which holds every endpoint including the **API keys in plain text**, so keep it somewhere safe; after reinstalling, **Import settings** with that file restores everything (replacing the current settings). "Allow page actions" never travels with the file and has to be switched on by hand again. If you are only reloading after a code change, use **Reload** on the extensions page instead of removing and re-adding — settings survive that.
+- **When the page is read** — only when you send a message. Before each message the extension looks at the page again and decides on its own: nothing resent if unchanged, a short "what changed" summary for small changes (paging, expanded sections, AI actions), the full page again only after a URL change or a rewrite. There is no re-read button. The **page chip** at the top left shows what was captured; click it for the URL, counts, and the exact text and outline.
+- **Loading pages** — before reading, the extension waits for content to settle and spinners to disappear (about 2.5 s at most). If the page is still loading it reads anyway and tells the model so; the model also has a "wait for page" tool and uses it instead of treating "No data" placeholders as the answer.
+- **Tools and long pages** — the model calls perception tools on its own; each call shows as a live step on a light timeline that folds into "Ran N steps" when the answer is in. Only the first 12,000 characters travel with your message; beyond that the model searches, then reads the passage by position. Ask "where is X on this page" and it draws a highlight box for three seconds; ask for "table 2 in full" and you get the whole table. Endpoints without function calling fall back to plain text automatically.
+- **Source badge** — a blockquote earns "from this page" only if it matches the captured text verbatim (passages read back by position count too). Treat unbadged quotes with suspicion.
+- **History** — every completed turn is saved locally (`chrome.storage.local`, at most 50 conversations, oldest evicted). The history button at the top left restores or deletes them; a restored conversation just continues.
+- **`/compact`** — once a conversation gets long, type `/compact` (optionally with guidance: `/compact keep the financial figures`) or pick **Compact context** from the **+** menu. Earlier turns collapse into a summary for future requests; what you see on screen stays. Compaction is lossy, and the summary request is about as large as a normal one — **compact early**: once ordinary requests fail on context length, compaction fails too and only **New chat** is left.
+- **Boundaries** — browser-internal pages (`chrome://`) and extension stores cannot be read; the chip says so and the AI answers from your question alone. Same-origin iframes (including `srcdoc` and legacy framesets) are read and operated as part of the page; cross-origin frames are not, and the model is told how many there are.
+- **Shortcuts** — Enter sends, Shift+Enter breaks a line; **Stop** at any time; hover a reply to copy or regenerate; **New chat** clears everything.
 
-## Usage
+## Skills
 
-- **When the page is read** — only when you send a message. Opening the side panel, switching tabs, or the page changing on its own never triggers a read. What was read is folded into the **page chip** at the top left (title only); click it for a popover with the URL, character and element counts, and the exact text and outline that were captured.
-- **Page changes are picked up automatically** — there is **no Re-read button**. Before every message the extension takes a fresh look at the page and decides what the model needs: nothing at all if the page is unchanged; a short "what changed" summary of a few dozen lines for small changes (you paged through a list, expanded a section, the AI operated the page); the full page again only when the URL changed or the page was rewritten. When it does re-read, a faint line in the conversation says so — and the history keeps only the most recent copy of the page, so it never piles up.
-- **Waiting for the page to load** — ask about a page you have just opened and its data is often still on the way: a spinner over a "No data" placeholder. Before reading, the extension waits for the content to settle and loading indicators to disappear (about 2.5 seconds at most), so the chip's "Reading…" may last a little longer than usual. If the page never settles it is read anyway, but the model is told it was still loading and a faint line in the conversation says so. The model also has a "wait for page" tool of its own, so when it sees placeholder text it waits and reads again instead of treating "No data" as the answer.
-- **Perception tools** — the model calls them on its own and the sidebar shows each call as a live step on a light timeline; once the answer is in, the steps fold into one line ("Ran N steps") that you can expand. Ask "where is X on this page" and the AI draws a highlight box for three seconds; ask it to "extract table N in full" and you get the whole table, free of the body-text truncation limit. Requires an endpoint that supports function calling (DeepSeek and most gateways do); if it does not, the extension falls back to plain text.
-- **Long pages** — only the first 12,000 characters of body text are sent with your message. Beyond that, the model searches to find the position it needs and then reads that stretch of text by position, so asking about a late chapter costs one or two tool calls instead of a dozen blind searches. Reading is capped per turn, and older excerpts are collapsed to a placeholder once they are superseded, so a long session does not silently fill the context window.
-- **Source badge** — a blockquote gets the "from this page" badge only if it matches the captured page text verbatim (text the model read back by position counts too). Treat quotes without a badge with suspicion.
-- **Shortcuts** — Enter sends, Shift+Enter inserts a newline; streaming replies can be stopped at any time; hover a reply to copy it or regenerate; **New chat** starts a fresh conversation.
-- **Conversation history** — every completed turn is saved locally (`chrome.storage.local`, never uploaded anywhere); the history button at the top left opens a compact popover to browse, restore and delete conversations, keeping at most 50 (the oldest are evicted automatically). A restored conversation can simply continue: the next message re-reads the current page as usual and compares it against the page that conversation remembers, resending nothing if it is unchanged. Deleting the conversation you are currently viewing also clears the message flow; **Clear all** sits at the top of the popover.
-- **Compact context** — once a conversation gets long, type `/compact` in the composer (or pick **Compact context** from the "+" menu) to collapse everything so far into a summary; from then on each request carries only that summary plus the messages after the compaction point. The bubbles in the sidebar and in restored history stay as they were — all you see is one faint line reading "Earlier conversation compacted". The next message after a compaction carries the current page in full again, so figures and quotations never have to survive on the summary alone. You can steer it, e.g. `/compact keep the financial figures`; you can hit **Stop** while it runs, and a failed or stopped compaction leaves your context untouched.
-  Compaction is lossy: intermediate steps, raw tool output and some detail are dropped. The summary request itself carries almost as much history as a normal one, so **compact early rather than late** — if you wait until ordinary requests already fail on context length, the summary request fails too and only **New chat** is left. The extension never compacts on its own.
-- **Embedded frames (iframes)** — frames that share the page's origin (including the `srcdoc` form that forums and rich-text editors use, and the framesets of legacy systems) are read as part of the page text, and the links, buttons and inputs inside them can be located and operated like any other; a sandboxed `srcdoc` frame yields its text only; cross-origin frames cannot be read, and the AI is told how many there are.
-- **Pages that cannot be read** — browser-internal pages (`chrome://`), extension stores and the like are off limits; the page chip reads "Page not readable" and the AI answers from your question alone.
+A skill is a session-scoped prompt pack — plain instructions, no code — that puts the AI into a task mode. Three ship in this version:
 
-## Skills (preset)
+- **Table to CSV** — transcribes a page table in full into a ` ```csv ` block, every figure verbatim; the block copies or downloads as a `.csv` that opens in Excel.
+- **Financial statements** — identifies statements and period, shows the formula behind every ratio, and separates page figures from derived ones.
+- **Market digest** — explains the market data on the page, never predicts or recommends, and ends every reply with a fixed disclaimer.
 
-A skill is a session-scoped prompt pack — plain instructions, no code — that puts the AI into a specific task mode. Three presets ship with this version:
-
-- **Table to CSV** — transcribes page tables in full into a ` ```csv ` code block, with proper quoting and every figure kept exactly as the page shows it; the block can be copied or downloaded as a .csv file that opens directly in Excel.
-- **Financial statements** — identifies the statements and reporting period, shows the formula behind every ratio, and strictly separates figures copied from the page from figures it derived.
-- **Market digest** — organises and explains the market data the page shows, never predicts or gives buy/sell advice, and ends every reply with a fixed disclaimer line.
-
-Attach one via the **+** menu → **Attach a Skill**, or from the suggestion bar that appears when you are on a matching finance site (quote pages suggest Market digest, disclosure sites suggest Financial statements). The suggestion bar only reads the tab's URL — it never injects scripts or reads page content. The active skill shows as a removable chip above the input box; it lasts for the current conversation and **New chat** clears it.
+Attach one from the **+** menu → **Attach a Skill**, or from the suggestion bar that appears on matching finance sites (quote pages suggest Market digest, disclosure sites suggest Financial statements). The suggestion bar reads only the tab's URL. The active skill sits as a removable chip above the input and lasts for the conversation.
 
 ## Page actions (off by default)
 
-Enable them with the "Allow page actions" toggle in the settings drawer or "Page actions" in the **+** menu next to the input box (the two are the same switch); the first time you turn it on, you get a risk confirmation. Once enabled the AI does more than look: it can click buttons, fill inputs, pick dropdown options, press Enter, scroll, navigate to a URL and open or close tabs — good for "fill this form with the details above" or "open that page and summarise it".
+Switch on **Allow page actions** in settings or **Page actions** in the **+** menu (same switch; a risk confirmation appears the first time). The AI can then click, fill inputs, pick dropdown options, press keys, scroll, navigate and open or close tabs — "fill this form with the details above", "open that page and summarise it".
 
-Every action appears in the conversation as a prominent activity line, and you can hit **Stop** at any point during streaming — pending actions are skipped. For irreversible operations (transfers, payments, orders, approval submissions, deletions) the AI explains what it is about to do and waits for your explicit go-ahead. After a navigation, element numbers reset, the page chip switches to the new page's title, and your next message automatically carries the new page's content. While the switch is off, action tools are not registered with the model at all.
+- Every action appears as a prominent activity line, and **Stop** skips whatever is pending.
+- For irreversible operations — transfers, payments, orders, approval submissions, deletions — the AI explains what it is about to do and waits for your explicit go-ahead. This is a prompt-level guardrail, not a technical block.
+- After each action the extension waits for the page to settle (up to 5 s) before reading the result; if it is still loading, the model is told that placeholders are not conclusions and can wait longer.
+- While the switch is off, action tools are not registered with the model at all.
 
-After every action the extension waits for the page content to settle and loading overlays to disappear (up to 5 seconds) before looking at the result — in back-office systems a single search click often spins for a few seconds, and the "No data" shown meanwhile is only a placeholder. If the page is still loading when the wait runs out, the model is told so explicitly ("still loading, placeholders are not conclusions") and can use its "wait for page" tool to wait a few seconds more, rather than deciding the search returned nothing and going back.
-
-**Known limitations**: actions are dispatched as synthetic events (`isTrusted` is false), which a handful of strictly validating sites ignore; custom dropdown widgets need the AI to open them and click an option. Load detection looks only at the page itself (whether content is still changing, whether a loading indicator is visible) and cannot see network requests: a page with a very slow backend that shows no loading state and renders an empty table first can still be read in its empty state — just tell the AI to "wait a few seconds and look again". Do not enable this while working with business data you do not want touched.
+**Known limitations** — actions are synthetic events (`isTrusted` is false), which a few strictly validating sites ignore; custom dropdown widgets need the AI to open them and click an option; load detection sees the page, not the network, so a slow backend that shows no loading state can still be read in its empty state ("wait a few seconds and look again" fixes it). Do not enable this on business data you do not want touched.
 
 ## How this differs from an in-bank production build
 
-SSO/4A authentication, a domain allowlist, gateway-side redaction and audit logs, per-system extraction adapters, OCR for scanned documents, and audit trails plus step-up authorisation for page actions — all covered by existing in-bank capabilities and out of scope for this build.
+SSO/4A authentication, a domain allowlist, gateway-side redaction and audit logs, per-system extraction adapters, OCR for scanned documents, and audit trails plus step-up authorisation for page actions are all provided by existing in-bank capabilities and are out of scope here.
 
 ## Troubleshooting
 
 | Symptom | What to check |
 |---|---|
-| `CRX_REQUIRED_PROOF_MISSING` while installing | You packed the `.crx` yourself; Chrome only accepts store-signed packages. Load the unpacked `extension/` directory, or deploy through enterprise policy |
-| Installs fine but no sidebar opens | Your browser is below the version floor — check `chrome://version` (Chrome 114+, Edge 117+) |
-| Settings vanished after reinstalling | Uninstalling clears the extension's local storage. **Export settings** before reinstalling and **Import settings** afterwards; for everyday code changes use **Reload** rather than remove-and-re-add |
-| 401 error | Verify the API key |
-| 404 error | Check that the baseUrl ends with `/v1` |
-| Network failure | Confirm the endpoint is reachable; make sure a local service is actually running |
-| "Endpoint does not support tool calling / image input, degraded" | The endpoint or model lacks that capability — this is the normal fallback; switch to one that supports it |
-| "Tab switched" | You changed tabs mid-conversation, which invalidated the tools; switch back, or simply ask again about the current page (the next message reads it automatically) |
-| Clicks / typing have no effect | A few sites ignore synthetic events; the element numbers may also be stale — ask the AI to list the elements again and retry |
+| `CRX_REQUIRED_PROOF_MISSING` on install | Load the unpacked `extension/` directory instead of a self-packed `.crx` |
+| Installs, but no sidebar opens | Browser below the version floor (Chrome 114+, Edge 117+) — see `chrome://version` |
+| Settings gone after reinstalling | Uninstalling clears extension storage; export before, import after; use **Reload** for code changes |
+| 401 | Check the API key |
+| 404 | Check that the baseUrl ends with `/v1` |
+| Network failure | Endpoint unreachable; make sure a local service is running |
+| "does not support tool calling / image input, degraded" | Normal fallback; switch to a model with that capability |
+| "Tab switched" | You changed tabs mid-conversation; switch back, or ask again about the current page |
+| Clicks / typing have no effect | A few sites ignore synthetic events, or the element numbers are stale — ask the AI to list elements again |
 
 ## Contributing and security
 
-- **Contributing** — [CONTRIBUTING.md](CONTRIBUTING.md). Read the hard constraints first: zero dependencies and no build step, `core/` stays platform-independent (no `chrome.*`), injected functions stay self-contained, and every user- *and* model-facing string lives in `core/i18n.js` in both languages. `main` is protected, so fork and open a PR.
+- **Contributing** — [CONTRIBUTING.md](CONTRIBUTING.md). Hard constraints first: zero dependencies and no build step, `core/` stays free of `chrome.*`, injected functions stay self-contained, every user- and model-facing string lives in `core/i18n.js` in both languages. `main` is protected — fork and open a PR.
 - **Code of conduct** — [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) (Contributor Covenant 2.1).
-- **Security** — [SECURITY.md](SECURITY.md). Report vulnerabilities privately through the [Security tab](https://github.com/JialuXu/TitaniumSidebar/security/advisories/new), never in a public issue. It also spells out what is *not* a vulnerability here: redaction is regex best-effort, screenshots are never redacted, and the guardrail on irreversible actions is a prompt-level one, not a technical block.
+- **Security** — [SECURITY.md](SECURITY.md); report vulnerabilities through the [Security tab](https://github.com/JialuXu/TitaniumSidebar/security/advisories/new), never in a public issue. It also lists what is *not* a vulnerability: regex best-effort redaction, unredacted screenshots, and the prompt-level guardrail on irreversible actions.
 - **Licence** — [MIT](LICENSE).
 
 ---
