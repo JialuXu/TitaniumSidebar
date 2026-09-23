@@ -10,7 +10,7 @@
  *   badconfig — 配置缺失（baseUrl/model 为空）
  *   network   — fetch 本身失败（断网、域名不可达等）
  *   http      — 收到非 2xx 响应（带 status 与响应体 detail）
- *   stream    — 响应流提前中断（未见 [DONE] / finish_reason）
+ *   stream    — 响应流提前中断（未见 [DONE] / finish_reason，也没有拼完整的工具调用）
  *   abort     — 调用方主动中止（用户点了停止）
  */
 export class LlmError extends Error {
@@ -77,11 +77,18 @@ export async function* streamChat(config, messages, { signal, tools } = {}) {
   // 流式 tool_calls 分片累积槽：以分片的 index 为下标，id 赋值、name/arguments 字符串累加。
   // 不能假设一个 chunk 到齐——不同实现（DeepSeek/各网关）的分片粒度不一。
   const pending = [];
+  const readyCalls = () => pending.filter(Boolean);
+  // 没有结束标记就断流时，只有每个调用的参数都是完整 JSON 才敢当作正常结束：
+  // 截在半截的参数交出去，就是拿残缺指令去改页面
+  const argsComplete = () => readyCalls().every((c) => {
+    if (!c.arguments) return true;
+    try { JSON.parse(c.arguments); return true; } catch { return false; }
+  });
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
+      // 读完时补一个换行：最后一行（常见是不带换行的 data: [DONE]）也要解析，不能留在缓冲区里
+      buf += done ? decoder.decode() + '\n' : decoder.decode(value, { stream: true });
       const lines = buf.split('\n');
       buf = lines.pop(); // 末段可能是半行，留在缓冲区等下一个 chunk
       for (const rawLine of lines) {
@@ -89,6 +96,8 @@ export async function* streamChat(config, messages, { signal, tools } = {}) {
         if (!line.startsWith('data:')) continue; // 空行与注释行（keep-alive）跳过
         const payload = line.slice(5).trim();
         if (payload === '[DONE]') {
+          // 部分网关不发 finish_reason，拼好的调用只能在这里交出去
+          if (readyCalls().length) yield { type: 'tool_calls', calls: readyCalls() };
           cleanEnd = true;
           return;
         }
@@ -115,14 +124,22 @@ export async function* streamChat(config, messages, { signal, tools } = {}) {
           cleanEnd = true; // 兼容不发 [DONE] 的网关
           // 宽容处理：只要攒到了分片就交给调用方，不苛求 finish_reason === 'tool_calls'
           //（部分网关对工具调用也报 'stop'）。交付后流即视为结束。
-          if (pending.some(Boolean)) {
-            yield { type: 'tool_calls', calls: pending.filter(Boolean) };
+          if (readyCalls().length) {
+            yield { type: 'tool_calls', calls: readyCalls() };
             return;
           }
         }
       }
+      if (done) break;
     }
-    if (!cleanEnd) throw new LlmError('stream');
+    if (!cleanEnd) {
+      // 连接正常读完却没有结束标记：拼好且完整的调用照样交出，否则按断流处理
+      if (readyCalls().length && argsComplete()) {
+        yield { type: 'tool_calls', calls: readyCalls() };
+        return;
+      }
+      throw new LlmError('stream');
+    }
   } catch (err) {
     if (err instanceof LlmError) throw err;
     throw new LlmError(err && err.name === 'AbortError' ? 'abort' : 'stream');
