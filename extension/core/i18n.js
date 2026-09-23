@@ -362,6 +362,7 @@ const ZH = {
   'fmt.chgTruncNote': '注意：元素编号已达上限，可能有新出现的元素未能编号。',
   'fmt.chgNoNewTrunc': '页面未跳转，没有检测到可编号的新元素。',
   'fmt.chgNoNew': '页面未跳转，也没有新增可交互元素。',
+  'fmt.chgUserSwitched': '注意：操作期间用户自己切到了另一个标签页「{title}」（不是本次动作打开的）。工作页仍是原页面，接下来的动作不会执行；请停下来问用户：是切回原页面继续，还是在新页面上继续（在新页面上发一条消息即可）。',
   'fmt.chgNew': '页面未跳转，新增 {n} 个可交互元素（带 * 前缀）：',
   'fmt.chgBusy':
     '注意：等待 {s} 秒后页面仍在加载（可见 {n} 处加载指示器）。此刻页面上的「加载中」「暂无数据」等文字只是占位，' +
@@ -940,6 +941,7 @@ const EN = {
   'fmt.chgTruncNote': 'Note: element numbering hit its limit, so newly appeared elements may not have been numbered.',
   'fmt.chgNoNewTrunc': 'The page did not navigate and no numberable new elements were detected.',
   'fmt.chgNoNew': 'The page did not navigate and no new interactive elements appeared.',
+  'fmt.chgUserSwitched': 'Note: during the action the user switched to another tab "{title}" on their own (it was not opened by this action). The working page is still the original one and further actions will not run; stop and ask the user whether to switch back and continue, or to continue on the new page (just send a message from it).',
   'fmt.chgNew': 'The page did not navigate; {n} new interactive elements appeared (prefixed with *):',
   'fmt.chgBusy':
     'Note: after waiting {s}s the page is still loading ({n} loading indicator(s) visible). Text such as "Loading" or "No data" ' +

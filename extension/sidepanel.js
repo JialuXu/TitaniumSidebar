@@ -559,25 +559,39 @@ async function rebuildPageAfterNavigation(tab) {
   };
 }
 
+// 记下工作页在动作期间打开的新标签页（target=_blank / window.open 的 openerTabId 指向它）。
+// 动作注入前开始记、页面同步完停，只有这些标签页才算「本动作打开的」。
+function watchOpenedTabs(openerId) {
+  const ids = new Set();
+  const onCreated = (tab) => { if (tab.openerTabId === openerId) ids.add(tab.id); };
+  chrome.tabs.onCreated.addListener(onCreated);
+  return { ids, stop: () => chrome.tabs.onCreated.removeListener(onCreated) };
+}
+
 // 动作执行后感知页面变化，产出给模型的变化摘要。
 // mayNavigate：点击/回车这类可能触发跳转的动作要等文档加载完成；输入/选择不等文档，
 // 但同样等内容稳定——联想下拉、校验提示都是输入后几百毫秒才出现的。
 // budget：稳定判定的预算，wait_for_page 按模型要求的秒数传入。
-async function syncAfterAction({ mayNavigate, budget = SETTLE.action }) {
+// opened：本动作打开的标签页（watchOpenedTabs），只有它们会被收养为新的工作页。
+async function syncAfterAction({ mayNavigate, budget = SETTLE.action, opened = new Set() }) {
   if (mayNavigate) await sleep(300); // 静默期：给导航启动留出时间，否则会读到旧页面的 complete 状态
 
-  // target=_blank 的链接与 window.open 会把激活页换成新标签页，收养它为新的工作页
+  // 激活页换了：本动作打开的新标签页收养为工作页；用户自己切过去的不跟随。
+  // 悄悄跟过去，模型会以为那一页是自己点出来的，接着在用户正在看的页面上动手。
+  // 不跟随时只在结果里交代一句，同批后续调用由 tabId 守卫拦下，让模型去问用户
   let active = null;
   try { [active] = await chrome.tabs.query({ active: true, currentWindow: true }); } catch { /* 忽略 */ }
-  const adopted = Boolean(active && active.id && active.id !== state.page.tabId);
+  const switched = Boolean(active && active.id && active.id !== state.page.tabId);
+  const adopted = switched && opened.has(active.id);
+  const userSwitched = switched && !adopted ? { title: active.title || '', url: active.url || '' } : null;
   if (adopted) state.page.tabId = active.id;
 
   const { tab, settle } = await awaitPageReady(state.page.tabId, budget, mayNavigate || adopted ? 8000 : 0);
-  if (!tab) return { navigated: true, restricted: true };
+  if (!tab) return { navigated: true, restricted: true, userSwitched };
   const loading = loadingOf(settle);
 
   if (adopted || (tab.url && tab.url !== state.page.url)) {
-    return { ...(await rebuildPageAfterNavigation(tab)), loading };
+    return { ...(await rebuildPageAfterNavigation(tab)), loading, userSwitched };
   }
 
   // 未跳转：增量刷新，把新出现的元素（带 * 标记）报告给模型
@@ -589,9 +603,10 @@ async function syncAfterAction({ mayNavigate, budget = SETTLE.action }) {
       viewport: snap.viewport,
       stats: snap.stats,
       loading,
+      userSwitched,
     };
   } catch {
-    return { navigated: false, newElements: [], loading };
+    return { navigated: false, newElements: [], loading, userSwitched };
   }
 }
 
@@ -712,13 +727,20 @@ const provider = {
     if (!state.page.session && !READ_ONLY[payload.action]) {
       throw new Error(t('sys.noRefMapping'));
     }
-    const result = await injectFunc(tab.id, performAction, {
-      ...payload, session: state.page.session, i18n: injectedStrings(),
-    });
-    if (!result) throw new Error(t('sys.actFailed'));
-    if (READ_ONLY[payload.action] || !result.ok) return { result, change: null };
-    const change = await syncAfterAction({ mayNavigate: Boolean(MAY_NAVIGATE[payload.action]) });
-    return { result, change };
+    const opened = watchOpenedTabs(tab.id);
+    try {
+      const result = await injectFunc(tab.id, performAction, {
+        ...payload, session: state.page.session, i18n: injectedStrings(),
+      });
+      if (!result) throw new Error(t('sys.actFailed'));
+      if (READ_ONLY[payload.action] || !result.ok) return { result, change: null };
+      const change = await syncAfterAction({
+        mayNavigate: Boolean(MAY_NAVIGATE[payload.action]), opened: opened.ids,
+      });
+      return { result, change };
+    } finally {
+      opened.stop();
+    }
   },
 
   /* ---------- 浏览器级动作（chrome.tabs） ---------- */
