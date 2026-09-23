@@ -411,7 +411,8 @@ async function snapshotCurrentTab() {
   // 模型在会话中已经见过的 ref 才不会因为一次例行重读而集体作废；换了页面则干净重编。
   const inheritRefs = tab.id === state.page.tabId && tab.url === state.page.url;
   const result = await injectFunc(tab.id, snapshotPage, fullSnapshotArgs({ inheritRefs }));
-  if (!result || !result.ok || !result.text) return null;
+  // 只有控件、没有正文的页面（纯表单、登录页）照样可读：snapshotPage 在正文与元素都为空时才返回 ok:false
+  if (!result || !result.ok) return null;
   return { ...result, tabId: tab.id, loading: loadingOf(settle) };
 }
 

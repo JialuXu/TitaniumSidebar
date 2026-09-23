@@ -467,6 +467,7 @@ const ZH = {
   'tag.summary': '对话摘要',
   // 页面在会话中途换了/读不到了：全文块之前的一句交代
   'prompt.leadSwitched': '用户当前浏览的页面已经变了，以下是新页面的内容；此前消息里的页面内容不再是用户眼前的页面。',
+  'prompt.pageNoText': '（此页没有可读的正文，只有按钮、输入框等可交互控件）',
   'prompt.leadPageGone': '用户已切换到无法读取的页面（浏览器内部页或受限页面），此前消息里的页面内容不再是用户眼前的页面。',
   'prompt.leadLoading': '注意：读取时页面仍在加载，部分内容可能尚未就位；下面出现的「加载中」「暂无数据」等文字可能只是占位，不要据此下结论。',
   // 只陈述事实、不提工具名：纯文本降级后这条消息仍在历史里（不变式 2）
@@ -1044,6 +1045,7 @@ const EN = {
   'tag.update': 'page_update',
   'tag.summary': 'conversation_summary',
   'prompt.leadSwitched': 'The user is now on a different page. Its content follows; the page content in earlier messages is no longer what the user is looking at.',
+  'prompt.pageNoText': '(this page has no readable body text, only interactive controls such as buttons and input fields)',
   'prompt.leadPageGone': 'The user has switched to a page that cannot be read (a browser-internal or restricted page); the page content in earlier messages is no longer what the user is looking at.',
   'prompt.leadLoading': 'Note: the page was still loading when it was read, so some content may not be in place yet; text such as "Loading" or "No data" below may only be a placeholder — do not draw conclusions from it.',
   'prompt.pageTotal': '(The body text of this page is {total} characters; the <page_content> above is its first {shown}. The @number after a heading in <page_outline> is that heading\u2019s character position in the complete body text.)',

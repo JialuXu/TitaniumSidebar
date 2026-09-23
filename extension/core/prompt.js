@@ -52,7 +52,6 @@ export function buildCompactPrompt(instruction = '') {
  *   它放在 <页面内容> 标签**之外**：标签内是页面来的不可信文本，这句是系统的陈述。
  */
 export function buildUserContent(userInput, pageText, outlineText, lead, truncation) {
-  if (!pageText) return userInput;
   const cTag = t('tag.content');
   const oTag = t('tag.outline');
   const leadBlock = lead ? `${lead}\n\n` : '';
@@ -63,7 +62,10 @@ export function buildUserContent(userInput, pageText, outlineText, lead, truncat
       shown: truncation.shown,
     }) + '\n\n'
     : '';
-  return `${leadBlock}<${cTag}>\n${pageText}\n</${cTag}>\n\n${totalBlock}${outlineBlock}${userInput}`;
+  // 纯表单、登录页这类页面只有控件没有正文：照样给一块页面内容并交代一句，
+  // 否则模型只见到用户的问题，不知道眼前有个页面（此处不点工具名，降级纯文本时也成立）
+  const body = pageText || t('prompt.pageNoText');
+  return `${leadBlock}<${cTag}>\n${body}\n</${cTag}>\n\n${totalBlock}${outlineBlock}${userInput}`;
 }
 
 /**
