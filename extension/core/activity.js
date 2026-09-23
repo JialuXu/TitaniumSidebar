@@ -18,6 +18,8 @@ export function describeToolActivity(name, args, phase, data = {}) {
   const ref = data.ref ?? a.ref ?? '?';
   const named = data.name ? ` "${data.name}"` : '';
   const jumped = data.navigated ? t('act.jumped') : '';
+  // 未注册的调用根本没执行，按工具名套「点击失败」之类的文案会让人以为页面被动过
+  if (phase === 'fail' && data.reason === 'not-registered') return t('act.notRegistered', { name });
   switch (name) {
     /* —— 感知类 —— */
     case 'find_in_page': {

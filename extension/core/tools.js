@@ -237,19 +237,27 @@ function withChange(text, change) {
  * @param {{ readChars?: number, url?: string, textTotal?: number }} [turn]
  *   本回合的读取账本与「模型手里那份页面」的基准：外壳在回合开始时按 sentPage 填好，
  *   读取时对不上就给模型一句告警（位置会随页面变化漂移，不变式 9）。
+ * @param {Set<string>} [registered] 本次请求实际注册的工具名。不在其中的调用一律不执行：
+ *   开关只决定工具组不组进请求，网关照样可能返回未注册的 click_element / capture_screenshot，
+ *   不拦就等于绕过「允许页面操作」与视觉开关。缺省视为什么都没注册，而不是不校验。
  * @returns {Promise<{
  *   toolMessage: { role: 'tool', tool_call_id: string, content: string },
  *   followUpMessage?: object,   // 截图工具专用：紧随 tool 消息的多模态 user 消息
  *   meta: { name: string, args: object|null, ok: boolean, data: object },
  * }>}
  */
-export async function dispatchToolCall(call, provider, turn = {}) {
+export async function dispatchToolCall(call, provider, turn = {}, registered = new Set()) {
   const meta = { name: call.name, args: null, ok: false, data: {} };
   const reply = (content, followUpMessage) => ({
     toolMessage: { role: 'tool', tool_call_id: call.id, content },
     ...(followUpMessage ? { followUpMessage } : {}),
     meta,
   });
+
+  if (!registered.has(call.name)) {
+    meta.data = { reason: 'not-registered' };
+    return reply(t('res.notRegistered', { name: call.name }));
+  }
 
   // 参数解析容错：坏 JSON 不中断循环，把错误还给模型让它自我纠正
   let args = {};

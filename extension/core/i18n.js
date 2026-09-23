@@ -332,6 +332,7 @@ const ZH = {
   'act.generic.run': '正在调用 {name}…',
   'act.generic.done': '{name} 完成',
   'act.generic.fail': '{name} 失败',
+  'act.notRegistered': '未执行 {name}：本次未开放此工具',
   'act.jumped': '，页面已跳转',
 
   /* ---------- 感知数据序列化（core/format.js） ---------- */
@@ -426,6 +427,7 @@ const ZH = {
   'res.closedTab': '已关闭标签页{which}，还剩 {remaining} 个。',
   'res.closedWorkTab': '（当前工作页）',
   'res.unknownTool': '未知工具 {name}，可用工具以本次请求的 tools 定义为准。',
+  'res.notRegistered': '{name} 本次未开放，未执行：页面操作或截图功能未开启。不要再调用它；用户确实需要时，告诉用户可以在设置中开启。',
   'res.toolFailed': '工具执行失败。',
 
   /* ---------- 动作失败原因 ---------- */
@@ -907,6 +909,7 @@ const EN = {
   'act.generic.run': 'Calling {name}…',
   'act.generic.done': '{name} done',
   'act.generic.fail': '{name} failed',
+  'act.notRegistered': 'Skipped {name}: not available in this request',
   'act.jumped': ', the page navigated',
 
   /* ---------- Perception serialisation (core/format.js) ---------- */
@@ -1002,6 +1005,7 @@ const EN = {
   'res.closedTab': 'Closed tab{which}, {remaining} remaining.',
   'res.closedWorkTab': ' (the working tab)',
   'res.unknownTool': 'Unknown tool {name}; the tools defined in this request are the ones available.',
+  'res.notRegistered': '{name} is not available in this request and was not executed: page actions or screenshots are turned off. Do not call it again; if the user really needs it, tell them it can be turned on in settings.',
   'res.toolFailed': 'The tool failed to execute.',
 
   /* ---------- Action failure reasons ---------- */

@@ -1085,6 +1085,8 @@ async function runAgentLoop(el) {
     const vision = useTools && Boolean(activeProfile(state.config).visionEnabled);
     const actions = useTools && actionsOn;
     const tools = useTools ? buildToolDefs({ vision, actions }) : undefined;
+    // 本次请求实际注册的工具名：执行前逐个对照，开关与轮数上限才真正管得住（见 dispatchToolCall）
+    const registered = new Set((tools || []).map((d) => d.function.name));
     const requestMessages = buildRequestMessages({ tools: useTools, vision, actions, skill: skillId }, messages, state.compact);
     console.log('[发送内容]', requestMessages); // 验收依据：控制台可核对脱敏后的实际发送内容
 
@@ -1137,8 +1139,9 @@ async function runAgentLoop(el) {
     }
 
     // 没有工具调用（正常结束/出错/中止）：本段即最终回复。
-    // rounds 硬上限兜底：即使请求不带 tools，病态网关仍返回 tool_calls 也不再执行
-    if (streamError || !calls || !calls.length || rounds >= roundLimit + 2) {
+    // 本次请求没带 tools（到了轮数上限、已降级纯文本、页面不可读且没开动作）时，
+    // 网关仍返回的 tool_calls 整批丢弃：不落历史就不必补占位，也不会再请求一轮
+    if (streamError || !calls || !calls.length || !tools) {
       const msgObj = { role: 'assistant', content: acc };
       messages.push(msgObj);
       const aborted = streamError instanceof LlmError && streamError.kind === 'abort';
@@ -1176,7 +1179,8 @@ async function runAgentLoop(el) {
     // 因此本批先攒着，等所有 tool 消息成对回填完再统一追加到历史末尾。
     const pendingFollowUps = [];
     for (const call of calls) {
-      const isAction = WRITE_TOOL_NAMES.has(call.name);
+      // 未注册的动作不会执行，不按动作行呈现，也不计入摘要里的「页面操作」
+      const isAction = WRITE_TOOL_NAMES.has(call.name) && registered.has(call.name);
       // 中止：未执行的调用补占位 tool 消息——tool_calls 必须一一回填，否则历史不合法（下轮 400）
       if (signal.aborted) {
         messages.push({ role: 'tool', tool_call_id: call.id, content: t('sys.aborted') });
@@ -1199,7 +1203,7 @@ async function runAgentLoop(el) {
       maybeScroll();
       // 同一请求最多一张真图：本批还没回填的那些也算在内，否则一批两次截图会漏网
       if (call.name === 'capture_screenshot') stripImagesFromHistory(messages, pendingFollowUps);
-      const { toolMessage, followUpMessage, meta } = await dispatchToolCall(call, provider, turn);
+      const { toolMessage, followUpMessage, meta } = await dispatchToolCall(call, provider, turn, registered);
       messages.push(toolMessage);
       if (followUpMessage) {
         followUpMessage._placeholder = t('sys.shotOmittedMeta', {
