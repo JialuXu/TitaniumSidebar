@@ -19,7 +19,8 @@ import { buildUserContent, buildPageUpdate } from './prompt.js';
 const MAX_DIFF_CHARS = 4000;
 
 /**
- * 模型「已经看到的页面」的初值：text 为空表示还没给模型看过任何页面内容。
+ * 模型「已经看到的页面」的初值：url 为空表示还没给模型看过任何页面。
+ * 不能拿 text 判断：只有控件、没有正文的页面 text 本来就是空的。
  * textTotal 是模型看到的那份页面有多长，位置是否还作数以它为基准（不变式 6），
  * 因此只在真的重发了全文（kind:'full'）时更新。
  */
@@ -35,7 +36,7 @@ export function initialSentPage() {
  * @returns {{ kind: 'none'|'diff'|'full', first?: boolean, navigated?: boolean, loading?: boolean, diff?: string }}
  */
 export function decidePageSync(sentPage, page, loading) {
-  if (!sentPage.text) return { kind: 'full', first: true, loading };
+  if (!sentPage.url) return { kind: 'full', first: true, loading };
   // 上一条消息告诉过模型「用户切到了读不到的页面」，现在又读到了：哪怕内容与那时一字不差
   // 也要重发一份，否则模型会一直以为用户还停在受限页上
   if (sentPage.gone) return { kind: 'full', navigated: sentPage.url !== page.url, loading };

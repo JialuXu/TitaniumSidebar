@@ -240,8 +240,12 @@ function formatLoadingNote(loading) {
  */
 export function formatPageChange(change) {
   if (!change) return '';
+  // 用户在动作期间自己切走了标签页：工作页不变，但要让模型知道并去问用户
+  const switchedNote = change.userSwitched
+    ? t('fmt.chgUserSwitched', { title: change.userSwitched.title || change.userSwitched.url || t('ui.untitled') })
+    : '';
   if (change.restricted) {
-    return t('fmt.chgRestricted');
+    return [t('fmt.chgRestricted'), switchedNote].filter(Boolean).join('\n');
   }
   const lines = [];
   if (change.navigated) {
@@ -261,6 +265,7 @@ export function formatPageChange(change) {
     lines.push(truncated);
   }
   lines.push(formatLoadingNote(change.loading));
+  lines.push(switchedNote);
   return lines.filter(Boolean).join('\n');
 }
 

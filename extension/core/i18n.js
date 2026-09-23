@@ -332,6 +332,7 @@ const ZH = {
   'act.generic.run': '正在调用 {name}…',
   'act.generic.done': '{name} 完成',
   'act.generic.fail': '{name} 失败',
+  'act.notRegistered': '未执行 {name}：本次未开放此工具',
   'act.jumped': '，页面已跳转',
 
   /* ---------- 感知数据序列化（core/format.js） ---------- */
@@ -361,6 +362,7 @@ const ZH = {
   'fmt.chgTruncNote': '注意：元素编号已达上限，可能有新出现的元素未能编号。',
   'fmt.chgNoNewTrunc': '页面未跳转，没有检测到可编号的新元素。',
   'fmt.chgNoNew': '页面未跳转，也没有新增可交互元素。',
+  'fmt.chgUserSwitched': '注意：操作期间用户自己切到了另一个标签页「{title}」（不是本次动作打开的）。工作页仍是原页面，接下来的动作不会执行；请停下来问用户：是切回原页面继续，还是在新页面上继续（在新页面上发一条消息即可）。',
   'fmt.chgNew': '页面未跳转，新增 {n} 个可交互元素（带 * 前缀）：',
   'fmt.chgBusy':
     '注意：等待 {s} 秒后页面仍在加载（可见 {n} 处加载指示器）。此刻页面上的「加载中」「暂无数据」等文字只是占位，' +
@@ -426,6 +428,7 @@ const ZH = {
   'res.closedTab': '已关闭标签页{which}，还剩 {remaining} 个。',
   'res.closedWorkTab': '（当前工作页）',
   'res.unknownTool': '未知工具 {name}，可用工具以本次请求的 tools 定义为准。',
+  'res.notRegistered': '{name} 本次未开放，未执行：页面操作或截图功能未开启。不要再调用它；用户确实需要时，告诉用户可以在设置中开启。',
   'res.toolFailed': '工具执行失败。',
 
   /* ---------- 动作失败原因 ---------- */
@@ -465,6 +468,7 @@ const ZH = {
   'tag.summary': '对话摘要',
   // 页面在会话中途换了/读不到了：全文块之前的一句交代
   'prompt.leadSwitched': '用户当前浏览的页面已经变了，以下是新页面的内容；此前消息里的页面内容不再是用户眼前的页面。',
+  'prompt.pageNoText': '（此页没有可读的正文，只有按钮、输入框等可交互控件）',
   'prompt.leadPageGone': '用户已切换到无法读取的页面（浏览器内部页或受限页面），此前消息里的页面内容不再是用户眼前的页面。',
   'prompt.leadLoading': '注意：读取时页面仍在加载，部分内容可能尚未就位；下面出现的「加载中」「暂无数据」等文字可能只是占位，不要据此下结论。',
   // 只陈述事实、不提工具名：纯文本降级后这条消息仍在历史里（不变式 2）
@@ -907,6 +911,7 @@ const EN = {
   'act.generic.run': 'Calling {name}…',
   'act.generic.done': '{name} done',
   'act.generic.fail': '{name} failed',
+  'act.notRegistered': 'Skipped {name}: not available in this request',
   'act.jumped': ', the page navigated',
 
   /* ---------- Perception serialisation (core/format.js) ---------- */
@@ -936,6 +941,7 @@ const EN = {
   'fmt.chgTruncNote': 'Note: element numbering hit its limit, so newly appeared elements may not have been numbered.',
   'fmt.chgNoNewTrunc': 'The page did not navigate and no numberable new elements were detected.',
   'fmt.chgNoNew': 'The page did not navigate and no new interactive elements appeared.',
+  'fmt.chgUserSwitched': 'Note: during the action the user switched to another tab "{title}" on their own (it was not opened by this action). The working page is still the original one and further actions will not run; stop and ask the user whether to switch back and continue, or to continue on the new page (just send a message from it).',
   'fmt.chgNew': 'The page did not navigate; {n} new interactive elements appeared (prefixed with *):',
   'fmt.chgBusy':
     'Note: after waiting {s}s the page is still loading ({n} loading indicator(s) visible). Text such as "Loading" or "No data" ' +
@@ -1002,6 +1008,7 @@ const EN = {
   'res.closedTab': 'Closed tab{which}, {remaining} remaining.',
   'res.closedWorkTab': ' (the working tab)',
   'res.unknownTool': 'Unknown tool {name}; the tools defined in this request are the ones available.',
+  'res.notRegistered': '{name} is not available in this request and was not executed: page actions or screenshots are turned off. Do not call it again; if the user really needs it, tell them it can be turned on in settings.',
   'res.toolFailed': 'The tool failed to execute.',
 
   /* ---------- Action failure reasons ---------- */
@@ -1040,6 +1047,7 @@ const EN = {
   'tag.update': 'page_update',
   'tag.summary': 'conversation_summary',
   'prompt.leadSwitched': 'The user is now on a different page. Its content follows; the page content in earlier messages is no longer what the user is looking at.',
+  'prompt.pageNoText': '(this page has no readable body text, only interactive controls such as buttons and input fields)',
   'prompt.leadPageGone': 'The user has switched to a page that cannot be read (a browser-internal or restricted page); the page content in earlier messages is no longer what the user is looking at.',
   'prompt.leadLoading': 'Note: the page was still loading when it was read, so some content may not be in place yet; text such as "Loading" or "No data" below may only be a placeholder — do not draw conclusions from it.',
   'prompt.pageTotal': '(The body text of this page is {total} characters; the <page_content> above is its first {shown}. The @number after a heading in <page_outline> is that heading\u2019s character position in the complete body text.)',
