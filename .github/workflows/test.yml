@@ -1,0 +1,20 @@
+# core/ 的自动化测试：只用 Node 自带的测试运行器，不安装任何依赖
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test "tests/**/*.test.mjs"

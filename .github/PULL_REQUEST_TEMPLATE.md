@@ -14,8 +14,8 @@ Please read the "Hard constraints" section of CONTRIBUTING.md before opening a P
 ## 怎么验证的 / How it was verified
 
 <!--
-本项目没有 CI，验证全靠手动，请写清楚你实际跑了什么。
-There is no CI here — verification is manual. Say what you actually ran.
+CI 只跑 core/ 的自动化测试；外壳与页面上的行为仍需手动验证，请写清楚你实际跑了什么。
+CI only runs the automated tests for core/ — the shell and on-page behaviour still need a manual pass. Say what you actually ran.
 -->
 
 - 浏览器与版本 / Browser and version:
@@ -23,6 +23,7 @@ There is no CI here — verification is manual. Say what you actually ran.
 
 ## 自检 / Checklist
 
+- [ ] `node --test "tests/**/*.test.mjs"` 全部通过；改了 core 行为的，在 `tests/unit/` 补了或更新了用例 / All tests pass; core behaviour changes come with new or updated cases in `tests/unit/`
 - [ ] 没有引入 npm 包、构建步骤或外部 CDN 资源 / No npm packages, build step or external CDN resources
 - [ ] `core/` 里没有新增 `chrome.*` 调用 —— `git grep -n "chrome\." extension/core/ | grep -vE ':[0-9]+:\s*(//|\*)'` 无输出 / No new `chrome.*` calls in `core/` — the filtered grep prints nothing
 - [ ] 改动过的注入函数仍然完全自包含（函数体内零模块级引用，返回值 JSON 可序列化）/ Injected functions I touched are still fully self-contained

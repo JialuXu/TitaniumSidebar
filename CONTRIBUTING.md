@@ -16,7 +16,7 @@ Thanks for taking an interest. Titanium is a small, deliberately constrained cod
 `main` is protected: no direct pushes, PR required.
 
 1. Fork the repository and branch off `main`. Name branches `feature/…`, `fix/…` or `docs/…`.
-2. Make your change and test it manually (see below).
+2. Make your change, run the automated tests and test it manually (see below).
 3. Open a PR against `main` and fill in the template. One logical change per PR — a bug fix and a refactor in the same PR will be sent back for splitting.
 4. Commit messages follow the existing history: a short imperative summary, Chinese or English both fine (`修复：…`, `fix: …`). No trailing punctuation, no scope prefixes required.
 
@@ -27,6 +27,8 @@ Thanks for taking an interest. Titanium is a small, deliberately constrained cod
 Plain HTML/CSS/JS, ES modules, loaded straight from `extension/`. **No npm, no bundler, no transpiler, no external CDN, no third-party library** — including for Markdown rendering, which is hand-written in `core/markdown.js`. The target environment is network-isolated; everything must run offline from local files.
 
 A PR that adds `package.json`, a build script or a vendored library will be declined. If you need something a library provides, write the minimum version of it.
+
+The same holds for the tests in `tests/`: they run on Node's built-in `node:test` alone, with nothing to install.
 
 ### Manifest V3, Chromium only
 
@@ -86,7 +88,17 @@ Please don't propose these — they've been decided against:
 
 ## Testing your change
 
-There is no test framework and no CI — verification is manual, so please actually do it and say what you did in the PR.
+Two layers: automated tests for `core/`, and a manual pass in the browser for everything else. Say what you ran in the PR.
+
+**Automated tests.** From the repo root, with Node.js ≥ 22.7 and nothing to install:
+
+```sh
+node --test "tests/**/*.test.mjs"
+```
+
+CI runs the same command on every PR. If you change how a core module behaves, add or update the cases in `tests/unit/<module>.test.mjs`; `tests/contracts/` checks the hard constraints above (no `chrome.*` in core, self-contained injected functions, both i18n catalogs in sync, version numbers consistent). Test code lives only in `tests/` — never add test-only exports or branches to `extension/`. See [tests/README.md](tests/README.md) for the layout.
+
+**Manual pass.** The shell, the injected functions' behaviour on real pages and real model endpoints are not covered by the tests:
 
 1. Load `extension/` unpacked in Chrome (`chrome://extensions` → Developer mode → Load unpacked) and reload it after each change.
 2. Open DevTools on the side panel itself (right-click inside the panel → Inspect) and check the console is clean. Service worker logs are behind the "service worker" link on the extensions page.
@@ -98,7 +110,7 @@ There is no test framework and no CI — verification is manual, so please actua
 git grep -n "chrome\." extension/core/ | grep -vE ':[0-9]+:\s*(//|\*)'
 ```
 
-This should print nothing. (The unfiltered grep does match a handful of comments that *mention* `chrome.debugger` or `chrome.tabs` while explaining why core doesn't call them — the filter drops comment lines so only real code shows up.) Worth running before every PR.
+This should print nothing. (The unfiltered grep does match a handful of comments that *mention* `chrome.debugger` or `chrome.tabs` while explaining why core doesn't call them — the filter drops comment lines so only real code shows up.) `tests/contracts/core-boundary.test.mjs` runs the same check automatically.
 
 ## Licence
 
@@ -124,7 +136,7 @@ By contributing you agree your contributions are licensed under the [MIT Licence
 `main` 分支受保护：不能直接推送，必须走 PR。
 
 1. Fork 仓库，从 `main` 切分支，命名用 `feature/…`、`fix/…` 或 `docs/…`。
-2. 改完自行手动验证（见下文）。
+2. 改完跑一遍自动化测试，再自行手动验证（见下文）。
 3. 向 `main` 提 PR 并填写模板。一个 PR 只做一件事 —— 修 bug 顺手重构会被要求拆开。
 4. Commit message 沿用现有历史风格：一句祈使式短摘要，中英文均可（`修复：…`、`fix: …`），末尾不加标点，不强制 scope 前缀。
 
@@ -135,6 +147,8 @@ By contributing you agree your contributions are licensed under the [MIT Licence
 纯原生 HTML/CSS/JS + ES Module，从 `extension/` 直接加载。**不用 npm、不用打包器、不用转译、不用外部 CDN、不引第三方库** —— 包括 Markdown 渲染，那是 `core/markdown.js` 里手写的。目标环境网络隔离，所有资源必须本地离线可用。
 
 添加 `package.json`、构建脚本或 vendor 进来的库的 PR 会被拒绝。需要某个库的能力时，请自己写最小实现。
+
+`tests/` 里的测试同样如此：只用 Node 自带的 `node:test`，不需要安装任何东西。
 
 ### 只做 Manifest V3 + Chromium
 
@@ -194,7 +208,17 @@ Chrome / Edge ≥ 114，ES2020+，不做老浏览器降级、不加 polyfill。�
 
 ## 如何验证你的改动
 
-项目没有测试框架也没有 CI，验证全靠手动 —— 所以请真的做一遍，并在 PR 里写清楚你验了什么。
+分两层：`core/` 有自动化测试，其余部分在浏览器里手动验证。请在 PR 里写清楚你跑了什么。
+
+**自动化测试。** 在仓库根目录执行，需要 Node.js ≥ 22.7，不用安装任何东西：
+
+```sh
+node --test "tests/**/*.test.mjs"
+```
+
+CI 会在每个 PR 上跑同一条命令。改了某个 core 模块的行为，就在 `tests/unit/<模块名>.test.mjs` 里补上或更新用例；`tests/contracts/` 检查上面这些硬性约束（core 不调 `chrome.*`、注入函数自包含、中英两套文案对齐、各处版本号一致）。测试代码只放在 `tests/`，不要往 `extension/` 里加测试专用的导出或分支。目录说明见 [tests/README.md](tests/README.md)。
+
+**手动验证。** 外壳、注入函数在真实页面上的行为、真实模型接口，都不在自动化测试的覆盖范围内：
 
 1. 在 Chrome 里加载已解压的 `extension/`（`chrome://extensions` → 开发者模式 → 加载已解压的扩展程序），每次改完重新加载。
 2. 对侧边栏本身开 DevTools（在面板内右键 → 检查），确认控制台干净。service worker 的日志在扩展管理页的「service worker」链接后面。
@@ -206,7 +230,7 @@ Chrome / Edge ≥ 114，ES2020+，不做老浏览器降级、不加 polyfill。�
 git grep -n "chrome\." extension/core/ | grep -vE ':[0-9]+:\s*(//|\*)'
 ```
 
-这条应当无输出。（不加过滤的话会命中几行注释 —— 那些注释是在解释「为什么 core 不调 `chrome.debugger` / `chrome.tabs`」，过滤掉注释行后剩下的才是真代码。）值得在每次提 PR 前跑一次。
+这条应当无输出。（不加过滤的话会命中几行注释 —— 那些注释是在解释「为什么 core 不调 `chrome.debugger` / `chrome.tabs`」，过滤掉注释行后剩下的才是真代码。）`tests/contracts/core-boundary.test.mjs` 会自动做同样的检查。
 
 ## 授权
 
