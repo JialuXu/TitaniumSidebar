@@ -4,8 +4,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createHistoryStore, deriveSessionTitle, countTurns, isQuotaError,
-  HistoryTooLargeError, HISTORY_RECORD_VERSION,
+  HistoryTooLargeError, HISTORY_RECORD_VERSION, buildSessionRecord, formatHistoryTime,
 } from '../../extension/core/history.js';
+import { setLocale, t } from '../../extension/core/i18n.js';
 import { createMemoryStorage } from '../helpers/memory-storage.mjs';
 
 const INDEX = 'history.index';
@@ -140,4 +141,33 @@ test('非配额类写入失败原样抛出，不淘汰任何会话', async () =>
   await store.save(record('b'));
   await assert.rejects(store.save(record('bad')), TypeError);
   assert.deepEqual((await store.list()).map((e) => e.id), ['b', 'a']);
+});
+
+/* ========== 记录组装与列表时间 ========== */
+
+test('组装记录：标题取首条用户消息，轮数只数用户敲入的消息', () => {
+  const messages = [
+    { role: 'user', content: '<页面内容>…', displayContent: '  帮我\n总结  ' },
+    { role: 'assistant', content: '好' },
+    { role: 'user', content: '（系统提示）', _kind: 'tool-limit' },
+    { role: 'user', content: '再问', displayContent: '再问' },
+  ];
+  const compact = { summary: 's', boundary: 2 };
+  const rec = buildSessionRecord({ id: 'a', createdAt: 1, updatedAt: 2, messages, sentPage: { url: 'u' }, skillId: 'csv-table', compact });
+  assert.deepEqual(
+    [rec.v, rec.id, rec.title, rec.turns, rec.skillId, rec.compact, rec.sentPage.url],
+    [HISTORY_RECORD_VERSION, 'a', '帮我 总结', 2, 'csv-table', compact, 'u'],
+  );
+  assert.equal(rec.messages, messages);
+});
+
+test('列表时间：刚刚 / 分钟 / 今天几小时 / 昨天 / 日期（跨年带年份）', () => {
+  setLocale('zh');
+  const now = new Date(2026, 8, 27, 15, 0).getTime();
+  assert.equal(formatHistoryTime(now - 30 * 1000, now), t('ui.timeJustNow'));
+  assert.equal(formatHistoryTime(now - 5 * 60000, now), t('ui.timeMinutesAgo', { n: 5 }));
+  assert.equal(formatHistoryTime(now - 3 * 3600000, now), t('ui.timeHoursAgo', { n: 3 }));
+  assert.equal(formatHistoryTime(new Date(2026, 8, 26, 9, 0).getTime(), now), t('ui.timeYesterday'));
+  assert.equal(formatHistoryTime(new Date(2026, 8, 1).getTime(), now), t('ui.timeDate', { y: 2026, m: 9, d: 1 }));
+  assert.equal(formatHistoryTime(new Date(2025, 11, 31).getTime(), now), t('ui.timeDateFull', { y: 2025, m: 12, d: 31 }));
 });

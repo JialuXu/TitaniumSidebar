@@ -4,6 +4,7 @@ import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildRequestMessages, buildCompactRequest, trimRetainedReads, stripImagesFromHistory,
+  isUserInput, hasUserInput, lastTurnHasWrites, rewindLastTurn,
 } from '../../extension/core/conversation.js';
 import { buildSystemPrompt, buildCompactPrompt } from '../../extension/core/prompt.js';
 import { setLocale, t } from '../../extension/core/i18n.js';
@@ -105,4 +106,48 @@ test('第 8 条：截图换成占位（含待回填队列），返回是否有�
   assert.equal(img.content, t('sys.shotOmitted'));
   assert.equal(pending[0].content, '[自定义占位]');
   assert.equal(stripImagesFromHistory([img]), false);
+});
+
+/* ========== 回合边界与重新生成 ========== */
+
+const ask = (s) => ({ role: 'user', content: s, displayContent: s });
+const callMsg = (name, id = 'c1') => ({ role: 'assistant', content: '', tool_calls: [{ id, type: 'function', function: { name, arguments: '{}' } }] });
+const toolMsg = (id = 'c1') => ({ role: 'tool', tool_call_id: id, content: 'ok' });
+
+test('用户敲入的消息才算回合边界：工具上限提示、截图跟随不算', () => {
+  assert.equal(isUserInput(ask('问')), true);
+  assert.equal(isUserInput({ role: 'user', content: '（系统提示）', _kind: 'tool-limit' }), false);
+  assert.equal(isUserInput({ role: 'user', content: [], _kind: 'tool-image' }), false);
+  assert.equal(hasUserInput([{ role: 'user', content: 'x', _kind: 'tool-limit' }]), false);
+  assert.equal(hasUserInput([ask('问')]), true);
+});
+
+test('第 15 条：只有最后一轮做过有副作用的操作才要二次确认', () => {
+  // 更早一轮的点击不算：重新生成只重放最后一轮
+  const earlier = [ask('一'), callMsg('click_element'), toolMsg(), { role: 'assistant', content: '点了' }, ask('二'), { role: 'assistant', content: '答' }];
+  assert.equal(lastTurnHasWrites(earlier), false);
+  assert.equal(lastTurnHasWrites([ask('一'), callMsg('find_in_page'), toolMsg(), { role: 'assistant', content: '答' }]), false);
+  assert.equal(lastTurnHasWrites([ask('一'), callMsg('input_text'), toolMsg(), { role: 'assistant', content: '填了' }]), true);
+});
+
+test('重新生成前回退：整条工具链弹干净，栈顶是被重放的用户消息', () => {
+  const messages = [ask('一'), { role: 'assistant', content: '答一' }, ask('二'), callMsg('capture_screenshot'), toolMsg(),
+    { role: 'user', content: '[图]', _kind: 'tool-image' }, { role: 'assistant', content: '答二' }];
+  assert.equal(rewindLastTurn(messages, null), null);
+  assert.equal(messages.length, 3);
+  assert.equal(messages.at(-1).displayContent, '二');
+});
+
+test('第 21 条：压缩后尚未发新消息就重新生成，压缩点退到被重放的用户消息之前', () => {
+  const messages = [ask('一'), { role: 'assistant', content: '答一' }];
+  const compact = { summary: '<对话摘要>\n要点\n</对话摘要>', boundary: 2 };
+  const next = rewindLastTurn(messages, compact);
+  assert.equal(next.boundary, 0);
+  assert.equal(compact.boundary, 2); // 不改传入的对象，调用方写回
+  // 请求链里仍有被重放的那条用户消息
+  const sent = buildRequestMessages(CAPS, messages, next);
+  assert.equal(sent.at(-1).content, '一');
+  // 压缩点之后已有新轮次：重放最后一轮不动压缩点
+  const later = [ask('一'), { role: 'assistant', content: '答一' }, ask('二'), { role: 'assistant', content: '答二' }];
+  assert.equal(rewindLastTurn(later, compact).boundary, 2);
 });

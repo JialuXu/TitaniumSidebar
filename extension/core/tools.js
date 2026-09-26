@@ -8,7 +8,7 @@
 //   —— 感知 ——
 //   searchInPage({ query, maxResults })  → snapshotPage text 模式的搜索返回值
 //   readPageText({ offset, length })     → snapshotPage text 模式的读取返回值
-//   listElements({ scope, query })       → { elements, total, viewport?, stats? }
+//   listElements()                       → { elements, viewport?, stats? }（当前页全部元素，范围与关键词在这里过滤）
 //   highlight({ ref })                   → highlightElement 返回值
 //   captureScreenshot()                  → { dataUrl, markCount, viewport }
 //   waitForPage({ seconds })             → 页面变化（另带 waitedMs：实际等了多久）
@@ -16,7 +16,7 @@
 //   —— 页内动作（注入 performAction）——
 //   act(payload)                         → { result: performAction 返回值, change: 页面变化|null }
 //   —— 浏览器级动作（chrome.tabs）——
-//   navigate({ url }) / goBack() / refresh()        → 页面变化
+//   navigate({ url }) / goBack() / refresh()        → 页面变化（url 已在这里校验为 http/https）
 //   openTab({ url }) / switchTab({ tabId })         → 页面变化
 //   closeTab({ tabId })                             → { remaining, change }
 //   listTabs()                                      → [{ id, title, url, active, isWork }]
@@ -224,6 +224,24 @@ function describeFailure(result, args) {
   }
 }
 
+/**
+ * list_elements 的范围与关键词过滤。元素名或行锚点命中都算：
+ * 「勾选 Cursor Team 那封」靠的是行文字匹配到无名勾选框。
+ */
+function filterElements(elements, { scope, query }) {
+  let list = elements || [];
+  if (scope === 'viewport') list = list.filter((e) => e.inViewport);
+  if (query) {
+    const needle = query.toLowerCase();
+    list = list.filter((e) =>
+      (e.name || '').toLowerCase().includes(needle) || (e.context || '').toLowerCase().includes(needle));
+  }
+  return list;
+}
+
+// 导航类工具只放行 http/https：javascript:、file:、chrome:// 一律不交给 provider
+const HTTP_URL = /^https?:\/\//i;
+
 /** 动作结果尾部统一附上页面变化摘要 */
 function withChange(text, change) {
   const tail = formatPageChange(change);
@@ -339,19 +357,20 @@ export async function dispatchToolCall(call, provider, turn = {}, registered = n
       case 'list_elements': {
         const scope = args.scope === 'page' ? 'page' : 'viewport';
         const query = args.query ? String(args.query).trim() : '';
-        const res = await provider.listElements({ scope, query });
+        const res = await provider.listElements();
+        const elements = filterElements(res.elements, { scope, query });
         meta.ok = true;
-        meta.data = { scope, count: res.elements.length, total: res.total };
+        meta.data = { scope, count: elements.length, total: elements.length };
         const header = t('res.listHead', {
           scope: t(scope === 'viewport' ? 'res.scopeViewport' : 'res.scopePage'),
           filter: query ? t('res.listFilter', { query }) : '',
-          total: res.total,
+          total: elements.length,
         });
         const status = formatPageStatus(res.viewport, res.stats);
-        const legend = res.elements.some((e) => e.isNew) ? t('res.newLegend') : '';
+        const legend = elements.some((e) => e.isNew) ? t('res.newLegend') : '';
         const head = [status, legend, header].filter(Boolean).join('\n');
         // query 过滤 = 模型在钻取具体某几个元素，此时逐项列出（不折叠同构组）
-        return reply(provider.mask(head + '\n' + formatElements(res.elements, { total: res.total, collapse: !query })));
+        return reply(provider.mask(head + '\n' + formatElements(elements, { total: elements.length, collapse: !query })));
       }
 
       case 'highlight_element': {
@@ -480,6 +499,7 @@ export async function dispatchToolCall(call, provider, turn = {}, registered = n
       /* ================= 动作组：浏览器级 ================= */
       case 'navigate': {
         const url = String(args.url || '').trim();
+        if (!HTTP_URL.test(url)) return reply(t('sys.badUrl'));
         const change = await provider.navigate({ url });
         meta.ok = true;
         meta.data = { url, title: change && change.title, navigated: true };
@@ -502,6 +522,7 @@ export async function dispatchToolCall(call, provider, turn = {}, registered = n
 
       case 'open_tab': {
         const url = String(args.url || '').trim();
+        if (!HTTP_URL.test(url)) return reply(t('sys.badUrl'));
         const change = await provider.openTab({ url });
         meta.ok = true;
         meta.data = { url, title: change && change.title, navigated: true };

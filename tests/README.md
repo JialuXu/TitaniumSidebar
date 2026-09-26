@@ -37,7 +37,7 @@ tests/
 
 | 覆盖到的 | 仍靠手动验收（[docs/acceptance.md](../docs/acceptance.md)） |
 |---|---|
-| 流式解析与错误分类、脱敏、引用校验、页面同步与差异、请求链组装与压缩、上下文估算、历史淘汰、设置迁移与导入导出、Markdown 渲染、工具分发的闸门与预算、提示词拼装、技能匹配、活动行文案 | 外壳 `sidepanel.js`（界面、`chrome.*` 接线）；注入页面的函数在真实 DOM 里的行为（`snapshot.js`、`actions.js`、`highlight.js`、`settle.js`）；截图标注（`annotate.js`，依赖 `OffscreenCanvas`）；真实模型接口的表现 |
+| 回合编排（tool 链配对、400 降级、同批跳转中止、轮数上限、中止占位、截图跟随消息）、重新生成前的回退、流式解析与错误分类、脱敏、引用校验、页面同步与差异、请求链组装与压缩、上下文估算、历史淘汰、设置迁移与导入导出、Markdown 渲染、工具分发的闸门与预算、提示词拼装、技能匹配、活动行文案 | 外壳 `sidepanel.js`（界面渲染、`chrome.*` 接线与 provider）；注入页面的函数在真实 DOM 里的行为（`snapshot.js`、`actions.js`、`highlight.js`、`settle.js`）；截图标注（`annotate.js`，依赖 `OffscreenCanvas`）；真实模型接口的表现 |
 
 对应验收标准的用例，名字里写了「第 N 条」，可以用 `--test-name-pattern` 单独跑。
 
@@ -62,4 +62,4 @@ Run from the repo root with **Node.js ≥ 22.7**:
 node --test "tests/**/*.test.mjs"
 ```
 
-`unit/` holds one behaviour test file per core module; `contracts/` holds static checks of the repository's hard constraints (no `chrome.*` in core, self-contained injected functions, bilingual catalogs in sync, version numbers consistent). The shell, the injected functions' behaviour in a real DOM and real model endpoints are still covered by the manual checklist in [docs/acceptance.md](../docs/acceptance.md). Keep test code inside `tests/` — never add test-only exports or branches to `extension/`.
+`unit/` holds one behaviour test file per core module, including the agent loop in `agent.js`; `contracts/` holds static checks of the repository's hard constraints (no `chrome.*` in core, self-contained injected functions, bilingual catalogs in sync, version numbers consistent). The shell, the injected functions' behaviour in a real DOM and real model endpoints are still covered by the manual checklist in [docs/acceptance.md](../docs/acceptance.md). Keep test code inside `tests/` — never add test-only exports or branches to `extension/`.

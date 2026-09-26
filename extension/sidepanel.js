@@ -5,32 +5,28 @@ import { snapshotPage } from './core/snapshot.js';
 import { highlightElement } from './core/highlight.js';
 import { performAction } from './core/actions.js';
 import { waitForSettle } from './core/settle.js';
-import {
-  buildToolDefs, dispatchToolCall, MAX_TOOL_ROUNDS, MAX_ACTION_ROUNDS, WRITE_TOOL_NAMES,
-} from './core/tools.js';
-import { describeToolActivity } from './core/activity.js';
+import { runAgentTurn, requestCompaction, measureNextRequest, describeError } from './core/agent.js';
+import { describeTrace } from './core/activity.js';
 import { annotateScreenshot } from './core/annotate.js';
-import { formatOutline, BUDGETS } from './core/format.js';
+import { BUDGETS } from './core/format.js';
 import { maskSensitive } from './core/masker.js';
+import { hasUserInput, lastTurnHasWrites, rewindLastTurn } from './core/conversation.js';
 import {
-  buildRequestMessages, buildCompactRequest, stripImagesFromHistory, trimRetainedReads,
-} from './core/conversation.js';
-import { initialSentPage, decidePageSync, composeSendContent } from './core/page-sync.js';
-import { parseCompactCommand, buildCompactState } from './core/compact.js';
-import { streamChat, testConnection, LlmError, isContextOverflow } from './core/llm-client.js';
-import {
-  estimateTokens, calibrationRatio, contextUsage, formatTokens, LEVEL_RANK,
-} from './core/context-meter.js';
+  initialSentPage, decidePageSync, composeSendContent, describeSyncNote,
+  initialPage, pageFromSnapshot, fullSnapshotArgs, MAX_ELEMENTS, SETTLE, loadingOf,
+} from './core/page-sync.js';
+import { parseCompactCommand } from './core/compact.js';
+import { testConnection, isContextOverflow } from './core/llm-client.js';
+import { formatTokens, LEVEL_RANK } from './core/context-meter.js';
 import {
   normalizeConfig, activeProfile, emptyProfile, profileLabel, buildSettingsExport, parseSettingsImport,
-  parseContextWindow,
+  parseContextWindow, formatContextWindow, mergeImportedConfig,
 } from './core/settings.js';
 import { renderMarkdown } from './core/markdown.js';
 import { verifyQuote, buildQuoteCorpus } from './core/citation.js';
-import { listSkills, matchSkillsByUrl, hostOfUrl } from './core/skills.js';
+import { listSkills, suggestSkills, suggestionKey } from './core/skills.js';
 import {
-  createHistoryStore, HistoryTooLargeError, newSessionId, deriveSessionTitle, countTurns,
-  HISTORY_RECORD_VERSION,
+  createHistoryStore, HistoryTooLargeError, newSessionId, buildSessionRecord, formatHistoryTime,
 } from './core/history.js';
 import {
   t, setLocale, detectLocale, injectedStrings, LOCALES, LOCALE_LABELS, HTML_LANG,
@@ -59,26 +55,6 @@ const historyStore = createHistoryStore(storage, {
 });
 
 /* ========== 全局状态 ========== */
-function initialPage() {
-  return {
-    status: 'none',          // none 未读取 | ok 已读取 | unreadable 无法读取
-    title: '',
-    url: '',
-    maskedText: '',          // 脱敏后的页面文本：注入 prompt 与引用校验共用同一份
-    outlineText: '',         // 脱敏后的结构骨架文本（注入 prompt + 详情面板展示）
-    elementCount: 0,         // 快照时的可交互元素数（状态条展示）
-    textTotal: 0,            // 完整正文字数（未截断时为 0）——胶囊展示 + 位置漂移判定
-    textShown: 0,            // 其中已注入给模型的前多少字
-    textCapped: false,       // 正文超出采集上限，总字数只是「至少这么多」
-    session: '',             // ref 映射的会话标识，页面侧 window.__titanium 持有同名值
-    // 工作标签页：快照来源，也是所有感知与动作的作用对象。
-    // open_tab/switch_tab 会把它转移到新标签页（并同步激活），
-    // 因此「浏览器激活页 === 工作页」这一不变式始终成立，守卫逻辑无需改动。
-    tabId: null,
-    hits: null,              // 脱敏命中计数 { idCard, bankCard, phone }，未开脱敏为 null
-  };
-}
-
 const state = {
   // 配置的规范形状见 core/settings.js：多套模型接口 + 当前使用的那套 + 全局偏好
   config: normalizeConfig(),
@@ -86,7 +62,7 @@ const state = {
   // displayContent 只存用户敲入的原话用于渲染（不把 12000 字页面文本刷进 UI）。
   // 工具调用轮次会追加 assistant(tool_calls)/tool/截图跟随消息，`_` 前缀字段发请求前剔除。
   messages: [],
-  page: initialPage(),           // 当前页面的最新快照（面板展示、引用校验、ref 映射的依据）
+  page: initialPage(),           // 当前页面的最新快照（形状见 core/page-sync.js）
   // 模型「已经看到的页面」：每条消息发送前拿它与最新快照比对，决定是不带、带差异还是带全文。
   // 与 state.page 分开是必需的——AI 操作导致跳转时 state.page 已换成新页，
   // 而模型手上还是旧页，只有这一份记录能判断出「该给模型新内容了」。
@@ -248,9 +224,7 @@ function fillProfileForm() {
   els.cfgModel.value = p.model;
   els.cfgApikey.value = p.apiKey;
   els.cfgVision.checked = p.visionEnabled;
-  // 整千的按 k 显示，与输入时的写法一致
-  const win = p.contextWindow || 0;
-  els.cfgContext.value = !win ? '' : win % 1000 === 0 ? `${win / 1000}k` : String(win);
+  els.cfgContext.value = formatContextWindow(p.contextWindow);
   renderProfileOptions();
   els.btnProfileDel.disabled = drawer.profiles.length <= 1; // 至少保留一套
 }
@@ -272,31 +246,6 @@ function fillConfigForm() {
   els.cfgMask.checked = state.config.maskEnabled;
   els.cfgActions.checked = state.config.actionsEnabled;
   fillProfileForm();
-}
-
-/* ========== 错误文案映射（外壳职责，core 只抛结构化错误） ========== */
-function describeError(err) {
-  if (isContextOverflow(err)) return t('err.contextOverflow');
-  if (err instanceof LlmError) {
-    switch (err.kind) {
-      case 'badconfig':
-        return t('err.badconfig');
-      case 'network':
-        return t('err.network');
-      case 'stream':
-        return t('err.stream');
-      case 'http': {
-        if (err.status === 401) return t('err.http401');
-        if (err.status === 403) return t('err.http403');
-        if (err.status === 404) return t('err.http404');
-        if (err.status === 429) return t('err.http429');
-        if (err.status >= 500) return t('err.http5xx', { status: err.status });
-        const detail = (err.detail || '').slice(0, 200);
-        return t('err.httpOther', { status: err.status, detail: detail ? t('err.detailPrefix') + detail : '' });
-      }
-    }
-  }
-  return t('err.unknown', { message: (err && err.message) || String(err) });
 }
 
 /* ========== 顶部页面胶囊（读取状态的唯一出口） ========== */
@@ -399,19 +348,6 @@ async function injectFunc(tabId, func, args) {
   }
 }
 
-// 「读一份完整页面」的注入参数。三处全量快照（发送前重读、动作跳转后重建、
-// 本函数）必须传同一套，否则正文总字数、截断点这些口径会在两条路径上悄悄分叉。
-// maxScan 是「采到完整正文」的开关：不传它的调用方（refreshedElements 只要元素映射）
-// 采不到全文，stats 里也就不会出现 textTotal，免得报出假的总字数。
-const fullSnapshotArgs = (extra = {}) => ({
-  mode: 'full',
-  maxTextLen: BUDGETS.text,
-  maxScan: BUDGETS.scan,
-  maxElements: 1500,
-  i18n: injectedStrings(),
-  ...extra,
-});
-
 // 完整快照当前激活标签页（文本 + 结构骨架 + 元素映射重建）。
 // 失败（受限页/注入被拒/无可读内容）统一返回 null，由调用方归一为「页面不可读」。
 // 返回值另带 loading：页面在预算内没有稳定下来（见 awaitPageReady），调用方据此在
@@ -434,34 +370,9 @@ async function snapshotCurrentTab() {
   return { ...result, tabId: tab.id, loading: loadingOf(settle) };
 }
 
-// 把一次 full 快照写入 state.page（脱敏 + 命中合并）。
-// 发送前的例行重读与动作导致跳转后的重建共用这一份，避免两处规则漂移。
+// 把一次 full 快照写入 state.page（脱敏 + 命中合并，见 core/page-sync.js）
 function applySnapshot(snap, tabId) {
-  // 文本与结构骨架都走文本通道，发给模型前必须一并脱敏；命中数合并计入徽标
-  const outlineRaw = formatOutline(snap.outline, { dropped: snap.stats.outlineDropped });
-  const maskOn = state.config.maskEnabled;
-  const textRes = maskOn ? maskSensitive(snap.text) : { text: snap.text, hits: null };
-  const outlineRes = maskOn ? maskSensitive(outlineRaw) : { text: outlineRaw, hits: null };
-  state.page = {
-    status: 'ok',
-    title: snap.title,
-    url: snap.url,
-    maskedText: textRes.text,
-    outlineText: outlineRes.text,
-    elementCount: snap.stats.totalElements,
-    textTotal: snap.stats.textTruncated ? snap.stats.textTotal : 0,
-    textShown: snap.stats.textShown || 0,
-    textCapped: Boolean(snap.stats.textCapped),
-    session: snap.session,
-    tabId,
-    hits: textRes.hits
-      ? {
-          idCard: textRes.hits.idCard + outlineRes.hits.idCard,
-          bankCard: textRes.hits.bankCard + outlineRes.hits.bankCard,
-          phone: textRes.hits.phone + outlineRes.hits.phone,
-        }
-      : null,
-  };
+  state.page = pageFromSnapshot(snap, { tabId, mask: state.config.maskEnabled });
 }
 
 /* ========== 感知工具 provider（chrome.* 接线，执行由 core/tools.js 调度） ========== */
@@ -480,13 +391,13 @@ async function requireSnapshotTab() {
 // 或恢复历史会话后 page 已归零）时自动全量重建，模型据此拿到当前页面的有效编号
 async function refreshedElements(tab) {
   let res = await injectFunc(tab.id, snapshotPage, {
-    mode: 'elements', session: state.page.session, maxElements: 1500, i18n: injectedStrings(),
+    mode: 'elements', session: state.page.session, maxElements: MAX_ELEMENTS, i18n: injectedStrings(),
   });
   if (res && res.ok === false && res.reason === 'stale') {
     // maxTextLen 给最小值：全量重建只为拿元素映射，不需要文本通道的开销。
     // inheritRefs 让指纹相同的元素继承旧编号——SPA 重渲染后模型手里的 ref 仍然有效。
     const full = await injectFunc(tab.id, snapshotPage, {
-      mode: 'full', maxTextLen: 1, maxElements: 1500, inheritRefs: true, i18n: injectedStrings(),
+      mode: 'full', maxTextLen: 1, maxElements: MAX_ELEMENTS, inheritRefs: true, i18n: injectedStrings(),
     });
     if (full && full.ok) {
       state.page.session = full.session;
@@ -516,25 +427,11 @@ async function waitForTabComplete(tabId, timeoutMs) {
   try { return await chrome.tabs.get(tabId); } catch { return null; }
 }
 
-// 「等页面内容就位」的预算。文档 complete 不等于内容就位：SPA 与后台系统的数据随后才由
-// 接口拉回，这段时间页面上是骨架屏与「暂无数据」占位，此刻拍快照模型就会把占位当结论。
-// 发送前的等待要快（用户在等回复）；动作后可以多等一会，那是模型在等。
-const SETTLE = {
-  send: { quietMs: 400, maxMs: 2500 },
-  action: { quietMs: 600, maxMs: 5000 },
-};
-
-// 注入 core/settle.js 的稳定判定；注入失败（受限页、文档中途被换掉）返回 null
+// 注入 core/settle.js 的稳定判定（预算见 core/page-sync.js 的 SETTLE）；
+// 注入失败（受限页、文档中途被换掉）返回 null
 async function settleTab(tabId, budget) {
   const res = await injectFunc(tabId, waitForSettle, budget);
   return res && res.ok ? res : null;
-}
-
-// 稳定判定 → 变化摘要里的 loading 字段（formatPageChange 与发送前的交代语据此提醒模型）；
-// 稳定了或没判定成功都是 null——判定不了不能当「仍在加载」到处报警
-function loadingOf(settle) {
-  if (!settle || settle.settled) return null;
-  return { busy: settle.busy, waitedMs: settle.waitedMs };
 }
 
 // 等到页面就位：先等文档加载完成，再等内容稳定。稳定判定注入在导航中途会失败
@@ -636,14 +533,6 @@ async function afterNavigation(tabId) {
   return { ...(await rebuildPageAfterNavigation(tab)), loading: loadingOf(settle) };
 }
 
-function requireHttpUrl(url) {
-  const target = String(url || '').trim();
-  if (!/^https?:\/\//i.test(target)) {
-    throw new Error(t('sys.badUrl'));
-  }
-  return target;
-}
-
 let lastCaptureAt = 0; // 上次 captureVisibleTab 的时间戳（配额限流用）
 
 const provider = {
@@ -671,18 +560,10 @@ const provider = {
     return res;
   },
 
-  async listElements({ scope, query }) {
+  // 范围与关键词过滤在 core/tools.js，这里交出当前页全部元素
+  async listElements() {
     const tab = await requireSnapshotTab();
-    const snap = await refreshedElements(tab);
-    let elements = snap.elements;
-    if (scope === 'viewport') elements = elements.filter((e) => e.inViewport);
-    if (query) {
-      // 元素名或行锚点命中都算——「勾选 Cursor Team 那封」靠的是行文字匹配到无名勾选框
-      const q = query.toLowerCase();
-      elements = elements.filter((e) =>
-        (e.name || '').toLowerCase().includes(q) || (e.context || '').toLowerCase().includes(q));
-    }
-    return { elements, total: elements.length, viewport: snap.viewport, stats: snap.stats };
+    return await refreshedElements(tab);
   },
 
   async highlight({ ref }) {
@@ -763,10 +644,10 @@ const provider = {
 
   /* ---------- 浏览器级动作（chrome.tabs） ---------- */
 
+  // url 已由 core/tools.js 校验为 http/https
   async navigate({ url }) {
     const tab = await requireSnapshotTab();
-    const target = requireHttpUrl(url);
-    await chrome.tabs.update(tab.id, { url: target });
+    await chrome.tabs.update(tab.id, { url });
     return await afterNavigation(tab.id);
   },
 
@@ -789,8 +670,7 @@ const provider = {
   // 新开与切换标签页本身就是在转移工作页，不走 requireSnapshotTab 守卫；
   // 它们把目标页设为激活页并更新 state.page.tabId，维持「激活页 === 工作页」不变式
   async openTab({ url }) {
-    const target = requireHttpUrl(url);
-    const tab = await chrome.tabs.create({ url: target, active: true });
+    const tab = await chrome.tabs.create({ url, active: true });
     return await afterNavigation(tab.id);
   },
 
@@ -995,14 +875,13 @@ function traceBody(root) {
 function settleTrace(root) {
   const trace = root.querySelector(':scope > .tool-trace');
   if (!trace) return;
-  const steps = trace.querySelectorAll('.tool-activity').length;
   const actions = trace.querySelectorAll('.tool-activity.action').length;
-  const failed = trace.querySelectorAll('.tool-activity.failed').length;
-  let text = t(steps === 1 ? 'ui.traceStep' : 'ui.traceSteps', { n: steps });
-  if (actions) text += t(actions === 1 ? 'ui.traceAction' : 'ui.traceActions', { n: actions });
-  if (failed) text += t('ui.traceFailed', { n: failed });
   const head = trace.firstElementChild;
-  head.querySelector('.tool-text').textContent = text;
+  head.querySelector('.tool-text').textContent = describeTrace({
+    steps: trace.querySelectorAll('.tool-activity').length,
+    actions,
+    failed: trace.querySelectorAll('.tool-activity.failed').length,
+  });
   head.classList.toggle('action', actions > 0); // 含页面操作的摘要沿用动作行的字重，折叠后仍一眼可见
   trace.classList.add('done');
   const concluded = [...root.querySelectorAll(':scope > .ai-content')].some((s) => s.textContent.trim());
@@ -1081,8 +960,9 @@ function updateComposer() {
   els.chat.querySelectorAll('.ctx-warn-btn').forEach((b) => { b.disabled = busy; });
 }
 
-// Agent 循环：流式产文 → 模型请求工具 → 执行并回填 → 再次请求，最多 MAX_TOOL_ROUNDS 轮。
-// 正常结束 / 出错 / 用户停止都在这里统一收尾。
+// 一个问答回合：流式产文 → 模型请求工具 → 执行并回填 → 再次请求。
+// 轮数上限、降级、tool 链补齐这些规则都在 core/agent.js，这里只把它产出的事件画成界面，
+// 并在回合收尾统一落库（正常结束 / 出错 / 用户停止都算）。
 async function runAgentLoop(el) {
   state.abortController = new AbortController();
   const signal = state.abortController.signal;
@@ -1090,25 +970,23 @@ async function runAgentLoop(el) {
   // 本回合读写的消息数组在开始时捕获一次：「新对话」在回合进行中把 state.messages
   // 换成新数组后，本回合仍在飞的回填（残句、tool 占位）落进这份已被弃用的旧数组，
   // 不会污染新会话——否则孤儿 tool 消息会让新会话的第一次请求直接 400。
+  // 接口套与技能同理在开始时取定：流式中切换不影响进行中的回合，下一条消息生效。
   const messages = state.messages;
+  const profile = activeProfile(state.config);
 
   let seg = el.content;       // 当前正文段（工具轮次间会新开段，段间夹活动行）
   let thinking = el.thinking; // 当前「思考中」指示
-  let rounds = 0;             // 已完成的工具轮数
-  let imagesRetried = false;  // 「接口不支持图片」降级只重试一次
+  let row = null;             // 正在执行的那次工具调用的活动行
   let turnError = null;       // 最终那次请求的错误（收尾时判断是否已超窗）
 
-  // 开了页面操作的回合允许更多轮：一次表单填写光是「列元素 + 逐个输入 + 提交 + 验证」
-  // 就要八九轮，5 轮必然半途而废
-  const actionsOn = Boolean(state.config.actionsEnabled);
-  const roundLimit = actionsOn ? MAX_ACTION_ROUNDS : MAX_TOOL_ROUNDS;
-
-  // 技能在回合开始时快照：流式过程中切换/摘除不影响进行中的回合，下一条消息生效
-  const skillId = state.skillId;
-
-  // 本回合的读取账本 + 「模型手里那份页面」的基准。基准取 sentPage 而不是 state.page：
-  // 位置是否还作数，要看模型上次实际看到的是哪一页、多长（不变式 6）。
-  const turn = { readChars: 0, url: state.sentPage.url, textTotal: state.sentPage.textTotal || 0 };
+  // 流式重渲按帧合并：每帧最多重渲一次当前段
+  let pending = '';
+  let rafId = 0;
+  const render = () => {
+    rafId = 0;
+    seg.innerHTML = renderMarkdown(pending);
+    maybeScroll();
+  };
 
   const newSegment = () => {
     seg = document.createElement('div');
@@ -1120,179 +998,76 @@ async function runAgentLoop(el) {
     el.root.appendChild(thinking);
   };
 
-  while (true) {
-    // 页面不可读时感知工具无用武之地，但动作工具仍有意义——
-    // 用户在 chrome:// 新标签页上说「打开某网址并总结」，靠的就是 open_tab
-    const canUseTools = state.page.status === 'ok' || actionsOn;
-    const useTools = !state.toolsBroken && canUseTools && rounds < roundLimit;
-    const vision = useTools && Boolean(activeProfile(state.config).visionEnabled);
-    const actions = useTools && actionsOn;
-    const tools = useTools ? buildToolDefs({ vision, actions }) : undefined;
-    // 本次请求实际注册的工具名：执行前逐个对照，开关与轮数上限才真正管得住（见 dispatchToolCall）
-    const registered = new Set((tools || []).map((d) => d.function.name));
-    const requestMessages = buildRequestMessages({ tools: useTools, vision, actions, skill: skillId }, messages, state.compact);
-    console.log('[发送内容]', requestMessages); // 验收依据：控制台可核对脱敏后的实际发送内容
+  const events = runAgentTurn({
+    messages,
+    provider,
+    profile,
+    actionsEnabled: Boolean(state.config.actionsEnabled),
+    skillId: state.skillId,
+    toolsBroken: state.toolsBroken,
+    perceivable: () => state.page.status === 'ok',
+    compact: state.compact,
+    sentPage: state.sentPage,
+    signal,
+  });
 
-    let acc = '';
-    let calls = null;
-    let rafId = 0;
-    const scheduleRender = () => {
-      if (rafId) return;
-      rafId = requestAnimationFrame(() => {
+  for await (const ev of events) {
+    switch (ev.type) {
+      case 'request':
+        console.log('[发送内容]', ev.messages); // 验收依据：控制台可核对脱敏后的实际发送内容
+        break;
+      case 'delta':
+        thinking.remove(); // 首字到达即撤掉「思考中」指示
+        pending = ev.content;
+        if (!rafId) rafId = requestAnimationFrame(render);
+        break;
+      case 'segment':
+        if (rafId) cancelAnimationFrame(rafId);
         rafId = 0;
-        seg.innerHTML = renderMarkdown(acc);
+        thinking.remove();
+        seg.innerHTML = ev.content ? renderMarkdown(ev.content) : '';
+        break;
+      case 'calibration':
+        state.ctx.calib = { profileId: profile.id, ratio: ev.ratio };
+        break;
+      case 'degraded':
+        if (ev.what === 'tools') state.toolsBroken = true; // 本会话此后不再带 tools
+        appendNote(el.root, t(ev.what === 'tools' ? 'ui.noteToolsDegraded' : 'ui.noteImageDegraded'));
+        break;
+      case 'tool-round': {
+        // 本段正文只是中途说明，与随后的活动行一起收进过程时间轴；空段不留
+        const body = traceBody(el.root);
+        if (ev.content) body.appendChild(seg); else seg.remove();
+        break;
+      }
+      case 'tool-start':
+        row = appendToolActivity(traceBody(el.root), ev.text, ev.isAction, ev.name);
         maybeScroll();
-      });
-    };
-
-    let streamError = null;
-    let usage = null;
-    try {
-      for await (const ev of streamChat(activeProfile(state.config), requestMessages, { signal, tools })) {
-        if (ev.type === 'delta') {
-          if (!acc) thinking.remove(); // 首字到达即撤掉「思考中」指示
-          acc += ev.text;
-          scheduleRender();
-        } else if (ev.type === 'tool_calls') {
-          calls = ev.calls;
-        } else if (ev.type === 'usage') {
-          usage = ev;
+        break;
+      case 'tool-done':
+        settleToolActivity(row, ev.text, ev.ok);
+        if (ev.image) attachShotThumbnail(row, ev.image); // 定稿会重写文字节点，缩略图要在它之后挂
+        maybeScroll();
+        break;
+      case 'next-round':
+        newSegment();
+        maybeScroll();
+        break;
+      case 'final':
+        turnError = ev.error;
+        if (ev.message._error) {
+          showErrorIn(el.root, ev.message._error);
+        } else if (!ev.message.content && !ev.aborted) {
+          seg.textContent = '';
+          const note = document.createElement('p');
+          note.className = 'md-note';
+          note.textContent = t('ui.emptyReply');
+          seg.appendChild(note);
         }
-      }
-    } catch (err) {
-      streamError = err;
+        finalizeAssistant(el, ev.message, seg, messages);
+        break;
     }
-    recordUsage(usage, requestMessages, tools);
-    if (rafId) cancelAnimationFrame(rafId);
-    thinking.remove();
-    seg.innerHTML = acc ? renderMarkdown(acc) : '';
-
-    // 降级路径：400/422 视为「接口不认识请求里的新字段」——先怀疑 tools，再怀疑图片。
-    // 各只降一次，5xx/网络错误不吞，照常报错。
-    if (
-      streamError instanceof LlmError && streamError.kind === 'http' &&
-      (streamError.status === 400 || streamError.status === 422) && !signal.aborted &&
-      !isContextOverflow(streamError) // 超窗不是「不认识新字段」，去掉 tools 重试只会把本会话永久降级
-    ) {
-      if (tools && !state.toolsBroken) {
-        state.toolsBroken = true;
-        appendNote(el.root, t('ui.noteToolsDegraded'));
-        continue; // 不带 tools 原样重试本轮
-      }
-      if (!imagesRetried && stripImagesFromHistory(messages)) {
-        imagesRetried = true;
-        appendNote(el.root, t('ui.noteImageDegraded'));
-        continue;
-      }
-    }
-
-    // 没有工具调用（正常结束/出错/中止）：本段即最终回复。
-    // 本次请求没带 tools（到了轮数上限、已降级纯文本、页面不可读且没开动作）时，
-    // 网关仍返回的 tool_calls 整批丢弃：不落历史就不必补占位，也不会再请求一轮
-    if (streamError || !calls || !calls.length || !tools) {
-      const msgObj = { role: 'assistant', content: acc };
-      messages.push(msgObj);
-      turnError = streamError;
-      const aborted = streamError instanceof LlmError && streamError.kind === 'abort';
-      if (streamError && !aborted) {
-        // 中止不算错误，保留已生成部分；错误文案同时落在消息上，历史回放时原样重现
-        msgObj._error = describeError(streamError);
-        showErrorIn(el.root, msgObj._error);
-      } else if (!acc && !streamError) {
-        seg.textContent = '';
-        const note = document.createElement('p');
-        note.className = 'md-note';
-        note.textContent = t('ui.emptyReply');
-        seg.appendChild(note);
-      }
-      finalizeAssistant(el, msgObj, seg, messages);
-      break;
-    }
-
-    // 模型请求调用工具：assistant(tool_calls) 落历史，每个调用逐一执行并成对回填 tool 消息。
-    // 本轮正文只是中途说明，与随后的活动行一起收进过程时间轴；空段不留
-    const body = traceBody(el.root);
-    if (acc) body.appendChild(seg); else seg.remove();
-    messages.push({
-      role: 'assistant',
-      content: acc,
-      tool_calls: calls.map((c) => ({
-        id: c.id, type: 'function', function: { name: c.name, arguments: c.arguments },
-      })),
-    });
-
-    // 同一批调用里一旦发生跳转，后续动作的元素编号已全部失效，不能再盲目执行
-    let batchBroken = false;
-    // 截图的多模态跟随消息（role:'user'）不能就地回填——assistant(tool_calls) 之后
-    // 必须是连续等量的 tool 消息，中间插一条 user 会把 tool 链截断，严格后端直接 400。
-    // 因此本批先攒着，等所有 tool 消息成对回填完再统一追加到历史末尾。
-    const pendingFollowUps = [];
-    for (const call of calls) {
-      // 未注册的动作不会执行，不按动作行呈现，也不计入摘要里的「页面操作」
-      const isAction = WRITE_TOOL_NAMES.has(call.name) && registered.has(call.name);
-      // 中止：未执行的调用补占位 tool 消息——tool_calls 必须一一回填，否则历史不合法（下轮 400）
-      if (signal.aborted) {
-        messages.push({ role: 'tool', tool_call_id: call.id, content: t('sys.aborted') });
-        continue;
-      }
-      if (batchBroken) {
-        const skipText = t('ui.skipNavigated', { name: call.name });
-        messages.push({
-          role: 'tool', tool_call_id: call.id,
-          content: t('sys.batchBroken'),
-          // 活动行文案随消息落库：历史回放时不必重算当时的界面（_ 前缀字段不出网）
-          _ui: { text: skipText, ok: false, action: isAction },
-        });
-        settleToolActivity(appendToolActivity(body, '', isAction, call.name), skipText, false);
-        continue;
-      }
-      let argsForUi = null;
-      try { argsForUi = call.arguments ? JSON.parse(call.arguments) : {}; } catch { /* 文案按 null 兜底 */ }
-      const row = appendToolActivity(body, describeToolActivity(call.name, argsForUi, 'run'), isAction, call.name);
-      maybeScroll();
-      // 同一请求最多一张真图：本批还没回填的那些也算在内，否则一批两次截图会漏网
-      if (call.name === 'capture_screenshot') stripImagesFromHistory(messages, pendingFollowUps);
-      const { toolMessage, followUpMessage, meta } = await dispatchToolCall(call, provider, turn, registered);
-      messages.push(toolMessage);
-      if (followUpMessage) {
-        followUpMessage._placeholder = t('sys.shotOmittedMeta', {
-          w: meta.data.w, h: meta.data.h, n: meta.data.markCount,
-        });
-        pendingFollowUps.push(followUpMessage); // 批结束后才进历史，见上面的注释
-      }
-      const doneText = describeToolActivity(call.name, meta.args || argsForUi, meta.ok ? 'done' : 'fail', meta.data);
-      settleToolActivity(row, doneText, meta.ok);
-      // 定稿会重写文字节点（缩略图挂在其中），所以缩略图要在定稿之后挂
-      if (followUpMessage) attachShotThumbnail(row, followUpMessage);
-      // 定稿的活动行文案随 tool 消息落库，历史回放据此重建一模一样的活动行
-      toolMessage._ui = { text: doneText, ok: meta.ok, action: isAction };
-      if (meta.data && meta.data.navigated) batchBroken = true;
-      maybeScroll();
-    }
-    // tool 链已完整，此时追加截图的多模态消息才不会截断它
-    for (const followUp of pendingFollowUps) messages.push(followUp);
-
-    if (signal.aborted) {
-      // 中止在工具阶段发生：没有最终回复文本，只挂操作行便于「重新生成」
-      finalizeAssistant(el, { role: 'assistant', content: '' }, seg, messages);
-      break;
-    }
-
-    rounds++;
-    if (rounds === roundLimit) {
-      // 达到上限：下一轮 useTools 为 false（请求不带 tools），并明确告知模型直接作答
-      messages.push({
-        role: 'user',
-        content: t('sys.toolLimit'),
-        _kind: 'tool-limit',
-      });
-    }
-    newSegment();
-    maybeScroll();
   }
-
-  stripImagesFromHistory(messages); // 回合收尾：历史不保留任何真图
-  trimRetainedReads(messages);      // 同理，读到的正文跨回合只保留最近的那些
 
   state.abortController = null;
   state.ui.phase = 'idle';
@@ -1307,13 +1082,10 @@ async function runAgentLoop(el) {
 }
 
 // 截图缩略图：挂在活动行文字的下方（行内），时间轴的竖线随行一起延伸；点击展开/收起大图
-function attachShotThumbnail(row, followUpMessage) {
-  const part = Array.isArray(followUpMessage.content) &&
-    followUpMessage.content.find((p) => p.type === 'image_url');
-  if (!part) return;
+function attachShotThumbnail(row, src) {
   const img = document.createElement('img');
   img.className = 'tool-thumb';
-  img.src = part.image_url.url;
+  img.src = src;
   img.alt = t('ui.shotAlt');
   img.title = t('ui.shotTitle');
   img.addEventListener('click', () => img.classList.toggle('expanded'));
@@ -1338,23 +1110,6 @@ async function syncPageForSend() {
   updateContextChip();
   // 读取时页面仍在加载：随判定结果一起带出去，凡是携带了页面内容的消息都交代一句
   return decidePageSync(state.sentPage, state.page, Boolean(snap.loading));
-}
-
-// 只有页面在会话中途真的变了才提示；首次读取由胶囊本身出现即可说明，不再多一行字
-function flowNoteFor(sync) {
-  let note = '';
-  if (sync.kind === 'full' && sync.navigated) {
-    note = t('ui.notePageNavigated', { title: truncateTitle(state.page.title) });
-  } else if (sync.kind === 'full' && !sync.first) {
-    note = t('ui.notePageReread');
-  } else if (sync.kind === 'diff') {
-    note = t('ui.notePageUpdated');
-  } else if (sync.kind === 'unreadable' && sync.changed) {
-    note = t('ui.notePageUnreadable');
-  }
-  // 读取时页面还没加载完也要让用户知道：否则回答里的「暂无数据」看起来像是 AI 读错了
-  if (sync.loading) note = note ? `${note} · ${t('ui.notePageLoading')}` : t('ui.notePageLoading');
-  return note;
 }
 
 async function handleSend() {
@@ -1399,7 +1154,7 @@ async function handleSend() {
   };
   state.messages.push(userMsg);
   appendUserMessage(inputText);
-  const note = flowNoteFor(sync);
+  const note = describeSyncNote(sync, truncateTitle(state.page.title));
   if (note) {
     userMsg._note = note; // 提示行随消息落库：历史回放时仍能看到「页面已切换」这类交代
     appendFlowNote(note);
@@ -1423,7 +1178,7 @@ async function runCompact(instruction = '') {
     return;
   }
   // 没有用户消息就没有可压的东西：给一行可读提示，不调模型
-  if (!state.messages.some((m) => m.role === 'user' && m.displayContent !== undefined)) {
+  if (!hasUserInput(state.messages)) {
     appendFlowNote(t('ui.compactEmpty'));
     maybeScroll();
     return;
@@ -1438,41 +1193,30 @@ async function runCompact(instruction = '') {
   const note = appendFlowNote(t('ui.noteCompacting'));
   maybeScroll();
 
-  // 这一轮不注册 tools；请求链的组装（含二次压缩只重发旧摘要）见 core/conversation.js
-  const requestMessages = buildCompactRequest(instruction, state.messages, state.compact);
-  console.log('[发送内容]', requestMessages);
-
-  let summary = '';
-  let calls = null;
-  let streamError = null;
-  try {
-    for await (const ev of streamChat(activeProfile(state.config), requestMessages, { signal })) {
-      if (ev.type === 'delta') summary += ev.text;
-      else if (ev.type === 'tool_calls') calls = ev.calls;
-      else if (ev.type === 'usage') recordUsage(ev, requestMessages);
-    }
-  } catch (err) {
-    streamError = err;
-  }
+  const profile = activeProfile(state.config);
+  const res = await requestCompaction({
+    instruction,
+    messages: state.messages,
+    compact: state.compact,
+    profile,
+    signal,
+    onRequest: (requestMessages) => console.log('[发送内容]', requestMessages),
+  });
+  if (res.calibration) state.ctx.calib = { profileId: profile.id, ratio: res.calibration };
 
   state.abortController = null;
   state.ui.phase = 'idle';
   updateComposer();
 
-  // 失败（含模型不听话仍返回 tool_calls、中止时的半截摘要）一律放弃本次压缩：
-  // 原上下文原封不动，对话照常继续。半截摘要比不压缩更危险，绝不将就使用。
-  if (streamError || calls || !summary.trim()) {
+  // 失败一律放弃本次压缩：原上下文原封不动，对话照常继续（中止时不报错）
+  if (!res.ok) {
     note.remove();
-    const aborted = streamError instanceof LlmError && streamError.kind === 'abort';
-    if (!aborted) {
-      appendFlowError(isContextOverflow(streamError) ? t('err.contextOverflowCompact')
-        : streamError ? describeError(streamError) : t('ui.compactBadReply'));
-    }
+    if (res.errorText) appendFlowError(res.errorText);
     maybeScroll();
     return;
   }
 
-  state.compact = buildCompactState(summary, state.messages.length);
+  state.compact = res.compact;
   // 压缩后旧的 <页面内容> 不再进请求：清空 sentPage，让下一条用户消息无条件重发当前页全文。
   // 不这么做的话「页面没变就什么都不带」会让模型手里只剩摘要，数字与引用会漂。
   state.sentPage = initialSentPage();
@@ -1484,43 +1228,19 @@ async function runCompact(instruction = '') {
   await persistSession();
 }
 
-// 重新生成：重发上一条用户消息，替换最后一轮 AI 产物（不重新提取页面）。
-// 工具轮次会产生 assistant(tool_calls)/tool/截图跟随消息，必须整条链弹干净，
-// 否则残缺的 tool 序列会让下一次请求 400。
+// 重新生成：重发上一条用户消息，替换最后一轮 AI 产物（不重新提取页面）
 async function handleRegenerate() {
   if (state.ui.phase !== 'idle') return;
-  if (!state.messages.some((m) => m.role === 'user' && m.displayContent !== undefined)) return;
+  if (!hasUserInput(state.messages)) return;
 
   // 上一轮若做过有副作用的操作，重放会在页面上再执行一遍，必须先问过用户
-  let hasWrite = false;
-  for (let i = state.messages.length - 1; i >= 0; i--) {
-    const m = state.messages[i];
-    if (m.role === 'user' && m.displayContent !== undefined) break;
-    if (m.tool_calls && m.tool_calls.some((c) => WRITE_TOOL_NAMES.has(c.function.name))) {
-      hasWrite = true;
-      break;
-    }
-  }
-  if (hasWrite && !window.confirm(t('ui.regenConfirm'))) {
+  if (lastTurnHasWrites(state.messages) && !window.confirm(t('ui.regenConfirm'))) {
     return;
   }
 
-  // 从尾部弹出，直到栈顶是用户真实消息（displayContent 仅存在于用户敲入的消息上）
-  while (state.messages.length) {
-    const last = state.messages[state.messages.length - 1];
-    if (last.role === 'user' && last.displayContent !== undefined) break;
-    state.messages.pop();
-  }
-  // 压缩点必须退到「被重放的这条用户消息」之前，否则请求链会把它一起裁掉（400）。
-  // 钳到弹完后的数组长度同样不行——slice 仍会切掉栈顶那条用户消息；
-  // 这里改完即写回 state.compact，由本轮收尾的 persistSession 落库，
-  // 只临时钳不落库会让下一次请求按旧 boundary 切出残缺的 tool 链。
-  if (state.compact) {
-    state.compact = {
-      ...state.compact,
-      boundary: Math.min(state.compact.boundary, state.messages.length - 1),
-    };
-  }
+  // 整条工具链弹干净、压缩点退到被重放的用户消息之前（见 core/conversation.js）；
+  // 调整后的压缩状态写回 state，由本轮收尾的 persistSession 落库
+  state.compact = rewindLastTurn(state.messages, state.compact);
   const aiNodes = els.chat.querySelectorAll('.msg-ai');
   if (aiNodes.length) aiNodes[aiNodes.length - 1].remove(); // 活动行/缩略图都在其内，一并移除
 
@@ -1659,11 +1379,7 @@ async function handleImportSettings(file) {
     return;
   }
   if (!window.confirm(t('ui.importConfirm'))) return;
-  state.config = {
-    ...parsed.config,
-    actionsEnabled: state.config.actionsEnabled,
-    locale: parsed.config.locale || state.config.locale, // 文件未记语言时沿用当前语言
-  };
+  state.config = mergeImportedConfig(state.config, parsed.config);
   state.toolsBroken = false; // 接口换了，给 tools 一次重新探测的机会
   await storage.set('config', state.config);
   applyLocale(state.config.locale);
@@ -1677,37 +1393,29 @@ async function handleImportSettings(file) {
 // 压缩成功、新对话、恢复历史后重新起算。估算与校准的口径见 core/context-meter.js。
 // 下一条消息若换了页还会再带一份页面全文，这里测不到——从 70% 起提醒正是给它留的余量。
 
-// 接口报了真实用量：与同一请求的估算值比出校准系数，按接口套记下
-function recordUsage(usage, requestMessages, tools) {
-  if (!usage) return;
-  const ratio = calibrationRatio(usage.promptTokens, estimateTokens(requestMessages, tools));
-  if (ratio) state.ctx.calib = { profileId: activeProfile(state.config).id, ratio };
-}
-
 function resetContextMeter() {
   state.ctx.warned = 'ok';
   state.ctx.usage = null;
   els.chat.querySelectorAll('.ctx-warn').forEach((n) => n.remove());
 }
 
-// 按下一次普通请求的形态组装请求链并估算。tools 的开关与 runAgentLoop 一致，
-// 只是不看页面是否可读——多估一份工具定义，宁可早提醒
+// 按下一次普通请求的形态估算（与回合里的请求同一份判定，见 core/agent.js）
 function measureContext() {
   const profile = activeProfile(state.config);
-  const useTools = !state.toolsBroken;
-  const vision = useTools && Boolean(profile.visionEnabled);
-  const actions = useTools && Boolean(state.config.actionsEnabled);
-  const tools = useTools ? buildToolDefs({ vision, actions }) : undefined;
-  const chain = buildRequestMessages(
-    { tools: useTools, vision, actions, skill: state.skillId }, state.messages, state.compact,
-  );
-  const ratio = state.ctx.calib.profileId === profile.id ? state.ctx.calib.ratio : 1;
-  return contextUsage(estimateTokens(chain, tools), { ratio, window: profile.contextWindow });
+  return measureNextRequest({
+    messages: state.messages,
+    compact: state.compact,
+    profile,
+    actionsEnabled: state.config.actionsEnabled,
+    skillId: state.skillId,
+    toolsBroken: state.toolsBroken,
+    // 校准系数是分词器的属性，只对记下它的那套接口有效
+    ratio: state.ctx.calib.profileId === profile.id ? state.ctx.calib.ratio : 1,
+  });
 }
 
 function checkContextUsage() {
-  const hasUser = state.messages.some((m) => m.role === 'user' && m.displayContent !== undefined);
-  const usage = hasUser ? measureContext() : null;
+  const usage = hasUserInput(state.messages) ? measureContext() : null;
   state.ctx.usage = usage;
   if (!usage || LEVEL_RANK[usage.level] <= LEVEL_RANK[state.ctx.warned]) return;
   state.ctx.warned = usage.level;
@@ -1746,27 +1454,21 @@ function appendContextWarning(usage) {
 // 当前会话落库。落库失败不打断对话——会话仍在内存里，但要在消息流里说一声：
 // 用户以为已经存进历史，关掉侧边栏才发现找不回来，那就晚了。
 async function persistSession() {
-  const firstUser = state.messages.find((m) => m.role === 'user' && m.displayContent !== undefined);
-  if (!firstUser) return; // 没有用户消息的会话不保存
+  if (!hasUserInput(state.messages)) return; // 没有用户消息的会话不保存
   const now = Date.now();
   if (!state.sessionId) {
     state.sessionId = newSessionId();
     state.sessionCreatedAt = now;
   }
-  const record = {
-    v: HISTORY_RECORD_VERSION,
+  const record = buildSessionRecord({
     id: state.sessionId,
     createdAt: state.sessionCreatedAt,
     updatedAt: now,
-    title: deriveSessionTitle(firstUser.displayContent),
-    turns: countTurns(state.messages),
-    messages: state.messages, // 回合收尾后的消息数组：截图已替换为占位，`_` 字段供回放
-    sentPage: state.sentPage, // 恢复后发送前的页面比对要以它为基准
-    skillId: state.skillId,   // 技能是会话属性，随会话保存与恢复
-    // 压缩边界与摘要：恢复后界面回放原文，请求链仍走摘要。
-    // 缺 compact 的旧记录按未压缩处理，因此 HISTORY_RECORD_VERSION 不必递增。
+    messages: state.messages,
+    sentPage: state.sentPage,
+    skillId: state.skillId,
     compact: state.compact,
-  };
+  });
   try {
     await historyStore.save(record);
   } catch (err) {
@@ -1777,22 +1479,6 @@ async function persistSession() {
       maybeScroll();
     }
   }
-}
-
-// 列表里的相对时间：近的说人话，远的落到日期
-function formatHistoryTime(ts) {
-  const now = Date.now();
-  const diff = now - ts;
-  if (diff < 60000) return t('ui.timeJustNow');
-  if (diff < 3600000) return t('ui.timeMinutesAgo', { n: Math.floor(diff / 60000) });
-  const d = new Date(ts);
-  const n = new Date(now);
-  if (d.toDateString() === n.toDateString()) {
-    return t('ui.timeHoursAgo', { n: Math.floor(diff / 3600000) });
-  }
-  if (d.toDateString() === new Date(now - 86400000).toDateString()) return t('ui.timeYesterday');
-  const parts = { y: d.getFullYear(), m: d.getMonth() + 1, d: d.getDate() };
-  return t(parts.y === n.getFullYear() ? 'ui.timeDate' : 'ui.timeDateFull', parts);
 }
 
 // 渲染历史列表：只读轻量索引，不加载任何会话正文；全部 textContent 赋值，无注入面。
@@ -2036,7 +1722,7 @@ function renderSkillSuggest() {
     close.textContent = '✕';
     close.title = t('ui.skillSuggestDismiss');
     close.addEventListener('click', () => {
-      state.suggest.dismissed.add(`${host}|${id}`); // 同 host + 技能，本会话不再建议
+      state.suggest.dismissed.add(suggestionKey(host, id)); // 同 host + 技能，本会话不再建议
       state.suggest.items = state.suggest.items.filter((it) => !(it.id === id && it.host === host));
       renderSkillSuggest();
     });
@@ -2049,11 +1735,7 @@ function renderSkillSuggest() {
 // 不违反「发消息才读取页面」的承诺；也不触碰 state.page，与「重新读取」互不干扰。
 async function evaluateSkillSuggestion() {
   const tab = await getActiveTab(); // 受限页（chrome:// 等）返回 null → 不建议
-  const host = tab ? hostOfUrl(tab.url) : '';
-  const matches = host ? matchSkillsByUrl(tab.url) : [];
-  state.suggest.items = matches
-    .filter((s) => !state.suggest.dismissed.has(`${host}|${s.id}`))
-    .map((s) => ({ id: s.id, host }));
+  state.suggest.items = tab ? suggestSkills(tab.url, state.suggest.dismissed) : [];
   renderSkillSuggest();
 }
 

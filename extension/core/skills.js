@@ -63,3 +63,23 @@ export function matchSkillsByUrl(url) {
   if (!host) return [];
   return PRESET_SKILLS.filter((s) => s.urlHosts.some((p) => hostMatches(host, p)));
 }
+
+/** 建议条「本会话不再建议」的记忆键：同 host + 技能 */
+export function suggestionKey(host, id) {
+  return `${host}|${id}`;
+}
+
+/**
+ * 当前网址该给出的技能建议：命中名单、且这个 host + 技能没被用户关掉过。
+ * 只看网址，不读页面内容。
+ * @param {string} url
+ * @param {Set<string>} [dismissed] suggestionKey 的集合
+ * @returns {Array<{ id: string, host: string }>}
+ */
+export function suggestSkills(url, dismissed = new Set()) {
+  const host = hostOfUrl(url);
+  if (!host) return [];
+  return matchSkillsByUrl(url)
+    .filter((s) => !dismissed.has(suggestionKey(host, s.id)))
+    .map((s) => ({ id: s.id, host }));
+}

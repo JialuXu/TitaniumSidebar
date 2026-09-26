@@ -5,12 +5,58 @@
 // 最近的那些。三种压缩都只改 content、只摘 `_` 标记，绝不增删消息——tool_calls 与 tool
 // 必须成对紧邻（不变式 7），而且 compact.boundary 是下标，一动数组它就漂了。
 // 请求链在这之上组装：system prompt 现拼、压缩后只带「摘要 + 压缩点之后的新消息」、
-// 剔除界面辅助字段。外壳只负责在正确的时机调用，消息数组由它显式传入。
+// 剔除界面辅助字段。另有回合边界的判定（哪条是用户敲入的消息）与重新生成前的回退。
+// 外壳只负责在正确的时机调用，消息数组由它显式传入。
 
 import { t } from './i18n.js';
 import { BUDGETS } from './format.js';
 import { buildSystemPrompt, buildCompactPrompt } from './prompt.js';
 import { compactRequestTail } from './compact.js';
+import { WRITE_TOOL_NAMES } from './tools.js';
+
+/* ========== 用户消息与回合边界 ========== */
+
+/**
+ * 用户敲入的消息：displayContent 只存在于这类消息上。
+ * 工具上限提示、截图跟随消息同为 role:'user'，但不是用户说的话，也不算回合边界。
+ */
+export function isUserInput(m) {
+  return Boolean(m) && m.role === 'user' && m.displayContent !== undefined;
+}
+
+/** 会话里有没有用户敲入的消息：没有就没有可保存、可压缩、可重新生成的东西 */
+export function hasUserInput(messages) {
+  return (messages || []).some(isUserInput);
+}
+
+/**
+ * 最后一轮（最后一条用户消息之后）是否执行过有副作用的工具。
+ * 重新生成会在页面上再执行一遍，外壳据此先征得用户同意。
+ */
+export function lastTurnHasWrites(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (isUserInput(m)) return false;
+    if (m.tool_calls && m.tool_calls.some((c) => WRITE_TOOL_NAMES.has(c.function.name))) return true;
+  }
+  return false;
+}
+
+/**
+ * 重新生成前回退最后一轮：从尾部弹出，直到栈顶是用户敲入的消息。工具轮次会产生
+ * assistant(tool_calls)/tool/截图跟随消息，必须整条链弹干净，否则残缺的 tool 序列会让下一次请求 400。
+ * 就地修改 messages，返回调整后的压缩状态（未压缩为 null）。
+ *
+ * 压缩点必须退到「被重放的这条用户消息」之前，否则请求链会把它一起裁掉（400）。
+ * 钳到弹完后的数组长度同样不行：slice 仍会切掉栈顶那条用户消息。
+ * 调用方要把返回值写回会话状态并随后续落库，只临时钳不落库会让下一次请求按旧 boundary
+ * 切出残缺的 tool 链。
+ */
+export function rewindLastTurn(messages, compact) {
+  while (messages.length && !isUserInput(messages[messages.length - 1])) messages.pop();
+  if (!compact) return null;
+  return { ...compact, boundary: Math.min(compact.boundary, messages.length - 1) };
+}
 
 /* ========== 页面块 ========== */
 

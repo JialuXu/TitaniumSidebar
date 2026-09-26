@@ -3,6 +3,7 @@
 // 消息流里每次工具调用以一行活动文案呈现：进行中「正在搜索…」→ 定稿「已搜索：3 处匹配」。
 // 按工具名与阶段取词：run/fail 阶段只有调用参数，done 阶段以 dispatchToolCall 回传的
 // meta.data 为准。定稿文案随 tool 消息落库（外壳的 `_ui` 字段），历史回放原样重现。
+// 过程时间轴收尾时的摘要行（describeTrace）也在这里。
 // 图标不在这里：SVG 路径是外壳的界面资产，按工具名另取。
 
 import { t } from './i18n.js';
@@ -124,4 +125,15 @@ export function describeToolActivity(name, args, phase, data = {}) {
     default:
       return t(`act.generic.${phase === 'run' ? 'run' : phase === 'fail' ? 'fail' : 'done'}`, { name });
   }
+}
+
+/**
+ * 过程时间轴的摘要行：「已执行 N 步，含 M 次页面操作，K 步失败」，没有的部分不写。
+ * @param {{ steps: number, actions?: number, failed?: number }} counts
+ */
+export function describeTrace({ steps, actions = 0, failed = 0 }) {
+  let text = t(steps === 1 ? 'ui.traceStep' : 'ui.traceSteps', { n: steps });
+  if (actions) text += t(actions === 1 ? 'ui.traceAction' : 'ui.traceActions', { n: actions });
+  if (failed) text += t('ui.traceFailed', { n: failed });
+  return text;
 }

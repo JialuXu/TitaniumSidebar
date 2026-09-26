@@ -47,6 +47,13 @@ export function parseContextWindow(v) {
   return n > 0 ? Math.round(n) : 0;
 }
 
+/** parseContextWindow 的反向：整千的按 k 显示，与输入时的写法一致；0（没填）显示为空 */
+export function formatContextWindow(n) {
+  const win = n || 0;
+  if (!win) return '';
+  return win % 1000 === 0 ? `${win / 1000}k` : String(win);
+}
+
 function str(v) {
   return typeof v === 'string' ? v.trim() : '';
 }
@@ -163,4 +170,19 @@ export function parseSettingsImport(text) {
     return { ok: false, reason: 'bad-version' };
   }
   return { ok: true, config: normalizeConfig({ ...data, actionsEnabled: false }) };
+}
+
+/**
+ * 把解析好的设置文件合进当前配置：整体覆盖，两项例外——
+ * 页面操作开关保持用户当前的状态（那是只能亲手打开的授权，文件里没有这一项）；
+ * 文件未记语言时沿用当前语言。
+ * @param {object} current 当前配置
+ * @param {object} imported parseSettingsImport 成功时的 config
+ */
+export function mergeImportedConfig(current, imported) {
+  return {
+    ...imported,
+    actionsEnabled: Boolean(current.actionsEnabled),
+    locale: imported.locale || current.locale,
+  };
 }
