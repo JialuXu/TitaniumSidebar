@@ -8,7 +8,7 @@ Titanium ships as an unpacked extension loaded from this repository. Only the ti
 
 | Version | Supported |
 |---|---|
-| `main` (currently 1.3.1) | ✅ |
+| `main` (currently 1.4.0) | ✅ |
 | Anything older | ❌ — pull the latest `main` and reload the unpacked extension |
 
 ## Reporting a vulnerability
@@ -70,7 +70,7 @@ Titanium 以「加载已解压的扩展程序」方式从本仓库直接运行�
 
 | 版本 | 是否支持 |
 |---|---|
-| `main`（当前 1.3.1） | ✅ |
+| `main`（当前 1.4.0） | ✅ |
 | 更早的版本 | ❌ —— 请拉取最新 `main` 并重新加载扩展 |
 
 ## 如何报告漏洞
