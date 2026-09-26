@@ -1828,7 +1828,8 @@ async function renderHistoryList() {
     title.textContent = entry.title;
     const meta = document.createElement('span');
     meta.className = 'history-item-meta';
-    const bits = [formatHistoryTime(entry.updatedAt), t('ui.historyTurns', { n: entry.turns })];
+    const turns = t(entry.turns === 1 ? 'ui.historyTurn' : 'ui.historyTurns', { n: entry.turns });
+    const bits = [formatHistoryTime(entry.updatedAt), turns];
     if (isCurrent) bits.unshift(t('ui.historyCurrent'));
     meta.textContent = bits.join(' · ');
     main.append(title, meta);

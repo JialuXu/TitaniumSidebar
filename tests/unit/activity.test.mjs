@@ -34,6 +34,14 @@ test('done 阶段以 meta.data 为准', () => {
   assert.equal(describeToolActivity('find_in_page', { query: 'a' }, 'done', { query: 'b', total: 0 }), t('act.find.none', { query: 'b', total: 0 }));
 });
 
+test('英文活动行的搜索命中数分单复数', () => {
+  setLocale('en');
+  const done = (total) => describeToolActivity('find_in_page', { query: 'x' }, 'done', { query: 'x', total });
+  assert.equal(done(1), 'Searched "x": 1 match');
+  assert.equal(done(3), 'Searched "x": 3 matches');
+  assert.equal(done(0), t('act.find.none', { query: 'x' }));
+});
+
 test('输入预览截到 20 字', () => {
   const s = describeToolActivity('input_text', { ref: 1, text: 'x'.repeat(30) }, 'run');
   assert.ok(s.includes('x'.repeat(20) + '…'));

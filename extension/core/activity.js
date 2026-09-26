@@ -26,7 +26,8 @@ export function describeToolActivity(name, args, phase, data = {}) {
       const query = phase === 'done' ? data.query : (a.query || '');
       if (phase === 'run') return t('act.find.run', { query });
       if (phase === 'fail') return t('act.find.fail', { query });
-      return t(data.total ? 'act.find.done' : 'act.find.none', { query, total: data.total });
+      if (!data.total) return t('act.find.none', { query });
+      return t(data.total === 1 ? 'act.find.one' : 'act.find.done', { query, total: data.total });
     }
     case 'read_page_text': {
       if (phase === 'run') return t('act.read.run');
