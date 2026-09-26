@@ -7,8 +7,8 @@
 // 本模块只做纯数据变换：读写存储、下载文件、弹确认框都是外壳的事。
 //
 // 为什么接口按「套」管理：同一个人在 DeepSeek 官方与行内本地部署之间来回切换是常态，
-// 每次重填三个字段既麻烦又容易把 Key 填错。一套 = 名称 + 接口地址 + 模型名 + Key + 是否支持视觉；
-// 「模型支持视觉」是模型的属性而非用户偏好，跟着套走，切换后不必再翻开关。
+// 每次重填三个字段既麻烦又容易把 Key 填错。一套 = 名称 + 接口地址 + 模型名 + Key + 是否支持视觉
+// + 上下文窗口；这两项是模型的属性而非用户偏好，跟着套走，切换后不必再改。
 // 脱敏、页面操作、语言是用户偏好，与用哪套接口无关，留在全局。
 
 import { LOCALES } from './i18n.js';
@@ -32,7 +32,19 @@ export function newProfileId() {
 }
 
 export function emptyProfile() {
-  return { id: newProfileId(), name: '', baseUrl: '', model: '', apiKey: '', visionEnabled: false };
+  return { id: newProfileId(), name: '', baseUrl: '', model: '', apiKey: '', visionEnabled: false, contextWindow: 0 };
+}
+
+/**
+ * 上下文窗口（token 数）：接受 128000、128k、1.5M 这类写法；空、非法或非正数一律归 0，
+ * 0 表示「没填」，由估算端按缺省口径处理（见 core/context-meter.js）。
+ */
+export function parseContextWindow(v) {
+  if (typeof v === 'number') return Number.isFinite(v) && v > 0 ? Math.round(v) : 0;
+  const m = /^\s*(\d+(?:\.\d+)?)\s*([km]?)\s*$/i.exec(String(v || '').replace(/[,，_]/g, ''));
+  if (!m) return 0;
+  const n = Number(m[1]) * ({ k: 1000, m: 1000000 }[m[2].toLowerCase()] || 1);
+  return n > 0 ? Math.round(n) : 0;
 }
 
 function str(v) {
@@ -49,6 +61,7 @@ export function normalizeProfile(raw) {
     model: str(src.model),
     apiKey: str(src.apiKey),
     visionEnabled: Boolean(src.visionEnabled),
+    contextWindow: parseContextWindow(src.contextWindow),
   };
 }
 
