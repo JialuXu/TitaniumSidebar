@@ -1259,10 +1259,11 @@ async function runAgentLoop(el) {
           w: meta.data.w, h: meta.data.h, n: meta.data.markCount,
         });
         pendingFollowUps.push(followUpMessage); // 批结束后才进历史，见上面的注释
-        attachShotThumbnail(row, followUpMessage);
       }
       const doneText = describeToolActivity(call.name, meta.args || argsForUi, meta.ok ? 'done' : 'fail', meta.data);
       settleToolActivity(row, doneText, meta.ok);
+      // 定稿会重写文字节点（缩略图挂在其中），所以缩略图要在定稿之后挂
+      if (followUpMessage) attachShotThumbnail(row, followUpMessage);
       // 定稿的活动行文案随 tool 消息落库，历史回放据此重建一模一样的活动行
       toolMessage._ui = { text: doneText, ok: meta.ok, action: isAction };
       if (meta.data && meta.data.navigated) batchBroken = true;
