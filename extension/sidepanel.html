@@ -140,7 +140,6 @@
         <!-- 选项由 sidepanel.js 按草稿渲染（显示名 = 名称 → 模型名 → 主机名 → 「未命名」） -->
         <select id="cfg-profile" data-i18n-aria="ui.cfgProfiles" aria-label="模型接口"></select>
       </div>
-      <p class="cfg-hint cfg-hint-field" data-i18n="ui.cfgProfilesHint">下拉里选中的即为当前使用的一套；增删改都在点「保存」后生效。</p>
       <label class="cfg-field">
         <span data-i18n="ui.cfgProfileName">名称</span>
         <input id="cfg-name" type="text" data-i18n-placeholder="ui.cfgProfileNamePlaceholder" placeholder="如 DeepSeek 官方、行内部署" spellcheck="false">
@@ -167,7 +166,6 @@
         <span data-i18n="ui.cfgContextWindow">上下文窗口（tokens）</span>
         <input id="cfg-context" type="text" inputmode="numeric" placeholder="64k" spellcheck="false">
       </label>
-      <p class="cfg-hint cfg-hint-field" data-i18n="ui.cfgContextWindowHint">用于估算上下文用量，快满时提醒压缩。可写 128k；留空按 64k 估算。</p>
 
       <div class="cfg-section"><span data-i18n="ui.cfgPrefs">偏好</span></div>
       <label class="cfg-switch">

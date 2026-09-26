@@ -1148,11 +1148,6 @@ body {
   color: var(--text-3);
 }
 
-/* 紧贴输入框/下拉框的说明行（不是开关的补充说明，不缩进） */
-.cfg-hint-field {
-  margin: -6px 0 12px;
-}
-
 /* 抽屉分组标题：细线分隔 + 右侧可放组内工具按钮（接口套的新增/删除） */
 .cfg-section {
   display: flex;
