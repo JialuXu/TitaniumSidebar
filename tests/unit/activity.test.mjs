@@ -2,7 +2,7 @@
 
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { describeToolActivity } from '../../extension/core/activity.js';
+import { describeToolActivity, describeTrace } from '../../extension/core/activity.js';
 import { buildToolDefs } from '../../extension/core/tools.js';
 import { setLocale, t, LOCALES } from '../../extension/core/i18n.js';
 
@@ -46,4 +46,15 @@ test('坏 JSON（args 为 null）按空值兜底', () => {
 
 test('未知工具走通用文案', () => {
   assert.equal(describeToolActivity('mystery', {}, 'run'), t('act.generic.run', { name: 'mystery' }));
+});
+
+test('第 27 条：过程摘要行只写有的部分，单复数分开取词', () => {
+  assert.equal(describeTrace({ steps: 1 }), t('ui.traceStep', { n: 1 }));
+  assert.equal(describeTrace({ steps: 3, actions: 1 }), t('ui.traceSteps', { n: 3 }) + t('ui.traceAction', { n: 1 }));
+  assert.equal(
+    describeTrace({ steps: 4, actions: 2, failed: 1 }),
+    t('ui.traceSteps', { n: 4 }) + t('ui.traceActions', { n: 2 }) + t('ui.traceFailed', { n: 1 }),
+  );
+  setLocale('en');
+  assert.match(describeTrace({ steps: 3, actions: 1 }), /^Ran 3 steps/);
 });

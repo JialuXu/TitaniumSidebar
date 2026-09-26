@@ -7,11 +7,15 @@
 //     只按条数不够：几段带长页面的会话就能把 chrome.storage.local（约 10MB 配额）撑满，
 //     届时不止历史存不进去，连设置也保存不了——所以 maxBytes 要给配置留出余量。
 //     字节估算与真实计量总有出入，写入仍报配额满时再淘汰最旧的一条重试，直到只剩本条。
-//   - 本模块不理解消息结构：messages/sentPage/skillId 都是外壳给什么存什么，
-//     只要求 JSON 可序列化。回放逻辑（把消息数组重建成 UI）在外壳，不在这里。
+//   - 存储层不理解消息结构：messages/sentPage/skillId/compact 给什么存什么，
+//     只要求 JSON 可序列化。记录的组装（标题、轮数）在 buildSessionRecord；
+//     回放逻辑（把消息数组重建成 UI）在外壳，不在这里。
 //
 // storage 接口在 config 存储的 get/set 之外多要求一个 remove(key)——
 // 扩展外壳用 chrome.storage.local.remove 实现，SDK 外壳将来用 localStorage.removeItem。
+
+import { t } from './i18n.js';
+import { isUserInput } from './conversation.js';
 
 /** 记录格式版本：结构不兼容地演进时递增，load 端对不上的记录按不存在处理 */
 export const HISTORY_RECORD_VERSION = 1;
@@ -30,9 +34,57 @@ export function deriveSessionTitle(text, maxLen = 60) {
   return s.length > maxLen ? s.slice(0, maxLen) + '…' : s;
 }
 
-/** 会话轮数 = 用户真实发出的消息数（displayContent 仅存在于用户敲入的消息上） */
+/** 会话轮数 = 用户真实发出的消息数 */
 export function countTurns(messages) {
-  return (messages || []).filter((m) => m.role === 'user' && m.displayContent !== undefined).length;
+  return (messages || []).filter(isUserInput).length;
+}
+
+/**
+ * 组装一条会话记录（save 的入参）。调用方保证会话里至少有一条用户消息，标题取第一条。
+ * messages 是回合收尾后的形态：截图已换成占位，`_` 前缀字段一并保存供回放（发请求前才剔除）。
+ * @param {object} s
+ * @param {string} s.id 会话 id（首次保存时由调用方 newSessionId 生成）
+ * @param {number} s.createdAt
+ * @param {number} s.updatedAt
+ * @param {Array<object>} s.messages
+ * @param {object} s.sentPage 恢复后发送前的页面比对要以它为基准
+ * @param {string|null} s.skillId 技能是会话属性，随会话保存与恢复
+ * @param {{ summary: string, boundary: number }|null} s.compact 恢复后界面回放原文，请求链仍走摘要。
+ *   缺 compact 的旧记录按未压缩处理，因此 HISTORY_RECORD_VERSION 不必递增
+ */
+export function buildSessionRecord({ id, createdAt, updatedAt, messages, sentPage, skillId, compact }) {
+  const first = messages.find(isUserInput);
+  return {
+    v: HISTORY_RECORD_VERSION,
+    id,
+    createdAt,
+    updatedAt,
+    title: deriveSessionTitle(first ? first.displayContent : ''),
+    turns: countTurns(messages),
+    messages,
+    sentPage,
+    skillId,
+    compact,
+  };
+}
+
+/**
+ * 历史列表里的相对时间：近的说人话，远的落到日期（按本地时区）。
+ * @param {number} ts 会话的更新时间
+ * @param {number} [now]
+ */
+export function formatHistoryTime(ts, now = Date.now()) {
+  const diff = now - ts;
+  if (diff < 60000) return t('ui.timeJustNow');
+  if (diff < 3600000) return t('ui.timeMinutesAgo', { n: Math.floor(diff / 60000) });
+  const d = new Date(ts);
+  const n = new Date(now);
+  if (d.toDateString() === n.toDateString()) {
+    return t('ui.timeHoursAgo', { n: Math.floor(diff / 3600000) });
+  }
+  if (d.toDateString() === new Date(now - 86400000).toDateString()) return t('ui.timeYesterday');
+  const parts = { y: d.getFullYear(), m: d.getMonth() + 1, d: d.getDate() };
+  return t(parts.y === n.getFullYear() ? 'ui.timeDate' : 'ui.timeDateFull', parts);
 }
 
 /**

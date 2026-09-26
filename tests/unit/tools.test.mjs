@@ -208,3 +208,34 @@ test('English 下工具结果也是英文', async () => {
   assert.equal(res.toolMessage.content, t('res.notRegistered', { name: 'click_element' }));
   assert.ok(!/[一-鿿]/.test(res.toolMessage.content));
 });
+
+/* ========== 过滤与网址校验（从外壳下沉） ========== */
+
+test('list_elements：范围与关键词在这里过滤，名称或行锚点命中都算', async () => {
+  const elements = [
+    { ref: 1, role: 'checkbox', name: '', context: 'Cursor Team 周报', inViewport: true },
+    { ref: 2, role: 'button', name: '删除', context: 'Cursor Team 周报', inViewport: false },
+    { ref: 3, role: 'link', name: '设置', inViewport: true },
+  ];
+  const { provider } = fakeProvider({ listElements: { elements } });
+  const reg = registeredFor({});
+  const viewport = await dispatchToolCall(call('list_elements', { scope: 'viewport' }), provider, {}, reg);
+  assert.deepEqual([viewport.meta.data.count, viewport.meta.data.total], [2, 2]);
+  const q = await dispatchToolCall(call('list_elements', { scope: 'page', query: 'cursor team' }), provider, {}, reg);
+  assert.equal(q.meta.data.count, 2);
+  assert.ok(q.toolMessage.content.includes('[1]') && q.toolMessage.content.includes('[2]'));
+  assert.ok(!q.toolMessage.content.includes('[3]'));
+});
+
+test('第 13 条：navigate / open_tab 只放行 http/https，别的网址不交给 provider', async () => {
+  const { provider, calls } = fakeProvider();
+  const reg = registeredFor({ actions: true });
+  for (const name of ['navigate', 'open_tab']) {
+    const res = await dispatchToolCall(call(name, { url: 'javascript:alert(1)' }), provider, {}, reg);
+    assert.equal(res.meta.ok, false);
+    assert.equal(res.toolMessage.content, t('sys.badUrl'));
+  }
+  assert.equal(calls.length, 0);
+  await dispatchToolCall(call('navigate', { url: ' https://b.test/ ' }), provider, {}, reg);
+  assert.deepEqual(calls[0], { name: 'navigate', arg: { url: 'https://b.test/' } });
+});

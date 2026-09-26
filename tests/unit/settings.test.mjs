@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import {
   parseContextWindow, normalizeProfile, normalizeConfig, activeProfile, profileLabel,
   buildSettingsExport, parseSettingsImport, SETTINGS_FILE_KIND, SETTINGS_FILE_VERSION,
+  formatContextWindow, mergeImportedConfig,
 } from '../../extension/core/settings.js';
 
 test('上下文窗口：接受 128000 / 128k / 1.5M / 带千分位', () => {
@@ -125,4 +126,24 @@ test('导入：损坏文件、别的 JSON、更新版本的文件都拒绝', () 
       `version=${JSON.stringify(version)}`
     );
   }
+});
+
+test('第 34 条：上下文窗口回显，整千按 k，与输入写法互逆', () => {
+  assert.equal(formatContextWindow(0), '');
+  assert.equal(formatContextWindow(128000), '128k');
+  assert.equal(formatContextWindow(1500000), '1500k');
+  assert.equal(formatContextWindow(32768), '32768');
+  for (const v of ['128k', '32768', '1.5M']) assert.equal(parseContextWindow(formatContextWindow(parseContextWindow(v))), parseContextWindow(v));
+});
+
+test('第 23 条：导入合并保留当前的页面操作开关，文件未记语言时沿用当前', () => {
+  const current = normalizeConfig({ actionsEnabled: true, locale: 'en' });
+  const file = parseSettingsImport(JSON.stringify({ ...buildSettingsExport(normalizeConfig({ maskEnabled: false })), locale: undefined }));
+  const merged = mergeImportedConfig(current, file.config);
+  assert.equal(merged.actionsEnabled, true);
+  assert.equal(merged.maskEnabled, false);
+  assert.equal(merged.locale, 'en');
+  // 文件里手工加上的开关不采信：当前关着就还是关着
+  const forged = parseSettingsImport(JSON.stringify({ ...buildSettingsExport(normalizeConfig()), actionsEnabled: true }));
+  assert.equal(mergeImportedConfig(normalizeConfig(), forged.config).actionsEnabled, false);
 });

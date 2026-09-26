@@ -2,7 +2,7 @@
 //
 // 只依赖标准 fetch，不依赖扩展的 CORS 豁免（接口地址由外壳传入；
 // SDK 场景下 CORS 由网关开放或宿主同域反代解决，core 不关心）。
-// 错误统一抛结构化的 LlmError，可读文案映射是外壳的职责（describeError），
+// 错误统一抛结构化的 LlmError，可读文案映射在 core/agent.js 的 describeError，
 // 本文件不含任何面向用户的文案——LlmError.message 只是调试串，不进 UI。
 
 /**

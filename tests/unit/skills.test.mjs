@@ -2,7 +2,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PRESET_SKILLS, listSkills, getSkill, hostOfUrl, matchSkillsByUrl } from '../../extension/core/skills.js';
+import {
+  PRESET_SKILLS, listSkills, getSkill, hostOfUrl, matchSkillsByUrl, suggestSkills, suggestionKey,
+} from '../../extension/core/skills.js';
 
 const ids = (list) => list.map((s) => s.id);
 
@@ -37,4 +39,14 @@ test('表格提取没有网址名单，受限页不出建议', () => {
   assert.deepEqual(getSkill('csv-table').urlHosts, []);
   assert.deepEqual(matchSkillsByUrl('chrome://newtab'), []);
   assert.deepEqual(matchSkillsByUrl('https://example.com/'), []);
+});
+
+test('第 19 条：建议条按 host + 技能记住关闭，受限页不建议', () => {
+  const url = 'https://quote.eastmoney.com/sh600000.html';
+  assert.deepEqual(suggestSkills(url), [{ id: 'market-brief', host: 'quote.eastmoney.com' }]);
+  const dismissed = new Set([suggestionKey('quote.eastmoney.com', 'market-brief')]);
+  assert.deepEqual(suggestSkills(url, dismissed), []);
+  // 同一技能换个 host 照常建议
+  assert.equal(suggestSkills('https://xueqiu.com/S/SH600000', dismissed).length, 1);
+  assert.deepEqual(suggestSkills('chrome://newtab/'), []);
 });

@@ -2,7 +2,11 @@
 
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { initialSentPage, decidePageSync, composeSendContent } from '../../extension/core/page-sync.js';
+import {
+  initialSentPage, decidePageSync, composeSendContent, describeSyncNote,
+  initialPage, pageFromSnapshot, fullSnapshotArgs, loadingOf, MAX_ELEMENTS,
+} from '../../extension/core/page-sync.js';
+import { BUDGETS } from '../../extension/core/format.js';
 import { setLocale, t } from '../../extension/core/i18n.js';
 
 beforeEach(() => setLocale('zh'));
@@ -100,4 +104,65 @@ test('English 下标签名随语言切换', () => {
   const r = send(initialSentPage(), page());
   assert.ok(r.content.includes('<page_content>'));
   assert.ok(r.content.includes('<page_outline>'));
+});
+
+/* ========== 快照 → 页面状态 ========== */
+
+function snap(overrides = {}) {
+  return {
+    ok: true, title: '客户', url: 'https://a.test/c', session: 's1',
+    text: '联系电话 13812345678', outline: [{ kind: 'heading', tag: 'h1', level: 1, name: '客户 13900001111', depth: 0 }],
+    stats: { totalElements: 7, textTruncated: false, textTotal: 0, textShown: 0 },
+    ...overrides,
+  };
+}
+
+test('第 4 条：正文与结构骨架一并脱敏，命中数合并', () => {
+  const page = pageFromSnapshot(snap(), { tabId: 3, mask: true });
+  assert.equal(page.status, 'ok');
+  assert.equal(page.tabId, 3);
+  assert.ok(!page.maskedText.includes('13812345678'));
+  assert.ok(!page.outlineText.includes('13900001111'));
+  assert.equal(page.hits.phone, 2);
+  assert.equal(page.elementCount, 7);
+});
+
+test('未开脱敏原样保留、不计命中；只有截断了才记总字数', () => {
+  const plain = pageFromSnapshot(snap(), { tabId: 1, mask: false });
+  assert.ok(plain.maskedText.includes('13812345678'));
+  assert.equal(plain.hits, null);
+  assert.equal(plain.textTotal, 0);
+  const long = pageFromSnapshot(snap({ stats: { totalElements: 0, textTruncated: true, textTotal: 50000, textShown: 12000, textCapped: true } }), { tabId: 1, mask: false });
+  assert.deepEqual([long.textTotal, long.textShown, long.textCapped], [50000, 12000, true]);
+});
+
+test('初值是「没读过」', () => {
+  assert.deepEqual([initialPage().status, initialPage().tabId, initialPage().hits], ['none', null, null]);
+});
+
+test('完整快照参数：采全文、带元素上限与注入文案，追加参数可覆盖', () => {
+  const args = fullSnapshotArgs({ inheritRefs: true });
+  assert.deepEqual(
+    [args.mode, args.maxTextLen, args.maxScan, args.maxElements, args.inheritRefs],
+    ['full', BUDGETS.text, BUDGETS.scan, MAX_ELEMENTS, true],
+  );
+  assert.equal(typeof args.i18n.textTruncated, 'string');
+});
+
+test('第 26 条：稳定了或判定失败都不算「仍在加载」', () => {
+  assert.equal(loadingOf(null), null);
+  assert.equal(loadingOf({ settled: true, busy: false, waitedMs: 400 }), null);
+  assert.deepEqual(loadingOf({ settled: false, busy: true, waitedMs: 2500 }), { busy: true, waitedMs: 2500 });
+});
+
+test('第 13 条：消息流提示行只在页面中途变化或仍在加载时出现', () => {
+  assert.equal(describeSyncNote({ kind: 'full', first: true }, '标题'), '');
+  assert.equal(describeSyncNote({ kind: 'none' }, '标题'), '');
+  assert.equal(describeSyncNote({ kind: 'full', navigated: true }, '新页'), t('ui.notePageNavigated', { title: '新页' }));
+  assert.equal(describeSyncNote({ kind: 'full' }, ''), t('ui.notePageReread'));
+  assert.equal(describeSyncNote({ kind: 'diff', diff: 'x' }, ''), t('ui.notePageUpdated'));
+  assert.equal(describeSyncNote({ kind: 'unreadable', changed: false }, ''), '');
+  assert.equal(describeSyncNote({ kind: 'unreadable', changed: true }, ''), t('ui.notePageUnreadable'));
+  assert.equal(describeSyncNote({ kind: 'full', first: true, loading: { busy: true } }, ''), t('ui.notePageLoading'));
+  assert.equal(describeSyncNote({ kind: 'diff', diff: 'x', loading: { busy: true } }, ''), `${t('ui.notePageUpdated')} · ${t('ui.notePageLoading')}`);
 });
