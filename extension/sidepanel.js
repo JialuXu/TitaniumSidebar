@@ -106,7 +106,7 @@ const els = {};
   'settings-mask', 'settings', 'btn-close-settings', 'cfg-locale',
   'cfg-profile', 'btn-profile-add', 'btn-profile-del', 'cfg-name', 'cfg-baseurl', 'cfg-model',
   'cfg-apikey', 'cfg-vision', 'cfg-context', 'cfg-mask', 'cfg-actions', 'btn-test', 'btn-save', 'test-result',
-  'btn-export', 'btn-import', 'import-file',
+  'btn-export', 'btn-import', 'import-file', 'app-version',
 ].forEach((id) => {
   els[id.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = document.getElementById(id);
 });
@@ -2064,6 +2064,8 @@ function bindEvents() {
   renderLocaleOptions();
   applyLocale(state.config.locale); // 静态文案 + 页面胶囊 + 菜单 + 发送按钮一并按语言渲染
   updateConfigHint();
+  // 设置抽屉底部的版本号取自 manifest：写死在 HTML 里，发版时会漏改
+  els.appVersion.textContent = `Titanium v${chrome.runtime.getManifest().version}`;
   bindEvents();
   // 打开面板时若已停在名单内的页面，直接给出技能建议：只查 tab 元数据，
   // 不注入脚本、不发网络请求，「打开侧边栏不读取页面」的承诺不受影响
