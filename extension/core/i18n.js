@@ -142,6 +142,8 @@ const ZH = {
   'ui.historyClearAll': '清空全部',
   'ui.historyClearConfirm': '清空全部历史会话？删除后不可恢复。',
   'ui.historyStreaming': '回合进行中，停止后才能切换或删除会话',
+  'ui.historySaveFailed': '这段会话未能保存到历史记录（本机存储写入失败）。当前对话不受影响，但关闭侧边栏后将无法恢复。',
+  'ui.historySaveTooLarge': '这段会话太长，已超出历史记录的存储上限，此后的内容不再保存。当前对话不受影响；想留存请点「新对话」另起一段。',
   'ui.timeJustNow': '刚刚',
   'ui.timeMinutesAgo': '{n} 分钟前',
   'ui.timeHoursAgo': '{n} 小时前',
@@ -337,7 +339,7 @@ const ZH = {
 
   /* ---------- 感知数据序列化（core/format.js） ---------- */
   'fmt.metaWrap': '（{s}）',
-  'fmt.outlineTruncated': '\n……（结构过长已截断）',
+  'fmt.outlineTruncated': '……（结构过长，页面靠后还有 {n} 个节点未列出；需要时用 find_in_page 定位）',
   'fmt.outlineOmitted': '……（另有 {n} 个较细的标题未列出）',
   'fmt.noElements': '（没有找到可交互元素）',
   'fmt.rowCtx': '（行：{s}）',
@@ -724,6 +726,8 @@ const EN = {
   'ui.historyClearAll': 'Clear all',
   'ui.historyClearConfirm': 'Delete all saved conversations? This cannot be undone.',
   'ui.historyStreaming': 'A turn is in progress — stop it before switching or deleting',
+  'ui.historySaveFailed': 'This conversation could not be saved to history (local storage write failed). You can keep chatting, but it will not be restorable after the sidebar closes.',
+  'ui.historySaveTooLarge': 'This conversation is too long for history storage, so nothing further will be saved. You can keep chatting; start a New chat if you want the next part kept.',
   'ui.timeJustNow': 'Just now',
   'ui.timeMinutesAgo': '{n} min ago',
   'ui.timeHoursAgo': '{n} h ago',
@@ -916,7 +920,7 @@ const EN = {
 
   /* ---------- Perception serialisation (core/format.js) ---------- */
   'fmt.metaWrap': ' ({s})',
-  'fmt.outlineTruncated': '\n…(outline too long, truncated)',
+  'fmt.outlineTruncated': '…(outline too long: {n} more nodes further down the page are not listed; use find_in_page to locate them)',
   'fmt.outlineOmitted': '…({n} more fine-grained headings not listed)',
   'fmt.noElements': '(no interactive elements found)',
   'fmt.rowCtx': ' (row: {s})',

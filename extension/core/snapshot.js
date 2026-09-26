@@ -500,7 +500,7 @@ export function snapshotPage(options) {
   // 这样测位置的好处是不必重写空白压缩：改那三条正则的风险远大于本功能本身。
   const MARK = '￿';
   const marked = [];        // 按插入顺序记下每个哨兵对应的标题节点
-  const headings = [];      // 全部带位置的标题（不受骨架 150 节点上限约束，小节标签要用全量）
+  const headings = [];      // 全部带位置的标题（不受骨架节点硬顶约束，小节标签要用全量）
   let pendingHeading = null; // 已进入标题元素、但还没遇到第一个非空白字符
 
   function pushText(s, heading) {
@@ -564,8 +564,12 @@ export function snapshotPage(options) {
   // —— 骨架通道 ——
   const LANDMARK_TAGS = { HEADER: 'header', NAV: 'nav', MAIN: 'main', ASIDE: 'aside', FOOTER: 'footer', FORM: 'form' };
   const LANDMARK_ROLES = { banner: 'header', navigation: 'nav', main: 'main', complementary: 'aside', contentinfo: 'footer', form: 'form', region: 'section' };
-  const MAX_OUTLINE_NODES = 150;
+  // 这里只是防止超大页面把注入结果撑爆的硬顶，不是给模型看的预算：哪些节点进 prompt
+  // 由 formatOutline 按字符预算挑（先保截断之外带 @位置 的标题、先丢 h4/h3）。
+  // 顶得太低会抢在它前面把文档后部整段丢掉——而那段恰恰是带位置、最有用的。
+  const MAX_OUTLINE_NODES = 1000;
   const outline = [];
+  let outlineDropped = 0; // 超过硬顶未收录的节点数，如实报给模型
 
   // landmark 名称：aria-label → 内部首个标题 → 空
   function landmarkName(el) {
@@ -578,6 +582,7 @@ export function snapshotPage(options) {
 
   function pushOutline(node) {
     if (outline.length < MAX_OUTLINE_NODES) outline.push(node);
+    else outlineDropped++;
   }
 
   // —— 元素通道 ——
@@ -640,7 +645,7 @@ export function snapshotPage(options) {
       const hNode = { kind: 'heading', tag: tag.toLowerCase(), level: Number(tag[1]), name: clamp(node.textContent, 40), depth };
       pushOutline(hNode);
       if (textOn) {
-        // 骨架有 150 节点上限，小节标签却要用全量：两份分开登记，节点对象共用同一个
+        // 骨架有节点硬顶，小节标签却要用全量：两份分开登记，节点对象共用同一个
         headings.push(hNode);
         myHeading = hNode;
         pendingHeading = hNode;
@@ -926,6 +931,7 @@ export function snapshotPage(options) {
       elementsTruncated: totalInteractive > capped.length || refOverflow > 0,
       tables: tableCount,
       iframes: iframeCount,
+      outlineDropped,
       // 只有显式传了 maxScan 的调用方才采到了完整正文，也只有它能如实报总字数。
       // `maxTextLen:1` 那条「只要元素映射」的重建路径采了两个字，报出来就是假数据。
       ...(opts.maxScan ? { textTotal, textShown, textCapped } : {}),

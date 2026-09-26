@@ -25,7 +25,8 @@ import { renderMarkdown } from './core/markdown.js';
 import { verifyQuote, buildQuoteCorpus } from './core/citation.js';
 import { listSkills, matchSkillsByUrl, hostOfUrl } from './core/skills.js';
 import {
-  createHistoryStore, newSessionId, deriveSessionTitle, countTurns, HISTORY_RECORD_VERSION,
+  createHistoryStore, HistoryTooLargeError, newSessionId, deriveSessionTitle, countTurns,
+  HISTORY_RECORD_VERSION,
 } from './core/history.js';
 import {
   t, setLocale, detectLocale, injectedStrings, LOCALES, LOCALE_LABELS, HTML_LANG,
@@ -46,8 +47,12 @@ const storage = {
   },
 };
 
-// 历史会话存储：索引与记录分键存放，超过 50 条自动淘汰最旧（见 core/history.js）
-const historyStore = createHistoryStore(storage, { maxSessions: 50 });
+// 历史会话存储：索引与记录分键存放，超过 50 条或 8 成配额自动淘汰最旧（见 core/history.js）。
+// 剩下两成留给设置——历史把配额吃满之后，连保存设置都会失败。
+const historyStore = createHistoryStore(storage, {
+  maxSessions: 50,
+  maxBytes: Math.floor(chrome.storage.local.QUOTA_BYTES * 0.8),
+});
 
 /* ========== 全局状态 ========== */
 function initialPage() {
@@ -100,6 +105,7 @@ const state = {
   // 每个回合收尾自动保存一次；「新对话」把身份清空，下一段会话另起一条记录。
   sessionId: null,
   sessionCreatedAt: 0,
+  saveWarnedFor: null, // 已提示过「未能保存到历史」的 sessionId：同一段会话只提示一次
   // URL 建议：items 为当前命中的 [{ id, host }]；dismissed 记「host|skillId」，本会话不再建议
   suggest: { items: [], dismissed: new Set() },
 };
@@ -420,7 +426,7 @@ async function snapshotCurrentTab() {
 // 发送前的例行重读与动作导致跳转后的重建共用这一份，避免两处规则漂移。
 function applySnapshot(snap, tabId) {
   // 文本与结构骨架都走文本通道，发给模型前必须一并脱敏；命中数合并计入徽标
-  const outlineRaw = formatOutline(snap.outline);
+  const outlineRaw = formatOutline(snap.outline, { dropped: snap.stats.outlineDropped });
   const maskOn = state.config.maskEnabled;
   const textRes = maskOn ? maskSensitive(snap.text) : { text: snap.text, hits: null };
   const outlineRes = maskOn ? maskSensitive(outlineRaw) : { text: outlineRaw, hits: null };
@@ -1643,7 +1649,8 @@ async function handleImportSettings(file) {
 //     同页未变则什么都不带、换了页自动携带新全文，现有机制无需为历史开特例。
 //   - 旧 ref 失效属预期（与 SPA 重渲染过期同一情形），模型经 list_elements 自纠。
 
-// 当前会话落库。落库失败（配额满等）只警告不打断对话——会话仍在内存里。
+// 当前会话落库。落库失败不打断对话——会话仍在内存里，但要在消息流里说一声：
+// 用户以为已经存进历史，关掉侧边栏才发现找不回来，那就晚了。
 async function persistSession() {
   const firstUser = state.messages.find((m) => m.role === 'user' && m.displayContent !== undefined);
   if (!firstUser) return; // 没有用户消息的会话不保存
@@ -1670,6 +1677,11 @@ async function persistSession() {
     await historyStore.save(record);
   } catch (err) {
     console.warn('[历史会话] 保存失败', err);
+    if (state.saveWarnedFor !== state.sessionId) {
+      state.saveWarnedFor = state.sessionId;
+      appendFlowError(t(err instanceof HistoryTooLargeError ? 'ui.historySaveTooLarge' : 'ui.historySaveFailed'));
+      maybeScroll();
+    }
   }
 }
 
