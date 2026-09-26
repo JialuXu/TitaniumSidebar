@@ -40,6 +40,9 @@ function buildHeaders(config) {
  *   { type: 'tool_calls', calls: [{ id, name, arguments }] }
  *     —— 模型请求调用工具；流式分片已拼装完整，arguments 为 JSON 字符串，
  *        该事件最多出现一次且出现后流即结束
+ *   { type: 'usage', promptTokens, completionTokens } —— 接口在流里报了用量时（可能不出现）
+ *     不在请求里加 stream_options.include_usage：严格的后端会因不认识的字段报 400，
+ *     而 400 会被外壳当成「不支持 tools」去降级。只被动接收主动报用量的接口（如 DeepSeek）。
  * @param {{ baseUrl: string, model: string, apiKey?: string }} config
  * @param {Array<object>} messages OpenAI 格式消息数组（可含 tool_calls / role:'tool' / 多模态 content）
  * @param {{ signal?: AbortSignal, tools?: Array<object> }} [options]
@@ -107,6 +110,11 @@ export async function* streamChat(config, messages, { signal, tools } = {}) {
         } catch {
           continue; // 容忍个别脏行
         }
+        // 用量常在 choices 为空的收尾块里单独下发，先于 choice 判定处理
+        const usage = parsed.usage;
+        if (usage && typeof usage.prompt_tokens === 'number') {
+          yield { type: 'usage', promptTokens: usage.prompt_tokens, completionTokens: usage.completion_tokens || 0 };
+        }
         const choice = parsed.choices && parsed.choices[0];
         if (!choice) continue;
         const delta = choice.delta || {};
@@ -146,6 +154,19 @@ export async function* streamChat(config, messages, { signal, tools } = {}) {
   } finally {
     reader.cancel().catch(() => {});
   }
+}
+
+/**
+ * 请求超出模型上下文窗口。各家没有统一的错误码，只能认响应体里的措辞：
+ * OpenAI 的 context_length_exceeded、vLLM 的 maximum context length、
+ * 其他网关的 too many tokens / prompt is too long 等。
+ * 外壳据此给出「压缩或新对话」的提示，也不能把它当成「不支持 tools」去降级。
+ */
+const CONTEXT_OVERFLOW = /context[_ ]length|maximum context|context window|too many tokens|prompt is too long|input is too long|reduce the length|maximum (allowed )?(input )?tokens?|token limit|exceeds? the (model'?s? )?(max|context)/i;
+
+export function isContextOverflow(err) {
+  return err instanceof LlmError && err.kind === 'http' &&
+    [400, 413, 422].includes(err.status) && CONTEXT_OVERFLOW.test(err.detail || '');
 }
 
 /**

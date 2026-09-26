@@ -17,15 +17,20 @@ import {
 } from './core/conversation.js';
 import { initialSentPage, decidePageSync, composeSendContent } from './core/page-sync.js';
 import { parseCompactCommand, buildCompactState } from './core/compact.js';
-import { streamChat, testConnection, LlmError } from './core/llm-client.js';
+import { streamChat, testConnection, LlmError, isContextOverflow } from './core/llm-client.js';
+import {
+  estimateTokens, calibrationRatio, contextUsage, formatTokens, LEVEL_RANK,
+} from './core/context-meter.js';
 import {
   normalizeConfig, activeProfile, emptyProfile, profileLabel, buildSettingsExport, parseSettingsImport,
+  parseContextWindow,
 } from './core/settings.js';
 import { renderMarkdown } from './core/markdown.js';
 import { verifyQuote, buildQuoteCorpus } from './core/citation.js';
 import { listSkills, matchSkillsByUrl, hostOfUrl } from './core/skills.js';
 import {
-  createHistoryStore, newSessionId, deriveSessionTitle, countTurns, HISTORY_RECORD_VERSION,
+  createHistoryStore, HistoryTooLargeError, newSessionId, deriveSessionTitle, countTurns,
+  HISTORY_RECORD_VERSION,
 } from './core/history.js';
 import {
   t, setLocale, detectLocale, injectedStrings, LOCALES, LOCALE_LABELS, HTML_LANG,
@@ -46,8 +51,12 @@ const storage = {
   },
 };
 
-// 历史会话存储：索引与记录分键存放，超过 50 条自动淘汰最旧（见 core/history.js）
-const historyStore = createHistoryStore(storage, { maxSessions: 50 });
+// 历史会话存储：索引与记录分键存放，超过 50 条或 8 成配额自动淘汰最旧（见 core/history.js）。
+// 剩下两成留给设置——历史把配额吃满之后，连保存设置都会失败。
+const historyStore = createHistoryStore(storage, {
+  maxSessions: 50,
+  maxBytes: Math.floor(chrome.storage.local.QUOTA_BYTES * 0.8),
+});
 
 /* ========== 全局状态 ========== */
 function initialPage() {
@@ -100,6 +109,10 @@ const state = {
   // 每个回合收尾自动保存一次；「新对话」把身份清空，下一段会话另起一条记录。
   sessionId: null,
   sessionCreatedAt: 0,
+  saveWarnedFor: null, // 已提示过「未能保存到历史」的 sessionId：同一段会话只提示一次
+  // 上下文用量：calib 是按接口套记的校准系数（分词器是模型的属性，跨会话沿用）；
+  // warned 是本段会话已提示到的档位，只在升档时提示；usage 是最近一次测量，供「+」菜单显示
+  ctx: { calib: { profileId: '', ratio: 1 }, warned: 'ok', usage: null },
   // URL 建议：items 为当前命中的 [{ id, host }]；dismissed 记「host|skillId」，本会话不再建议
   suggest: { items: [], dismissed: new Set() },
 };
@@ -116,7 +129,7 @@ const els = {};
   'btn-history', 'history-pop', 'history-list', 'btn-clear-history',
   'settings-mask', 'settings', 'btn-close-settings', 'cfg-locale',
   'cfg-profile', 'btn-profile-add', 'btn-profile-del', 'cfg-name', 'cfg-baseurl', 'cfg-model',
-  'cfg-apikey', 'cfg-vision', 'cfg-mask', 'cfg-actions', 'btn-test', 'btn-save', 'test-result',
+  'cfg-apikey', 'cfg-vision', 'cfg-context', 'cfg-mask', 'cfg-actions', 'btn-test', 'btn-save', 'test-result',
   'btn-export', 'btn-import', 'import-file',
 ].forEach((id) => {
   els[id.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = document.getElementById(id);
@@ -214,6 +227,7 @@ function commitProfileForm() {
   p.model = els.cfgModel.value.trim();
   p.apiKey = els.cfgApikey.value.trim();
   p.visionEnabled = els.cfgVision.checked;
+  p.contextWindow = parseContextWindow(els.cfgContext.value);
 }
 
 function renderProfileOptions() {
@@ -234,6 +248,9 @@ function fillProfileForm() {
   els.cfgModel.value = p.model;
   els.cfgApikey.value = p.apiKey;
   els.cfgVision.checked = p.visionEnabled;
+  // 整千的按 k 显示，与输入时的写法一致
+  const win = p.contextWindow || 0;
+  els.cfgContext.value = !win ? '' : win % 1000 === 0 ? `${win / 1000}k` : String(win);
   renderProfileOptions();
   els.btnProfileDel.disabled = drawer.profiles.length <= 1; // 至少保留一套
 }
@@ -259,6 +276,7 @@ function fillConfigForm() {
 
 /* ========== 错误文案映射（外壳职责，core 只抛结构化错误） ========== */
 function describeError(err) {
+  if (isContextOverflow(err)) return t('err.contextOverflow');
   if (err instanceof LlmError) {
     switch (err.kind) {
       case 'badconfig':
@@ -420,7 +438,7 @@ async function snapshotCurrentTab() {
 // 发送前的例行重读与动作导致跳转后的重建共用这一份，避免两处规则漂移。
 function applySnapshot(snap, tabId) {
   // 文本与结构骨架都走文本通道，发给模型前必须一并脱敏；命中数合并计入徽标
-  const outlineRaw = formatOutline(snap.outline);
+  const outlineRaw = formatOutline(snap.outline, { dropped: snap.stats.outlineDropped });
   const maskOn = state.config.maskEnabled;
   const textRes = maskOn ? maskSensitive(snap.text) : { text: snap.text, hits: null };
   const outlineRes = maskOn ? maskSensitive(outlineRaw) : { text: outlineRaw, hits: null };
@@ -1060,6 +1078,7 @@ function updateComposer() {
   const busy = state.ui.phase !== 'idle';
   els.btnSend.textContent = t(busy ? 'ui.stop' : 'ui.send');
   els.btnSend.classList.toggle('stop', busy);
+  els.chat.querySelectorAll('.ctx-warn-btn').forEach((b) => { b.disabled = busy; });
 }
 
 // Agent 循环：流式产文 → 模型请求工具 → 执行并回填 → 再次请求，最多 MAX_TOOL_ROUNDS 轮。
@@ -1077,6 +1096,7 @@ async function runAgentLoop(el) {
   let thinking = el.thinking; // 当前「思考中」指示
   let rounds = 0;             // 已完成的工具轮数
   let imagesRetried = false;  // 「接口不支持图片」降级只重试一次
+  let turnError = null;       // 最终那次请求的错误（收尾时判断是否已超窗）
 
   // 开了页面操作的回合允许更多轮：一次表单填写光是「列元素 + 逐个输入 + 提交 + 验证」
   // 就要八九轮，5 轮必然半途而废
@@ -1126,6 +1146,7 @@ async function runAgentLoop(el) {
     };
 
     let streamError = null;
+    let usage = null;
     try {
       for await (const ev of streamChat(activeProfile(state.config), requestMessages, { signal, tools })) {
         if (ev.type === 'delta') {
@@ -1134,11 +1155,14 @@ async function runAgentLoop(el) {
           scheduleRender();
         } else if (ev.type === 'tool_calls') {
           calls = ev.calls;
+        } else if (ev.type === 'usage') {
+          usage = ev;
         }
       }
     } catch (err) {
       streamError = err;
     }
+    recordUsage(usage, requestMessages, tools);
     if (rafId) cancelAnimationFrame(rafId);
     thinking.remove();
     seg.innerHTML = acc ? renderMarkdown(acc) : '';
@@ -1147,7 +1171,8 @@ async function runAgentLoop(el) {
     // 各只降一次，5xx/网络错误不吞，照常报错。
     if (
       streamError instanceof LlmError && streamError.kind === 'http' &&
-      (streamError.status === 400 || streamError.status === 422) && !signal.aborted
+      (streamError.status === 400 || streamError.status === 422) && !signal.aborted &&
+      !isContextOverflow(streamError) // 超窗不是「不认识新字段」，去掉 tools 重试只会把本会话永久降级
     ) {
       if (tools && !state.toolsBroken) {
         state.toolsBroken = true;
@@ -1167,6 +1192,7 @@ async function runAgentLoop(el) {
     if (streamError || !calls || !calls.length || !tools) {
       const msgObj = { role: 'assistant', content: acc };
       messages.push(msgObj);
+      turnError = streamError;
       const aborted = streamError instanceof LlmError && streamError.kind === 'abort';
       if (streamError && !aborted) {
         // 中止不算错误，保留已生成部分；错误文案同时落在消息上，历史回放时原样重现
@@ -1270,6 +1296,9 @@ async function runAgentLoop(el) {
   state.abortController = null;
   state.ui.phase = 'idle';
   updateComposer();
+  // 已经超窗报错就不必再弹一条「快满了」：错误文案里已经说了该怎么办
+  if (isContextOverflow(turnError)) state.ctx.warned = 'high';
+  checkContextUsage();
   maybeScroll();
 
   // 回合收尾自动落库：正常结束、报错、中止都算——用户消息与已产出的内容都不该丢
@@ -1419,6 +1448,7 @@ async function runCompact(instruction = '') {
     for await (const ev of streamChat(activeProfile(state.config), requestMessages, { signal })) {
       if (ev.type === 'delta') summary += ev.text;
       else if (ev.type === 'tool_calls') calls = ev.calls;
+      else if (ev.type === 'usage') recordUsage(ev, requestMessages);
     }
   } catch (err) {
     streamError = err;
@@ -1433,7 +1463,10 @@ async function runCompact(instruction = '') {
   if (streamError || calls || !summary.trim()) {
     note.remove();
     const aborted = streamError instanceof LlmError && streamError.kind === 'abort';
-    if (!aborted) appendFlowError(streamError ? describeError(streamError) : t('ui.compactBadReply'));
+    if (!aborted) {
+      appendFlowError(isContextOverflow(streamError) ? t('err.contextOverflowCompact')
+        : streamError ? describeError(streamError) : t('ui.compactBadReply'));
+    }
     maybeScroll();
     return;
   }
@@ -1443,6 +1476,9 @@ async function runCompact(instruction = '') {
   // 不这么做的话「页面没变就什么都不带」会让模型手里只剩摘要，数字与引用会漂。
   state.sentPage = initialSentPage();
   note.textContent = t('ui.noteCompacted');
+  // 压缩后重新起算：旧提醒作废，再涨上来还会提醒
+  resetContextMeter();
+  checkContextUsage();
   maybeScroll();
   await persistSession();
 }
@@ -1511,9 +1547,10 @@ function handleNewChat() {
   // 会话身份清空：旧会话已在每个回合收尾时落库，这里只是让下一段另起一条记录
   state.sessionId = null;
   state.sessionCreatedAt = 0;
+  resetContextMeter();
   state.suggest.items = [];
   state.suggest.dismissed.clear(); // 「本会话不再建议」的记忆也随会话清空
-  els.chat.querySelectorAll('.msg, .flow-note, .msg-error.standalone').forEach((m) => m.remove());
+  els.chat.querySelectorAll('.msg, .flow-note, .msg-error.standalone, .ctx-warn').forEach((m) => m.remove());
   els.welcome.hidden = false;
   updateContextChip();
   renderSkillChip();
@@ -1634,6 +1671,68 @@ async function handleImportSettings(file) {
   showSettingsResult(t('ui.importOk', { n: state.config.profiles.length }), 'ok');
 }
 
+/* ========== 上下文用量（快满时提醒压缩） ========== */
+// 回合收尾测一次「下一次请求会发出去的那条链」，升档才提醒（同一档只提醒一次），
+// 压缩成功、新对话、恢复历史后重新起算。估算与校准的口径见 core/context-meter.js。
+// 下一条消息若换了页还会再带一份页面全文，这里测不到——从 70% 起提醒正是给它留的余量。
+
+// 接口报了真实用量：与同一请求的估算值比出校准系数，按接口套记下
+function recordUsage(usage, requestMessages, tools) {
+  if (!usage) return;
+  const ratio = calibrationRatio(usage.promptTokens, estimateTokens(requestMessages, tools));
+  if (ratio) state.ctx.calib = { profileId: activeProfile(state.config).id, ratio };
+}
+
+function resetContextMeter() {
+  state.ctx.warned = 'ok';
+  state.ctx.usage = null;
+  els.chat.querySelectorAll('.ctx-warn').forEach((n) => n.remove());
+}
+
+// 按下一次普通请求的形态组装请求链并估算。tools 的开关与 runAgentLoop 一致，
+// 只是不看页面是否可读——多估一份工具定义，宁可早提醒
+function measureContext() {
+  const profile = activeProfile(state.config);
+  const useTools = !state.toolsBroken;
+  const vision = useTools && Boolean(profile.visionEnabled);
+  const actions = useTools && Boolean(state.config.actionsEnabled);
+  const tools = useTools ? buildToolDefs({ vision, actions }) : undefined;
+  const chain = buildRequestMessages(
+    { tools: useTools, vision, actions, skill: state.skillId }, state.messages, state.compact,
+  );
+  const ratio = state.ctx.calib.profileId === profile.id ? state.ctx.calib.ratio : 1;
+  return contextUsage(estimateTokens(chain, tools), { ratio, window: profile.contextWindow });
+}
+
+function checkContextUsage() {
+  const hasUser = state.messages.some((m) => m.role === 'user' && m.displayContent !== undefined);
+  const usage = hasUser ? measureContext() : null;
+  state.ctx.usage = usage;
+  if (!usage || LEVEL_RANK[usage.level] <= LEVEL_RANK[state.ctx.warned]) return;
+  state.ctx.warned = usage.level;
+  appendContextWarning(usage);
+}
+
+// 提醒条：只留最新一条，自带「压缩」按钮（与「+」菜单、/compact 走同一个入口）
+function appendContextWarning(usage) {
+  els.chat.querySelectorAll('.ctx-warn').forEach((n) => n.remove());
+  const row = document.createElement('div');
+  row.className = `msg-note ctx-warn${usage.level === 'high' ? ' high' : ''}`;
+  const text = document.createElement('span');
+  const key = usage.level !== 'high' ? 'ui.ctxWarn' : usage.pct >= 100 ? 'ui.ctxOver' : 'ui.ctxHigh';
+  text.textContent = t(key, {
+    pct: usage.pct, used: formatTokens(usage.used), total: formatTokens(usage.window),
+  });
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'ctx-warn-btn';
+  btn.textContent = t('ui.ctxCompactNow');
+  btn.disabled = state.ui.phase !== 'idle';
+  btn.addEventListener('click', () => runCompact());
+  row.append(text, btn);
+  els.chat.appendChild(row);
+}
+
 /* ========== 历史会话 ========== */
 // 机制总览：
 //   - 保存：每个回合收尾（runAgentLoop 结束）把 messages/sentPage/skillId 整体落库；
@@ -1643,7 +1742,8 @@ async function handleImportSettings(file) {
 //     同页未变则什么都不带、换了页自动携带新全文，现有机制无需为历史开特例。
 //   - 旧 ref 失效属预期（与 SPA 重渲染过期同一情形），模型经 list_elements 自纠。
 
-// 当前会话落库。落库失败（配额满等）只警告不打断对话——会话仍在内存里。
+// 当前会话落库。落库失败不打断对话——会话仍在内存里，但要在消息流里说一声：
+// 用户以为已经存进历史，关掉侧边栏才发现找不回来，那就晚了。
 async function persistSession() {
   const firstUser = state.messages.find((m) => m.role === 'user' && m.displayContent !== undefined);
   if (!firstUser) return; // 没有用户消息的会话不保存
@@ -1670,6 +1770,11 @@ async function persistSession() {
     await historyStore.save(record);
   } catch (err) {
     console.warn('[历史会话] 保存失败', err);
+    if (state.saveWarnedFor !== state.sessionId) {
+      state.saveWarnedFor = state.sessionId;
+      appendFlowError(t(err instanceof HistoryTooLargeError ? 'ui.historySaveTooLarge' : 'ui.historySaveFailed'));
+      maybeScroll();
+    }
   }
 }
 
@@ -1762,9 +1867,12 @@ async function loadSession(id) {
   state.suggest.items = [];
   state.suggest.dismissed.clear();
 
-  els.chat.querySelectorAll('.msg, .flow-note, .msg-error.standalone').forEach((m) => m.remove());
+  els.chat.querySelectorAll('.msg, .flow-note, .msg-error.standalone, .ctx-warn').forEach((m) => m.remove());
   els.welcome.hidden = state.messages.length > 0;
   replayConversation(state.messages, state.compact);
+  // 恢复的会话可能已经很长：当场测一次，快满就立刻提醒
+  resetContextMeter();
+  checkContextUsage();
   updateContextChip();
   renderSkillChip();
   renderPlusMenu();
@@ -2002,7 +2110,8 @@ const COMPOSER_MENU_ITEMS = [
     id: 'compact',
     label: () => t('ui.menuCompact'),
     // hint 直接写命令名：菜单同时是 /compact 这条输入框命令的说明书
-    hint: () => t('ui.menuCompactHint'),
+    // 测过用量后附上占比，用户不必等到提醒条出现才知道还剩多少
+    hint: () => (state.ctx.usage ? t('ui.menuCompactUsage', { pct: state.ctx.usage.pct }) : t('ui.menuCompactHint')),
     // 不标 active：压缩是可以反复执行的一次性动作，不是「开着」的状态开关；
     // 「这段会话已压缩过」由消息流里那行提示交代（回放时也在）
     disabled: () => state.ui.phase !== 'idle', // 回合或上一次压缩进行中不可再压

@@ -47,8 +47,10 @@ export function clampText(s, max, suffix = '…') {
  * 二、截断之外的那段另给一份预算。长文档的骨架前半截就能把 1500 字吃光，
  *     而恰恰是后半截的标题才带位置、才是本工具要用的；超预算时先丢 h4 再丢 h3。
  * @param {Array<{kind, tag, level?, name, depth, meta?, pos?}>} nodes snapshotPage 返回的 outline
+ * @param {{dropped?: number, budget?: number, beyondBudget?: number}} opts
+ *   dropped：snapshotPage 因节点硬顶没收录的节点数（stats.outlineDropped），出现时末尾注明
  */
-export function formatOutline(nodes, budget = BUDGETS.outline, beyondBudget = BUDGETS.outlineBeyond) {
+export function formatOutline(nodes, { dropped = 0, budget = BUDGETS.outline, beyondBudget = BUDGETS.outlineBeyond } = {}) {
   if (!nodes || !nodes.length) return '';
   const render = (n) => {
     // 标题在所属 landmark 内再缩进一级，层级感更接近视觉结构
@@ -88,8 +90,10 @@ export function formatOutline(nodes, budget = BUDGETS.outline, beyondBudget = BU
   const a = fit(head, budget);
   const b = fit(beyond, beyondBudget);
   const omitted = a.omitted + b.omitted;
-  const out = [a.text, b.text].filter(Boolean).join('\n');
-  return omitted ? out + '\n' + t('fmt.outlineOmitted', { n: omitted }) : out;
+  const lines = [a.text, b.text].filter(Boolean);
+  if (omitted) lines.push(t('fmt.outlineOmitted', { n: omitted }));
+  if (dropped) lines.push(t('fmt.outlineTruncated', { n: dropped }));
+  return lines.join('\n');
 }
 
 /**
