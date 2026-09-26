@@ -185,6 +185,7 @@ test('读取结果：头尾自述与续读位置', () => {
 
 test('搜索结果：命中带 @位置，片段压成单行；失败与无结果', () => {
   const out = formatSearchResults({ ok: true, total: 1, results: [{ index: 42, snippet: '甲\n  乙', section: '附则' }] }, '甲');
+  assert.equal(out.split('\n')[0], t('fmt.searchHeadOne', { query: '甲' }));
   assert.ok(out.split('\n')[1].startsWith('1. @42'));
   assert.ok(out.includes('……甲 乙……'));
   assert.equal(formatSearchResults({ ok: false, reason: 'empty-query' }), t('fmt.searchFailEmpty'));
@@ -215,4 +216,11 @@ test('标签页列表标出工作页', () => {
   assert.ok(out.includes('[tab_id=7] A'));
   assert.ok(out.includes(t('fmt.tabWork')));
   assert.equal(formatTabs([]), t('fmt.noTabs'));
+});
+
+test('英文的搜索命中数分单复数', () => {
+  setLocale('en');
+  const hit = (n) => formatSearchResults({ ok: true, total: n, results: Array.from({ length: n }, (_, i) => ({ index: i, snippet: 'x' })) }, 'x').split('\n')[0];
+  assert.match(hit(1), /^Found 1 occurrence of "x"/);
+  assert.match(hit(2), /^Found 2 occurrences of "x"/);
 });

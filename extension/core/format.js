@@ -314,7 +314,7 @@ export function formatSearchResults(result, query) {
     const partial = result.results.length < result.total;
     lines.push(partial
       ? t('fmt.searchHeadMore', { total: result.total, query, shown: result.results.length })
-      : t('fmt.searchHead', { total: result.total, query }));
+      : t(result.total === 1 ? 'fmt.searchHeadOne' : 'fmt.searchHead', { total: result.total, query }));
     result.results.forEach((r, i) => {
       // 片段跨行、跨表格单元格时原样带出会很碎，压成单行只影响可读性不影响位置
       const snippet = (r.snippet || '').replace(/\s+/g, ' ').trim();
