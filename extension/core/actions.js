@@ -156,6 +156,27 @@ export function performAction(payload) {
     return view !== win && view.frameElement ? offscreen(view.frameElement) : false;
   }
 
+  // 真实点击落在屏幕上的一个点：事件从该点最深层的元素发出、沿祖先链冒泡，途经被点的元素。
+  // 直接向元素本身派发则只从它往上冒，挂在它内部子元素上的处理器永远收不到——
+  // antd Select 的展开逻辑挂在内层 .ant-select-selector 上，点外层包裹 div 于是静默无效。
+  // 因此派发给元素中心点上的命中元素（elementFromPoint 与真实点击同样跳过 pointer-events:none），
+  // 前提是命中元素在它内部。以下情形仍派发给元素本身，即原有行为：
+  //   命中点不在元素内：被遮罩、浮层挡住，或中心点在视口外（返回别的元素或 null）；
+  //   命中点落在元素内部另一个独立控件上：卡片正中的「删除」按钮，模型点的是卡片，不能变成点删除。
+  const INNER_CONTROLS = 'a[href],button,select,label,input[type=checkbox],input[type=radio],' +
+    'input[type=button],input[type=submit],input[type=reset],input[type=image],' +
+    '[role=button],[role=link],[role=checkbox],[role=radio],[role=switch],[role=tab],' +
+    '[role=menuitem],[role=menuitemcheckbox],[role=menuitemradio],[role=option]';
+  function hitTarget(el, x, y) {
+    let hit = null;
+    try { hit = el.ownerDocument.elementFromPoint(x, y); } catch { hit = null; }
+    // 图标按钮的命中点常落在 <svg>/<path> 上，SVG 元素没有 click()（那是 HTMLElement 的方法），取最近的 HTML 祖先
+    while (hit && typeof hit.click !== 'function') hit = hit.parentElement;
+    if (!hit || hit === el || !el.contains(hit)) return el;
+    const inner = hit.closest(INNER_CONTROLS);
+    return inner && inner !== el && el.contains(inner) ? el : hit;
+  }
+
   function viewportInfo() {
     return {
       w: win.innerWidth, h: win.innerHeight,
@@ -264,14 +285,19 @@ export function performAction(payload) {
         clientX: cx, clientY: cy, screenX: cx, screenY: cy, button: 0,
       };
       const pointer = { pointerId: 1, pointerType: 'mouse', isPrimary: true };
-      try { el.focus({ preventScroll: true }); } catch { /* 不可聚焦元素忽略 */ }
+      const target = hitTarget(el, cx, cy);
+      // 聚焦命中点所在、最近的可聚焦元素：真实点击由 mousedown 的默认行为完成这一步，合成事件没有。
+      // 找到的若在元素之外（元素本身不可聚焦而祖先可聚焦），仍按原行为只尝试元素本身
+      const focusable = target.closest('a[href],button,input,select,textarea,[tabindex],[contenteditable]:not([contenteditable=false])');
+      try { (focusable && el.contains(focusable) ? focusable : el).focus({ preventScroll: true }); } catch { /* 不可聚焦元素忽略 */ }
       // 完整还原真实鼠标事件序列：只发 click 会让依赖 mousedown 的菜单/拖拽组件失效
-      el.dispatchEvent(new ewin.PointerEvent('pointerdown', { ...base, ...pointer, buttons: 1 }));
-      el.dispatchEvent(new ewin.MouseEvent('mousedown', { ...base, buttons: 1 }));
-      el.dispatchEvent(new ewin.PointerEvent('pointerup', { ...base, ...pointer, buttons: 0 }));
-      el.dispatchEvent(new ewin.MouseEvent('mouseup', { ...base, buttons: 0 }));
-      // 收尾用原生 click()：链接跳转、表单提交、勾选态切换等默认行为最稳
-      el.click();
+      target.dispatchEvent(new ewin.PointerEvent('pointerdown', { ...base, ...pointer, buttons: 1 }));
+      target.dispatchEvent(new ewin.MouseEvent('mousedown', { ...base, buttons: 1 }));
+      target.dispatchEvent(new ewin.PointerEvent('pointerup', { ...base, ...pointer, buttons: 0 }));
+      target.dispatchEvent(new ewin.MouseEvent('mouseup', { ...base, buttons: 0 }));
+      // 收尾用原生 click()：链接跳转、表单提交、勾选态切换等默认行为最稳；
+      // 从内部子元素发起同样生效（激活行为沿冒泡路径找到最近的链接/按钮/label）
+      target.click();
 
       const out = { ref: opts.ref, name };
       if (typeof el.checked === 'boolean') out.checked = el.checked;
