@@ -85,7 +85,7 @@ export function snapshotPage(options) {
   };
 
   // 文本类 <input> 上以显式 role 为准的角色：组件库的下拉搜索框是 <input role="combobox">
-  // （antd Select/Cascader），报成 textbox 的话模型看不出这是下拉框。这些角色的当前值照文本框取
+  // （antd Select/Cascader），模型凭 role 认出下拉。这些角色的当前值照文本框取
   const TEXT_INPUT_ROLES = { combobox: 1, searchbox: 1, spinbutton: 1 };
 
   // “整体可点”的容器角色：其内部后代若被完全覆盖则不重复编号（见 dedupeCandidates）
