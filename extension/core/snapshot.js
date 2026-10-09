@@ -84,6 +84,10 @@ export function snapshotPage(options) {
     menuitemcheckbox: 1, menuitemradio: 1, listbox: 1,
   };
 
+  // 文本类 <input> 上以显式 role 为准的角色：组件库的下拉搜索框是 <input role="combobox">
+  // （antd Select/Cascader），模型凭 role 认出下拉。这些角色的当前值照文本框取
+  const TEXT_INPUT_ROLES = { combobox: 1, searchbox: 1, spinbutton: 1 };
+
   // “整体可点”的容器角色：其内部后代若被完全覆盖则不重复编号（见 dedupeCandidates）
   const CONTAINER_ROLES = { link: 1, button: 1, clickable: 1, tab: 1, menuitem: 1 };
 
@@ -176,7 +180,8 @@ export function snapshotPage(options) {
       if (t === 'button' || t === 'submit' || t === 'reset' || t === 'image') return strong('button');
       if (t === 'checkbox') return strong('checkbox');
       if (t === 'radio') return strong('radio');
-      return strong('textbox');
+      const explicit = (el.getAttribute('role') || '').toLowerCase();
+      return strong(TEXT_INPUT_ROLES[explicit] ? explicit : 'textbox');
     }
 
     const role = (el.getAttribute('role') || '').toLowerCase();
@@ -255,7 +260,7 @@ export function snapshotPage(options) {
       const opt = el.selectedOptions && el.selectedOptions[0];
       return opt ? clamp(opt.textContent, 80) : null;
     }
-    if (role === 'textbox') {
+    if (role === 'textbox' || TEXT_INPUT_ROLES[role]) {
       if ((el.getAttribute('type') || '').toLowerCase() === 'password') return null;
       if (selfEditable(el)) return clamp(el.textContent, 80) || null;
       return el.value ? clamp(el.value, 80) : null;
