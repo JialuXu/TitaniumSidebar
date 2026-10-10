@@ -14,7 +14,8 @@
 //     的典型形态（骨架屏换成正文、空态换成表格行、遮罩被移除）都是元素级增删，数得准。
 //   - 加载指示器分三路：标准语义（aria-busy、不定进度条）、常见 UI 库与老系统的类名、
 //     独立成行的「加载中…」标签文字。只算**可见**的：老 jQuery 系统常年藏着一个
-//     display:none 的加载提示层，按需显示。
+//     display:none 的加载提示层，按需显示。类名落在又大、又有成段正文的容器上时，
+//     那是状态类残留（内容已经画完），不算指示器。
 // 没有网络层可看：注入函数跑在隔离世界，页面的 fetch/XHR 从这里看不见，SDK 形态更没有
 // webRequest。只看 DOM 意味着「接口慢、又不显示任何加载态、空态先渲染」这一种情形仍会漏，
 // 由 prompt 护栏与 wait_for_page 工具兜底。
@@ -80,6 +81,14 @@ export function waitForSettle(payload) {
   // spinner-border 都命中；lazyloading、preloaded 这类拼在一起的不算
   const CLASS_CANDIDATES = '[class*="loading" i],[class*="spinn" i],[class*="skeleton" i]';
   const CLASS_TOKEN = /(^|[-_])(loading|spinner|spinning|skeleton)([-_]|$)/i;
+  const SKELETON_TOKEN = /(^|[-_])skeleton([-_]|$)/i;
+  // 状态类经常留在内容容器上。GitHub 贡献图外层一直是 is-graph-loading，
+  // 格子已经画完，样式里那个 .graph-loading 子节点却不在页面上。
+  // 盒子够大且正文够长，就当作内容本身，不再把它算成指示器。
+  // 骨架屏可以又大又带占位文字，不能走这条豁免；按钮转圈和遮罩要么盒子小、要么几乎没正文。
+  const CONTENT_HOST_MIN_W = 240;
+  const CONTENT_HOST_MIN_H = 80;
+  const CONTENT_HOST_MIN_TEXT = 80;
   // 独立成行的加载标签文字（整段只有这几个字才算，正文里提到「加载」不算）
   const LABEL = /^(?:加载中|正在加载|载入中|数据加载中|请稍候|loading|please wait)[\s.…]*$/i;
   const LABEL_XPATH =
@@ -100,6 +109,12 @@ export function waitForSettle(payload) {
     return parseFloat(el.ownerDocument.defaultView.getComputedStyle(el).opacity) !== 0;
   };
 
+  const isContentHost = (el) => {
+    const rect = el.getBoundingClientRect();
+    if (rect.width < CONTENT_HOST_MIN_W || rect.height < CONTENT_HOST_MIN_H) return false;
+    return ((el.textContent || '').replace(/\s+/g, '').length >= CONTENT_HOST_MIN_TEXT);
+  };
+
   const countBusy = () => {
     const seen = new Set();
     for (const el of doc.querySelectorAll(BUSY_SELECTOR)) {
@@ -107,8 +122,10 @@ export function waitForSettle(payload) {
     }
     for (const el of doc.querySelectorAll(CLASS_CANDIDATES)) {
       if (seen.has(el)) continue;
-      const cls = el.getAttribute('class') || '';
-      if (cls.split(/\s+/).some((token) => CLASS_TOKEN.test(token)) && visible(el)) seen.add(el);
+      const tokens = (el.getAttribute('class') || '').split(/\s+/).filter((token) => CLASS_TOKEN.test(token));
+      if (!tokens.length || !visible(el)) continue;
+      if (!tokens.some((token) => SKELETON_TOKEN.test(token)) && isContentHost(el)) continue;
+      seen.add(el);
     }
     if (doc.body && typeof doc.evaluate === 'function') {
       const snap = doc.evaluate(LABEL_XPATH, doc.body, null, 7 /* ORDERED_NODE_SNAPSHOT_TYPE */, null);
