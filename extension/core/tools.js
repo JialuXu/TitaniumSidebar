@@ -252,16 +252,15 @@ function describeFailure(result, args) {
 }
 
 /**
- * list_elements 的范围与关键词过滤。元素名或行锚点命中都算：
- * 「勾选 Cursor Team 那封」靠的是行文字匹配到无名勾选框。
+ * list_elements 的范围与关键词过滤。元素名、行锚点或当前值命中都算：
+ * 「勾选 Cursor Team 那封」靠的是行文字匹配到无名勾选框，按文本框里写的内容找它靠的是值。
  */
 function filterElements(elements, { scope, query }) {
   let list = elements || [];
   if (scope === 'viewport') list = list.filter((e) => e.inViewport);
   if (query) {
     const needle = query.toLowerCase();
-    list = list.filter((e) =>
-      (e.name || '').toLowerCase().includes(needle) || (e.context || '').toLowerCase().includes(needle));
+    list = list.filter((e) => [e.name, e.context, e.value].some((s) => (s || '').toLowerCase().includes(needle)));
   }
   return list;
 }
@@ -279,6 +278,24 @@ function toggledTarget(change) {
 }
 
 const named = (name) => (name ? ` "${name}"` : '');
+
+// 按键补偿的实际效果 → 文案片段（见 core/actions.js 的 keyDefault）
+function keyEffectText(effect) {
+  if (!effect || !effect.moved) return '';
+  if (effect.kind === 'delete') return t('res.keyDeleted', { n: effect.removed });
+  if (effect.kind === 'scroll') return t('res.keyScrolled', { where: t('res.keyWhere.' + effect.where), px: Math.abs(effect.px) });
+  if (typeof effect.from !== 'number') return t('res.keyCaretMoved');
+  const caret = effect.from !== effect.to ? t('res.keyCaret', { from: effect.from, to: effect.to }) : '';
+  const scrolled = effect.px ? t('res.keyScrolled', { where: t('res.keyWhere.field'), px: Math.abs(effect.px) }) : '';
+  return caret + scrolled;
+}
+
+// 补偿过、却什么都没变：光标、滚动、内容不动，页面上也没有新元素或状态变化
+function keyIdle(r, change) {
+  if (!r.effect || r.effect.moved) return false;
+  if (!change) return true;
+  return !change.navigated && !(change.newElements || []).length && !(change.changedElements || []).length;
+}
 
 /**
  * 页内动作：参数 → performAction 载荷、成功文案与活动行数据。
@@ -325,14 +342,17 @@ const PAGE_ACTIONS = {
     tool: 'press_key',
     payload: (a) => ({ action: 'key', key: String(a.key || ''), ...(a.ref == null ? {} : { ref: Number(a.ref) }) }),
     ui: (a) => ({ key: String(a.key || ''), ref: a.ref == null ? null : Number(a.ref) }),
-    text: (a, r) => {
-      const extra = r.submitted
+    text: (a, r, change) => {
+      let extra = r.submitted
         ? t('res.keySubmitted')
         : (r.movedTo ? t('res.keyMoved', { name: r.movedTo }) : '');
+      if (r.prevented) extra += t('res.keyPrevented');
+      extra += keyEffectText(r.effect);
       const target = r.target ? t('res.keyTarget', { name: r.target }) : '';
-      return t('res.keyDone', { key: r.key, target, extra });
+      const head = t('res.keyDone', { key: r.key, target, extra });
+      return keyIdle(r, change) ? `${head}\n${t('res.keyNoChange')}` : head;
     },
-    data: (a, r) => ({ key: r.key, submitted: r.submitted }),
+    data: (a, r, change) => ({ key: r.key, submitted: r.submitted, ...(keyIdle(r, change) ? { noEffect: true } : {}) }),
   },
   scroll: {
     tool: 'scroll_page',

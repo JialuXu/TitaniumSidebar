@@ -65,6 +65,13 @@ test('批量动作：进行中报步数，完成报完成几步，失败报停�
   );
 });
 
+test('按键没有产生任何变化时，活动行注明', () => {
+  assert.equal(
+    describeToolActivity('press_key', { key: 'Home' }, 'done', { key: 'Home', noEffect: true }),
+    t('act.key.done', { key: 'Home', submitted: '', jumped: '' }) + t('act.key.noEffect'),
+  );
+});
+
 test('未知工具走通用文案', () => {
   assert.equal(describeToolActivity('mystery', {}, 'run'), t('act.generic.run', { name: 'mystery' }));
 });

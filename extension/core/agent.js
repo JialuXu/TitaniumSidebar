@@ -110,7 +110,8 @@ function imageOf(followUpMessage) {
  * @returns {{ rounds: number, calls: number, actions: number,
  *   tools: Record<string, number>, failures: Record<string, number>, noEffect: number }}
  *   rounds 工具轮数；calls 实际执行的调用数；tools 按工具名计数；
- *   failures 按失败原因计数（provider 抛错记 'error'）；noEffect 点击后勾选状态未变的次数
+ *   failures 按失败原因计数（provider 抛错记 'error'）；
+ *   noEffect 动作没有产生变化的次数：点击后勾选状态未变、按键后光标/滚动/内容与页面都没变
  */
 function turnStats() {
   return { rounds: 0, calls: 0, actions: 0, tools: {}, failures: {}, noEffect: 0 };
@@ -124,7 +125,7 @@ function countCall(stats, name, isAction, meta) {
     const reason = (meta.data && meta.data.reason) || 'error';
     stats.failures[reason] = (stats.failures[reason] || 0) + 1;
   }
-  // 单步点击记 true，批量动作记次数
+  // 单步动作记 true，批量动作记次数
   if (meta.data && meta.data.noEffect) stats.noEffect += Number(meta.data.noEffect);
 }
 
