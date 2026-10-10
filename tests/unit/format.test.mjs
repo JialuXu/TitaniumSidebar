@@ -273,3 +273,10 @@ test('英文的搜索命中数分单复数', () => {
   assert.match(hit(1), /^Found 1 occurrence of "x"/);
   assert.match(hit(2), /^Found 2 occurrences of "x"/);
 });
+
+test('调试通道看到请求没返回时，提醒说的是请求而不是「内容在变」', () => {
+  const out = formatPageChange({ navigated: false, newElements: [], loading: { waitedMs: 5000, requests: 2 } });
+  assert.ok(out.endsWith(t('fmt.chgNetwork', { s: 5, n: 2 })));
+  const dom = formatPageChange({ navigated: false, newElements: [], loading: { waitedMs: 5000, requests: 0 } });
+  assert.ok(dom.endsWith(t('fmt.chgUnstable', { s: 5 })));
+});

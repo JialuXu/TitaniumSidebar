@@ -32,6 +32,17 @@ test('设置抽屉的版本号不写死在 HTML 里（由外壳从 manifest 读�
 });
 
 test('权限清单保持最小（新增权限需要在 PR 里说明理由，并同步修改这里）', () => {
-  assert.deepEqual([...manifest.permissions].sort(), ['scripting', 'sidePanel', 'storage']);
-  assert.ok(!manifest.permissions.includes('debugger'));
+  // debugger 只服务于调试通道（extension/drivers/cdp.js）；去掉它，扩展回到纯合成事件通道
+  assert.deepEqual([...manifest.permissions].sort(), ['debugger', 'scripting', 'sidePanel', 'storage']);
+});
+
+test('调试接口只在执行驱动里用：core 与外壳都不直接碰 chrome.debugger', () => {
+  const offenders = [];
+  for (const dir of ['extension/core/', 'extension/']) {
+    for (const f of fs.readdirSync(new URL(dir, REPO_ROOT)).filter((n) => n.endsWith('.js'))) {
+      const code = read(dir + f).split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+      if (/chrome\.debugger/.test(code)) offenders.push(dir + f);
+    }
+  }
+  assert.deepEqual(offenders, []);
 });

@@ -332,7 +332,7 @@ test('batch_actions：某步失败就停，后面的不执行', async () => {
 test('batch_actions：页面跳转、仍在加载、编号重建、用户切页时停下，并说明原因', async () => {
   const cases = [
     [{ navigated: true, title: '新页', url: 'https://b.test/' }, 'res.batchHaltNavigated'],
-    [quiet({ loading: { busy: 1, waitedMs: 5000 } }), 'res.batchHaltLoading'],
+    [quiet({ loading: { waitedMs: 5000 } }), 'res.batchHaltLoading'],
     [quiet({ rebuilt: true }), 'res.batchHaltRebuilt'],
     [quiet({ userSwitched: { title: '别的页' } }), 'res.batchHaltSwitched'],
   ];
@@ -480,4 +480,12 @@ test('list_elements：关键词也匹配输入框的当前值', async () => {
   assert.equal(res.meta.data.count, 1);
   assert.ok(res.toolMessage.content.includes('[481]'));
   assert.ok(!res.toolMessage.content.includes('[492]'));
+});
+
+test('调试通道退回合成事件时，结果里注明原因（单步与批量一致）', async () => {
+  const { provider } = fakeProvider({ act: { result: { ok: true, name: '卡片', fallback: 'unsafe-point' }, change: { navigated: false, newElements: [] } } });
+  const single = await dispatchToolCall(call('click_element', { ref: 3 }), provider, {}, registeredFor({ actions: true }));
+  assert.ok(single.toolMessage.content.startsWith(t('res.clicked', { ref: 3, name: ' "卡片"', checked: '' }) + t('res.fallback.unsafePoint')));
+  const batched = await dispatchToolCall(call('batch_actions', { steps: [{ action: 'click', ref: 3 }] }), provider, {}, registeredFor({ actions: true }));
+  assert.ok(batched.toolMessage.content.includes(t('res.fallback.unsafePoint')));
 });

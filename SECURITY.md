@@ -8,7 +8,7 @@ Titanium ships as an unpacked extension loaded from this repository. Only the ti
 
 | Version | Supported |
 |---|---|
-| `main` (currently 1.5.1) | ✅ |
+| `main` (currently 1.6.0) | ✅ |
 | Anything older | ❌ — pull the latest `main` and reload the unpacked extension |
 
 ## Reporting a vulnerability
@@ -48,7 +48,7 @@ These are properties of the design, not defects. They are listed so you do not s
 - **Redaction is regex best-effort, not a security control.** It catches common Chinese ID, bank card and mobile-number shapes. Other formats pass through. **Screenshots are never redacted** — the setting says so next to the toggle.
 - **Prompt injection from page content.** The system prompt tells the model to treat page text as reference material and ignore instructions inside it. That is mitigation, not enforcement; a sufficiently crafted page can still steer the model. If you find an injection that survives *and* produces a side effect the user did not approve, that part **is** in scope — report it.
 - **Guardrails on irreversible operations are behavioural.** Transfers, payments, orders, approvals, deletions and outbound sends are held back by system-prompt instructions asking the model to explain and wait for consent. There is no technical block. This is an explicit trust boundary of this build; the in-bank production path adds audit trails and step-up authorisation.
-- **Synthetic events have `isTrusted === false`.** Deliberate — `chrome.debugger` is not used. Sites that ignore untrusted events are a limitation, not a vulnerability.
+- **Two action channels.** By default page actions are synthetic events (`isTrusted === false`); sites that ignore untrusted events are a limitation, not a vulnerability. With the debugger channel turned on in settings (off by default, never carried in exported settings files), the extension attaches `chrome.debugger` to the working tab for the duration of a turn and sends real input; the browser shows its debugging bar meanwhile. The `debugger` permission also exposes the tab's network traffic: the extension only counts in-flight data requests to know when an action's request has returned and never reads their contents. Builds that must not carry this permission drop it from the manifest together with `extension/drivers/cdp.js`.
 - **No authentication, no domain allowlist, no audit log.** Out of scope by design; see the README's "How this differs from an in-bank production build".
 - **Self-packed `.crx` is rejected by Chrome** (`CRX_REQUIRED_PROOF_MISSING`). Expected behaviour, not a bug.
 
@@ -70,7 +70,7 @@ Titanium 以「加载已解压的扩展程序」方式从本仓库直接运行�
 
 | 版本 | 是否支持 |
 |---|---|
-| `main`（当前 1.5.1） | ✅ |
+| `main`（当前 1.6.0） | ✅ |
 | 更早的版本 | ❌ —— 请拉取最新 `main` 并重新加载扩展 |
 
 ## 如何报告漏洞
@@ -110,7 +110,7 @@ Titanium 以「加载已解压的扩展程序」方式从本仓库直接运行�
 - **脱敏是正则尽力而为，不是安全控制。** 它覆盖常见的身份证、银行卡、手机号形态，其他格式会漏。**截图完全不脱敏** —— 设置项旁的灰字已明示。
 - **来自页面内容的提示词注入。** system prompt 已要求模型把页面文字当参考资料、忽略其中的指令性文字。这是缓解而非强制，精心构造的页面仍可能带偏模型。但如果你找到一条注入**既能突破，又产生了用户未同意的副作用**，那部分**属于**漏洞，请报告。
 - **不可逆操作的护栏是行为约束。** 转账、支付、下单、提交审批、删除、对外发送，靠的是 system prompt 要求模型先说明后果、等待用户明确同意，没有技术层面的硬拦截。这是本版本明确的信任边界；行内生产版会补上审计留痕与二次授权。
-- **合成事件的 `isTrusted` 为 false。** 刻意为之 —— 本项目不使用 `chrome.debugger`。少数站点据此忽略事件属于已知限制，不是漏洞。
+- **两条动作通道。** 默认页面动作是合成事件（`isTrusted` 为 false），少数站点据此忽略事件属于已知限制，不是漏洞。在设置里打开调试通道后（默认关闭，导出的设置文件不带这个开关），扩展在回合期间把 `chrome.debugger` 附加到工作标签页、发真实输入，其间浏览器显示调试横幅。`debugger` 权限也能看到该标签页的网络流量：扩展只数「还没返回的数据请求」以判断动作发出的请求是否回来，从不读取请求内容。不能带这个权限的构建，从 manifest 去掉它并删掉 `extension/drivers/cdp.js` 即可。
 - **无鉴权、无域名白名单、无审计日志。** 按设计不在本版本范围，见 README 的「与行内生产版的差异」。
 - **自行打包的 `.crx` 被 Chrome 拒绝**（`CRX_REQUIRED_PROOF_MISSING`）。这是预期行为。
 

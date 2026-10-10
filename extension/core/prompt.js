@@ -74,7 +74,7 @@ export function buildUserContent(userInput, pageText, outlineText, lead, truncat
  * 全文重发一次就是上万字符，而差异通常只有几十行。
  * @param {string} userInput 用户输入
  * @param {string} diffText formatTextDiff 产出的变化摘要
- * @param {string} [lead] 差异块之前的一句说明（如「读取时页面仍在加载」），可缺省；
+ * @param {string} [lead] 差异块之前的一句说明（如「读取时页面内容仍在变动」），可缺省；
  *   与 buildUserContent 的 lead 同样放在标签**之外**，是系统的陈述而非页面文本
  */
 export function buildPageUpdate(userInput, diffText, lead) {

@@ -5,8 +5,9 @@
 // 因此校验链、表格转 Markdown 等逻辑在本文件内重复实现一份，不从别处 import。
 //
 // 执行通道：合成事件（PointerEvent/MouseEvent/KeyboardEvent）+ 原生 value setter。
-// 不使用 chrome.debugger——那会在浏览器顶部常驻「正在调试此浏览器」横幅，
-// 且未来的 SDK 形态（页内 script）根本没有这条路可走。
+// 这是所有形态都有的通道（未来的 SDK 形态在页内运行，只有这一条路）。扩展外壳另有一条
+// 调试通道（extension/drivers/cdp.js）发真实输入，它借本文件的 locate / focus / probe
+// 三个动作在页面里定位元素、聚焦、读取光标与滚动状态，输入本身不经过这里。
 //
 // 与真实用户操作的差异（模型需要知道，已写进工具描述）：
 //   1. 合成事件的 isTrusted 为 false，极少数站点会据此忽略；
@@ -16,7 +17,7 @@
 
 /**
  * 在页面上执行一个动作。
- * @param {{ action: 'click'|'input'|'select'|'key'|'scroll'|'extract_table'|'get_html',
+ * @param {{ action: 'click'|'input'|'select'|'key'|'scroll'|'extract_table'|'get_html'|'locate'|'focus'|'probe',
  *           session: string, ref?: number, text?: string, option?: string, key?: string,
  *           direction?: 'up'|'down'|'top'|'bottom', pages?: number,
  *           tableIndex?: number, maxLen?: number,
@@ -27,6 +28,11 @@
  *   失败 reason 全集：no-body | bad-action | stale | bad-ref | gone | hidden |
  *                     disabled | not-editable | not-select | option-not-found |
  *                     bad-key | bad-table-index
+ *   调试通道用的三个动作（不改动页面，focus 除外）：
+ *     locate  { ref }           滚到可见处，返回点击点在顶层视口里的坐标 x/y；
+ *                               safe=false 表示中心点被遮挡或落在内部另一个控件上，真实点击会点错
+ *     focus   { ref, select? }  聚焦元素，select 时选中全部内容；返回 editable / password
+ *     probe   {}                当前焦点元素与光标、滚动位置的快照，按键前后各取一次比较
  */
 export function performAction(payload) {
   const opts = payload || {};
@@ -730,6 +736,77 @@ export function performAction(payload) {
       const truncated = html.length > maxLen;
       if (truncated) html = html.slice(0, maxLen) + S.htmlTruncated;
       return finish({ ref: opts.ref, name: nameOf(got.el), truncated, data: html });
+    }
+
+    /* —— 调试通道：定位点击点 —— */
+    case 'locate': {
+      const got = resolveElement(opts.ref, true);
+      if (got.err) return { ok: false, reason: got.err };
+      const el = got.el;
+      const box = got.box;
+      const name = nameOf(el) || nameOf(box);
+      if (isDisabled(el)) return { ok: false, reason: 'disabled', name };
+      if (offscreen(box)) box.scrollIntoView({ block: 'center', behavior: 'instant' });
+      const r = box.getBoundingClientRect();
+      const cx = Math.round(r.left + r.width / 2);
+      const cy = Math.round(r.top + r.height / 2);
+      // 真实点击落在哪里就作用于哪里：中心点被遮罩挡住、或落在卡片里另一个独立控件上时，
+      // 合成事件可以直接派发给目标，真实点击做不到——标 unsafe，由调试通道退回合成事件
+      let hit = null;
+      try { hit = el.ownerDocument.elementFromPoint(cx, cy); } catch { hit = null; }
+      while (hit && typeof hit.click !== 'function') hit = hit.parentElement;
+      const safe = Boolean(hit) && (hit === box || box.contains(hit)) && hitTarget(box, cx, cy) === hit;
+      // 框架内的坐标换算到顶层视口：逐层加上框架内容区的偏移
+      let x = cx;
+      let y = cy;
+      for (let v = viewOf(el); v && v !== win && v.frameElement; v = viewOf(v.frameElement)) {
+        const fr = v.frameElement.getBoundingClientRect();
+        x += fr.left + v.frameElement.clientLeft;
+        y += fr.top + v.frameElement.clientTop;
+      }
+      return finish({ ref: opts.ref, name, x: Math.round(x), y: Math.round(y), safe });
+    }
+
+    /* —— 调试通道：聚焦（输入前选中全部内容，真实输入随后整体替换） —— */
+    case 'focus': {
+      const got = resolveElement(opts.ref, true);
+      if (got.err) return { ok: false, reason: got.err };
+      const el = got.el;
+      const name = nameOf(el);
+      if (isDisabled(el) || el.readOnly) return { ok: false, reason: 'disabled', name };
+      try { el.focus({ preventScroll: true }); } catch { /* 忽略 */ }
+      const editable = textField(el) || selfEditable(el);
+      if (opts.select && editable) {
+        if (textField(el)) el.select();
+        else {
+          const sel = got.view.getSelection();
+          const range = el.ownerDocument.createRange();
+          range.selectNodeContents(el);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      }
+      const password = el.tagName.toUpperCase() === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'password';
+      return finish({ ref: opts.ref, name, editable, password });
+    }
+
+    /* —— 调试通道：焦点、光标与滚动的快照 —— */
+    case 'probe': {
+      const a = activeElement();
+      const d = a ? a.ownerDocument : doc;
+      const view = (a && viewOf(a)) || win;
+      const field = Boolean(a) && textField(a);
+      const scroller = d.scrollingElement || d.documentElement;
+      const area = a && a !== d.body ? scrollHost(a, view, true) : null;
+      return finish({
+        active: a && a !== d.body ? nameOf(a) || a.tagName.toLowerCase() : '',
+        field,
+        caret: field ? a.selectionEnd : null,
+        length: field ? a.value.length : (a && selfEditable(a) ? (a.textContent || '').length : null),
+        fieldTop: field ? a.scrollTop : null,
+        areaTop: area && !area.page ? area.el.scrollTop : null,
+        pageTop: scroller.scrollTop,
+      });
     }
 
     default:

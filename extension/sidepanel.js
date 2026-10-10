@@ -3,8 +3,7 @@
 
 import { snapshotPage } from './core/snapshot.js';
 import { highlightElement } from './core/highlight.js';
-import { performAction } from './core/actions.js';
-import { waitForSettle } from './core/settle.js';
+import { createDrivers, debuggerAvailable } from './drivers/index.js';
 import { runAgentTurn, requestCompaction, measureNextRequest, describeError } from './core/agent.js';
 import { describeTrace } from './core/activity.js';
 import { annotateScreenshot } from './core/annotate.js';
@@ -105,7 +104,7 @@ const els = {};
   'btn-history', 'history-pop', 'history-list', 'btn-clear-history',
   'settings-mask', 'settings', 'btn-close-settings', 'cfg-locale',
   'cfg-profile', 'btn-profile-add', 'btn-profile-del', 'cfg-name', 'cfg-baseurl', 'cfg-model',
-  'cfg-apikey', 'cfg-vision', 'cfg-context', 'cfg-mask', 'cfg-actions', 'btn-test', 'btn-save', 'test-result',
+  'cfg-apikey', 'cfg-vision', 'cfg-context', 'cfg-mask', 'cfg-actions', 'cfg-debugger', 'cfg-debugger-hint', 'btn-test', 'btn-save', 'test-result',
   'btn-export', 'btn-import', 'import-file', 'app-version',
 ].forEach((id) => {
   els[id.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = document.getElementById(id);
@@ -236,6 +235,7 @@ function readConfigForm() {
     activeProfileId: drawer.activeId, // 下拉里选中的即为当前使用的一套
     maskEnabled: els.cfgMask.checked,
     actionsEnabled: els.cfgActions.checked,
+    debuggerEnabled: els.cfgDebugger.checked,
     locale: els.cfgLocale.value, // 语言在选中时即时生效并落盘，这里只是保持整份配置完整
   };
 }
@@ -245,6 +245,12 @@ function fillConfigForm() {
   els.cfgLocale.value = state.config.locale;
   els.cfgMask.checked = state.config.maskEnabled;
   els.cfgActions.checked = state.config.actionsEnabled;
+  // 没有 debugger 权限的构建里开关置灰，说明换成「需要调试权限」
+  const available = debuggerAvailable();
+  els.cfgDebugger.disabled = !available;
+  els.cfgDebugger.checked = available && state.config.debuggerEnabled;
+  els.cfgDebuggerHint.dataset.i18n = available ? 'ui.cfgDebuggerHint' : 'ui.cfgDebuggerUnavailable'; // 切换语言时随界面重译
+  els.cfgDebuggerHint.textContent = t(els.cfgDebuggerHint.dataset.i18n);
   fillProfileForm();
 }
 
@@ -333,7 +339,7 @@ async function getActiveTab() {
   return tab;
 }
 
-// 对目标标签页注入 core 导出的自包含函数（snapshotPage/highlightElement/performAction），
+// 对目标标签页注入 core 导出的自包含函数（snapshotPage/highlightElement，以及驱动里的 performAction/waitForSettle），
 // args 需为 JSON 可序列化数据。失败统一返回 null，由调用方归一处理。
 async function injectFunc(tabId, func, args) {
   try {
@@ -428,10 +434,19 @@ async function waitForTabComplete(tabId, timeoutMs) {
   try { return await chrome.tabs.get(tabId); } catch { return null; }
 }
 
-// 注入 core/settle.js 的稳定判定（预算见 core/page-sync.js 的 SETTLE）；
-// 注入失败（受限页、文档中途被换掉）返回 null
+/* ========== 页内动作的执行驱动（合成事件通道 / 调试通道，见 drivers/index.js） ========== */
+
+const drivers = createDrivers(injectFunc);
+
+// 调试通道只在开启页面操作、且设置里打开了它时启用；没有 debugger 权限的构建里恒为合成事件通道
+function driver() {
+  return drivers.pick(Boolean(state.config.actionsEnabled && state.config.debuggerEnabled));
+}
+
+// 等页面就位（预算见 core/page-sync.js 的 SETTLE）；调试通道附加着时还会等这次动作发出的请求返回。
+// 失败（受限页、文档中途被换掉）返回 null
 async function settleTab(tabId, budget) {
-  const res = await injectFunc(tabId, waitForSettle, budget);
+  const res = await driver().settle(tabId, budget);
   return res && res.ok ? res : null;
 }
 
@@ -618,7 +633,7 @@ const provider = {
     return { ...change, waitedMs: Date.now() - started };
   },
 
-  /* ---------- 页内动作（注入 core/actions.js 的 performAction） ---------- */
+  /* ---------- 页内动作（经执行驱动，见 drivers/index.js） ---------- */
 
   // 纯读取的动作不需要同步页面变化；点击与按键可能触发跳转，需等加载完成
   async act(payload) {
@@ -635,7 +650,7 @@ const provider = {
     }
     const opened = watchOpenedTabs(tab.id);
     try {
-      const result = await injectFunc(tab.id, performAction, {
+      const result = await driver().act(tab.id, {
         ...payload, session: state.page.session, i18n: injectedStrings(),
       });
       if (!result) throw new Error(t('sys.actFailed'));
@@ -1078,6 +1093,8 @@ async function runAgentLoop(el) {
     }
   }
 
+  // 回合结束：调试通道断开附加，浏览器顶部的「正在调试」横幅随之消失
+  if (drivers.cdp) await drivers.cdp.release();
   state.abortController = null;
   state.ui.phase = 'idle';
   updateComposer();
@@ -1117,7 +1134,7 @@ async function syncPageForSend() {
   }
   applySnapshot(snap, snap.tabId);
   updateContextChip();
-  // 读取时页面仍在加载：随判定结果一起带出去，凡是携带了页面内容的消息都交代一句
+  // 读取时页面内容仍在变动：随判定结果一起带出去，凡是携带了页面内容的消息都交代一句
   return decidePageSync(state.sentPage, state.page, Boolean(snap.loading));
 }
 
@@ -1314,7 +1331,13 @@ function showSettingsResult(text, kind = '') {
 }
 
 async function handleSaveConfig() {
-  state.config = normalizeConfig(readConfigForm());
+  const next = normalizeConfig(readConfigForm());
+  // 调试通道从关到开：浏览器顶部会出现「正在调试」横幅，先讲清楚再生效
+  if (next.debuggerEnabled && !state.config.debuggerEnabled && !window.confirm(t('ui.debuggerConfirm'))) {
+    next.debuggerEnabled = false;
+    els.cfgDebugger.checked = false;
+  }
+  state.config = next;
   state.toolsBroken = false; // 换了接口/模型，给 tools 一次重新探测的机会
   await storage.set('config', state.config);
   updateConfigHint();

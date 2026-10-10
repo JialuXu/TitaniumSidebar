@@ -279,6 +279,12 @@ function toggledTarget(change) {
 
 const named = (name) => (name ? ` "${name}"` : '');
 
+// 调试通道退回合成事件时补一句（见 drivers/index.js 的 fallback）
+const FALLBACK_TEXT = { unavailable: 'res.fallback.unavailable', 'unsafe-point': 'res.fallback.unsafePoint' };
+function fallbackNote(r) {
+  return r && FALLBACK_TEXT[r.fallback] ? t(FALLBACK_TEXT[r.fallback]) : '';
+}
+
 // 按键补偿的实际效果 → 文案片段（见 core/actions.js 的 keyDefault）
 function keyEffectText(effect) {
   if (!effect || !effect.moved) return '';
@@ -374,7 +380,7 @@ const PAGE_ACTIONS = {
 const PAGE_ACTION_BY_TOOL = Object.fromEntries(Object.values(PAGE_ACTIONS).map((spec) => [spec.tool, spec]));
 
 /**
- * batch_actions 某一步之后该不该停：页面跳转、用户切走标签页、编号整体重建、页面仍在加载——
+ * batch_actions 某一步之后该不该停：页面跳转、用户切走标签页、编号整体重建、页面内容仍在变动——
  * 这几种情况下后面几步手里的编号或时机都不再可靠。返回停下的原因文案，可以继续时返回空串。
  */
 function batchHalt(change) {
@@ -496,7 +502,7 @@ export async function dispatchToolCall(call, provider, turn = {}, registered = n
     meta.ok = true;
     meta.data.navigated = Boolean(change && change.navigated);
     Object.assign(meta.data, spec.data(args, result, change));
-    return reply(provider.mask(withChangeSynced(spec.text(args, result, change), change)));
+    return reply(provider.mask(withChangeSynced(spec.text(args, result, change) + fallbackNote(result), change)));
   };
 
   // 批量动作：逐步执行，失败或遇到 batchHalt 就停；每步一行结果，末尾一份合并后的页面变化
@@ -531,7 +537,7 @@ export async function dispatchToolCall(call, provider, turn = {}, registered = n
       const { result, change } = outcome || {};
       if (!result || !result.ok) { failAt(describeFailure(result, a), result && result.reason); break; }
       meta.data.done = i + 1;
-      step(i + 1, spec.text(a, result, change));
+      step(i + 1, spec.text(a, result, change) + fallbackNote(result));
       if (spec.data(a, result, change).noEffect) noEffect++;
       if (change) changes.push(change);
       const halt = batchHalt(change);
@@ -656,7 +662,7 @@ export async function dispatchToolCall(call, provider, turn = {}, registered = n
         const waited = Math.max(1, Math.round((change.waitedMs || 0) / 1000));
         meta.ok = true;
         meta.data = { seconds: waited, settled: !change.loading, navigated: Boolean(change.navigated) };
-        // 稳定了就明说；没稳定的话 formatPageChange 末尾会带上「仍在加载」的提醒
+        // 稳定了就明说；没稳定的话 formatPageChange 末尾会带上「内容仍在变动」的提醒
         const head = t('res.waited', { s: waited, settled: change.loading ? '' : t('res.waitedSettled') });
         return reply(provider.mask(withChangeSynced(head, change)));
       }

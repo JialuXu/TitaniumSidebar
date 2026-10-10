@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>调试通道夹具</title>
+<!-- 调试通道的真实输入：勾选框、遮挡与内部控件、文本框按键与输入、等接口返回 -->
+<style>
+  body { font: 14px/1.5 sans-serif; margin: 16px; }
+  .el-checkbox { cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+  .el-checkbox__input { position: relative; display: inline-block; }
+  .el-checkbox__inner { display: inline-block; width: 14px; height: 14px; border: 1px solid #999; }
+  .el-checkbox__original { opacity: 0; position: absolute; margin: 0; width: 0; height: 0; z-index: -1; }
+  #card { width: 200px; height: 80px; border: 1px solid #ccc; position: relative; cursor: pointer; }
+  #card button { position: absolute; left: 70px; top: 25px; width: 60px; height: 30px; }
+  textarea { width: 360px; font: 14px/20px sans-serif; }
+</style>
+<body>
+  <label class="el-checkbox" id="el-row"><span class="el-checkbox__input"><span class="el-checkbox__inner"></span><input type="checkbox"
+    class="el-checkbox__original"></span><span>张三</span></label>
+  <div id="card" role="button" tabindex="0">卡片<button id="del" type="button">删除</button></div>
+  <textarea id="long" rows="3"></textarea>
+  <input id="name" value="旧值">
+  <button id="query" type="button">查询</button>
+  <table id="result"><tr><td>暂无数据</td></tr></table>
+<script>
+  window.log = [];
+  document.querySelector('#el-row input').addEventListener('change', (e) => log.push('row:' + e.target.checked + ':' + e.isTrusted));
+  document.getElementById('card').addEventListener('click', (e) => { if (e.target.id !== 'del') log.push('card'); });
+  document.getElementById('del').addEventListener('click', () => log.push('delete!'));
+  document.getElementById('long').value = Array.from({ length: 30 }, (_, i) => '第' + (i + 1) + '行').join('\n');
+  document.getElementById('name').addEventListener('input', (e) => log.push('input:' + e.target.value + ':' + e.isTrusted));
+  // 查询：接口 1.5 秒后才返回，返回后再画结果行
+  document.getElementById('query').addEventListener('click', async () => {
+    const rows = await (await fetch('/api/rows')).json();
+    document.getElementById('result').innerHTML = rows.map((r) => '<tr><td>' + r + '</td></tr>').join('');
+  });
+</script>
+</body>

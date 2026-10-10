@@ -103,7 +103,7 @@ const ZH = {
   // 页面在会话中途变化时，消息流里的一行浅色提示（只在真的重新读取/同步差异时出现）
   'ui.notePageReread': '页面内容有变化，已重新读取',
   'ui.notePageUpdated': '页面内容有变化，已同步变化部分',
-  'ui.notePageLoading': '读取时页面仍在加载，已提醒模型',
+  'ui.notePageLoading': '读取时页面内容仍在变动，已提醒模型',
   'ui.notePageNavigated': '页面已切换到「{title}」，已重新读取',
   'ui.notePageUnreadable': '当前页面无法读取，本次仅基于问题本身回答',
   'ui.untitled': '未命名页面',
@@ -174,6 +174,9 @@ const ZH = {
   'ui.menuComingSoon': '即将上线',
   'ui.menuOn': '已开启',
   'ui.menuOff': '已关闭',
+  'ui.debuggerConfirm':
+    '开启调试通道后，AI 的点击、按键与输入由浏览器按真人操作执行，网页无法区分；' +
+    '每个回合里 AI 第一次操作页面时，浏览器顶部会出现「正在调试此浏览器」，回合结束后消失。\n\n确定开启吗？',
   'ui.actionsConfirm':
     '开启后，AI 可以按你的指令点击、输入、跳转当前页面，操作会自动执行。\n' +
     '每一步都会显示在对话中，可随时点「停止」。\n\n' +
@@ -202,6 +205,9 @@ const ZH = {
   'ui.cfgVisionHint': '启用截图工具；截图无法脱敏。',
   'ui.cfgContextWindow': '上下文窗口（tokens）',
   'ui.cfgActions': '允许页面操作',
+  'ui.cfgDebugger': '调试通道（真实点击与按键）',
+  'ui.cfgDebuggerHint': '开启页面操作时生效。点击、按键、输入由浏览器按真人操作执行；AI 操作期间浏览器顶部会显示「正在调试此浏览器」。',
+  'ui.cfgDebuggerUnavailable': '当前版本没有调试权限，页面操作使用合成事件。',
   'ui.cfgTest': '测试连接',
   'ui.cfgSave': '保存',
   'ui.cfgProfiles': '模型接口',
@@ -402,9 +408,9 @@ const ZH = {
   'fmt.st.pressed': '已按下',
   'fmt.st.pressedMixed': '部分按下',
   'fmt.st.unpressed': '未按下',
-  'fmt.chgBusy':
-    '注意：等待 {s} 秒后页面仍在加载（可见 {n} 处加载指示器）。此刻页面上的「加载中」「暂无数据」等文字只是占位，' +
-    '不要据此断定没有数据、操作失败或需要回退；请先 wait_for_page 等它加载完，再 list_elements 或 read_page_text 核实。',
+  'fmt.chgNetwork':
+    '注意：等待 {s} 秒后，这次操作发出的 {n} 个网络请求还没有返回，页面上的「加载中」「暂无数据」等文字可能只是占位；' +
+    '先 wait_for_page 再核实，不要据此下结论。',
   'fmt.chgUnstable':
     '注意：页面内容在 {s} 秒内持续变动、尚未稳定——可能仍在加载数据，也可能是页面自身在持续刷新。' +
     '若看到「加载中」「暂无数据」这类占位，先 wait_for_page 再核实，不要据此下结论。',
@@ -458,6 +464,8 @@ const ZH = {
   'res.keySubmitted': '，已提交所属表单',
   'res.keyMoved': '，焦点移到「{name}」',
   'res.keyPrevented': '，页面自己处理了这个按键',
+  'res.fallback.unavailable': '（调试通道附加失败，这一步改用合成事件执行）',
+  'res.fallback.unsafePoint': '（元素中心点被遮挡或落在内部另一个控件上，这一步改用合成事件点击）',
   'res.keyCaret': '，光标从第 {from} 个字符移到第 {to} 个字符',
   'res.keyCaretMoved': '，光标已移动',
   'res.keyScrolled': '，{where}滚动了 {px} 像素',
@@ -476,7 +484,7 @@ const ZH = {
   'res.batchHaltNavigated': '页面已跳转，原来的元素编号全部失效。',
   'res.batchHaltSwitched': '用户切到了另一个标签页。',
   'res.batchHaltRebuilt': '元素编号已整体重建，后面几步的编号可能已对不上。',
-  'res.batchHaltLoading': '页面仍在加载，后面几步的目标可能还没出现。',
+  'res.batchHaltLoading': '页面内容仍在变动，后面几步的目标可能还没就位。',
   'res.scrolled.up': '已向上滚动。',
   'res.scrolled.down': '已向下滚动。',
   'res.scrolled.top': '已回到页面顶部。',
@@ -532,7 +540,7 @@ const ZH = {
   'prompt.leadSwitched': '用户当前浏览的页面已经变了，以下是新页面的内容；此前消息里的页面内容不再是用户眼前的页面。',
   'prompt.pageNoText': '（此页没有可读的正文，只有按钮、输入框等可交互控件）',
   'prompt.leadPageGone': '用户已切换到无法读取的页面（浏览器内部页或受限页面），此前消息里的页面内容不再是用户眼前的页面。',
-  'prompt.leadLoading': '注意：读取时页面仍在加载，部分内容可能尚未就位；下面出现的「加载中」「暂无数据」等文字可能只是占位，不要据此下结论。',
+  'prompt.leadLoading': '注意：读取时页面内容仍在变动，部分内容可能尚未就位；下面出现的「加载中」「暂无数据」等文字可能只是占位，不要据此下结论。',
   // 只陈述事实、不提工具名：纯文本降级后这条消息仍在历史里（不变式 2）
   'prompt.pageTotal': '（该页正文共 {total} 字，以上 <页面内容> 是其中的前 {shown} 字；<页面结构> 里标题后的 @数字是该标题在完整正文中的字符位置。）',
   'prompt.base':
@@ -554,7 +562,7 @@ const ZH = {
     '需要逐行核对表格数据时用 extract_table 取回完整表格；' +
     '用户问「在哪 / 哪个按钮 / 怎么操作」时，可用 list_elements 查看可交互元素，' +
     '并用 highlight_element 在页面上把它标给用户看。' +
-    '页面可能还没加载完：看到「加载中」「暂无数据」这类占位文字，或工具结果提示页面仍在加载时，' +
+    '页面可能还没加载完：看到「加载中」「暂无数据」这类占位文字，或工具结果提示页面内容仍在变动时，' +
     '先用 wait_for_page 等它加载完再读，不要把占位当成页面的真实内容。',
   'prompt.readonly':
     '你只能观察页面和高亮元素，不能点击、输入或以任何方式修改页面；' +
@@ -565,8 +573,8 @@ const ZH = {
     '二、一次只做一步，根据每次动作返回的页面变化摘要决定下一步；' +
     '页面跳转后所有编号都会重置，必须重新 list_elements；带 * 的元素是上次操作后新出现的；' +
     '摘要里列出的状态变化（勾选、展开、可用、显示文字）就是这次动作的结果，可直接据此确认；' +
-    '摘要提示页面仍在加载时，先 wait_for_page 再判断动作结果——加载完成前的「暂无数据」「加载中」只是占位，' +
-    '不要据此认定操作失败、页面没有数据，更不要据此回退。' +
+    '动作之后页面上出现「加载中」「暂无数据」这类占位，或摘要提示页面内容仍在变动时，先 wait_for_page 再判断动作结果——' +
+    '接口返回前的占位不能说明操作失败或页面没有数据，更不是回退的理由。' +
     '连续填写多个字段、勾选多项时，用 batch_actions 一次执行这些步骤。' +
     '三、涉及不可逆或对外产生影响的操作——转账、支付、下单、提交审批、删除数据、对外发送消息等——' +
     '必须先停下来，用文字向用户说明你将要点击什么、会产生什么后果，等用户明确同意后再执行；' +
@@ -682,8 +690,8 @@ const ZH = {
   'tool.html.ref': 'list_elements 中的元素编号',
   'tool.html.max': '返回的最大字符数，默认 4000',
   'tool.wait.d':
-    '等待页面加载完成（内容停止变动、加载指示器消失）后再继续，最多等 seconds 秒。' +
-    '页面还在加载时，「加载中」「暂无数据」这类文字只是占位；动作或读取结果提示页面仍在加载时先调用它，' +
+    '等待页面内容停止变动后再继续，最多等 seconds 秒。' +
+    '页面上出现「加载中」「暂无数据」这类占位，或动作、读取结果提示页面内容仍在变动时先调用它，' +
     '不要据占位下结论。返回等待期间新出现的元素与页面是否跳转。',
   'tool.wait.seconds': '最多等待几秒，1–15，默认 3；后台接口慢时可以多等几秒',
   'tool.shot.d':
@@ -718,7 +726,7 @@ const ZH = {
   'tool.scroll.pages': '滚动几屏，默认 1（direction 为 top/bottom 时忽略）',
   'tool.batch.d':
     '按顺序执行多步页内动作（点击、输入、选择下拉项、按键、滚动），一次调用最多 10 步。' +
-    '每步完成后等页面稳定再做下一步；某步失败、页面跳转、页面仍在加载、元素编号整体重建或用户切走标签页时就停下，' +
+    '每步完成后等页面稳定再做下一步；某步失败、页面跳转、页面内容仍在变动、元素编号整体重建或用户切走标签页时就停下，' +
     '其余步骤不执行。返回每步的结果与合并后的页面变化。适合一次填完表单的多个字段、勾选多项。' +
     '提交、删除、支付这类不可逆操作不要放进批量，单独执行并先征得用户同意。',
   'tool.batch.steps': '按执行顺序排列的动作',
@@ -764,7 +772,7 @@ const EN = {
   'ui.ctxMetaTruncated': 'first {chars} of {total} chars read · {n} interactive elements',
   'ui.notePageReread': 'The page changed — it has been read again',
   'ui.notePageUpdated': 'The page changed — the differences have been synced',
-  'ui.notePageLoading': 'The page was still loading when it was read — the model has been told',
+  'ui.notePageLoading': 'The page content was still changing when it was read — the model has been told',
   'ui.notePageNavigated': 'Page switched to "{title}" — it has been read again',
   'ui.notePageUnreadable': 'This page cannot be read; this answer is based on your question alone',
   'ui.untitled': 'Untitled page',
@@ -835,6 +843,9 @@ const EN = {
   'ui.menuComingSoon': 'Coming soon',
   'ui.menuOn': 'On',
   'ui.menuOff': 'Off',
+  'ui.debuggerConfirm':
+    'With the debugger channel on, the AI\'s clicks, key presses and typing are carried out by the browser as real input that pages cannot tell apart; ' +
+    'the first time the AI operates the page in a turn, the browser shows a "started debugging this browser" bar, which goes away when the turn ends.\n\nTurn it on?',
   'ui.actionsConfirm':
     'Once enabled, the AI can click, type and navigate on the current page on your instruction, and does so automatically.\n' +
     'Every step appears in the conversation and you can hit "Stop" at any time.\n\n' +
@@ -863,6 +874,9 @@ const EN = {
   'ui.cfgVisionHint': 'Enables screenshots, which cannot be redacted.',
   'ui.cfgContextWindow': 'Context window (tokens)',
   'ui.cfgActions': 'Allow page actions',
+  'ui.cfgDebugger': 'Debugger channel (real clicks and keys)',
+  'ui.cfgDebuggerHint': 'Applies when page actions are on. Clicks, keys and typing are carried out by the browser as real input; while the AI operates the page, the browser shows a "started debugging this browser" bar.',
+  'ui.cfgDebuggerUnavailable': 'This build has no debugger permission; page actions use synthetic events.',
   'ui.cfgTest': 'Test connection',
   'ui.cfgSave': 'Save',
   'ui.cfgProfiles': 'Model endpoints',
@@ -1060,10 +1074,9 @@ const EN = {
   'fmt.st.pressed': 'pressed',
   'fmt.st.pressedMixed': 'partially pressed',
   'fmt.st.unpressed': 'not pressed',
-  'fmt.chgBusy':
-    'Note: after waiting {s}s the page is still loading ({n} loading indicator(s) visible). Text such as "Loading" or "No data" ' +
-    'on the page right now is only a placeholder — do not conclude that there is no data, that the action failed, or that you should go back; ' +
-    'call wait_for_page first, then verify with list_elements or read_page_text.',
+  'fmt.chgNetwork':
+    'Note: after waiting {s}s, {n} network request(s) sent by this action have not returned yet, so text such as "Loading" or "No data" may only be a placeholder; ' +
+    'call wait_for_page and verify before drawing conclusions.',
   'fmt.chgUnstable':
     'Note: the page content kept changing for {s}s and has not settled — it may still be loading data, or the page may refresh itself continuously. ' +
     'If you see placeholders such as "Loading" or "No data", call wait_for_page and verify before drawing conclusions.',
@@ -1117,6 +1130,8 @@ const EN = {
   'res.keySubmitted': ', which submitted the surrounding form',
   'res.keyMoved': ', focus moved to "{name}"',
   'res.keyPrevented': ', the page handled the key itself',
+  'res.fallback.unavailable': ' (the debugger channel could not attach, so this step used synthetic events)',
+  'res.fallback.unsafePoint': ' (the element\'s center is covered or lands on another control inside it, so this step clicked with synthetic events)',
   'res.keyCaret': ', caret moved from character {from} to {to}',
   'res.keyCaretMoved': ', caret moved',
   'res.keyScrolled': ', scrolled the {where} by {px}px',
@@ -1135,7 +1150,7 @@ const EN = {
   'res.batchHaltNavigated': 'the page navigated, so the earlier element numbers are no longer valid.',
   'res.batchHaltSwitched': 'the user switched to another tab.',
   'res.batchHaltRebuilt': 'element numbers were rebuilt, so the numbers in the later steps may no longer match.',
-  'res.batchHaltLoading': 'the page is still loading, so the targets of the later steps may not have appeared yet.',
+  'res.batchHaltLoading': 'the page content is still changing, so the targets of the later steps may not be in place yet.',
   'res.scrolled.up': 'Scrolled up.',
   'res.scrolled.down': 'Scrolled down.',
   'res.scrolled.top': 'Scrolled back to the top of the page.',
@@ -1190,7 +1205,7 @@ const EN = {
   'prompt.leadSwitched': 'The user is now on a different page. Its content follows; the page content in earlier messages is no longer what the user is looking at.',
   'prompt.pageNoText': '(this page has no readable body text, only interactive controls such as buttons and input fields)',
   'prompt.leadPageGone': 'The user has switched to a page that cannot be read (a browser-internal or restricted page); the page content in earlier messages is no longer what the user is looking at.',
-  'prompt.leadLoading': 'Note: the page was still loading when it was read, so some content may not be in place yet; text such as "Loading" or "No data" below may only be a placeholder — do not draw conclusions from it.',
+  'prompt.leadLoading': 'Note: the page content was still changing when it was read, so some content may not be in place yet; text such as "Loading" or "No data" below may only be a placeholder — do not draw conclusions from it.',
   'prompt.pageTotal': '(The body text of this page is {total} characters; the <page_content> above is its first {shown}. The @number after a heading in <page_outline> is that heading\u2019s character position in the complete body text.)',
   'prompt.base':
     'You are a browser sidebar assistant. The <page_content> tag holds the text of the page the user is currently viewing, ' +
@@ -1213,7 +1228,7 @@ const EN = {
     'Use extract_table to pull back a full table when you need to check data row by row; ' +
     'when the user asks "where is / which button / how do I", use list_elements to see the interactive elements ' +
     'and highlight_element to point one out on the page for them. ' +
-    'The page may not have finished loading: when you see placeholders such as "Loading" or "No data", or a tool result says the page is still loading, ' +
+    'The page may not have finished loading: when you see placeholders such as "Loading" or "No data", or a tool result says the page content is still changing, ' +
     'call wait_for_page and read again afterwards instead of treating the placeholder as the page\'s real content.',
   'prompt.readonly':
     'You can only observe the page and highlight elements; you cannot click, type, or modify the page in any way. ' +
@@ -1224,8 +1239,8 @@ const EN = {
     '2. Do one step at a time and decide the next from the page-change summary each action returns; ' +
     'all numbers reset after a navigation, so call list_elements again; elements marked * appeared after the last action; ' +
     'the state changes listed in the summary (checked, expanded, enabled, displayed text) are this action\'s outcome and can confirm it directly; ' +
-    'when the summary says the page is still loading, call wait_for_page before judging the outcome — "No data" or "Loading" before loading finishes is only a placeholder, ' +
-    'never evidence that the action failed or the page is empty, and never a reason to go back. ' +
+    'when the page shows placeholders such as "Loading" or "No data" after an action, or the summary says the content is still changing, call wait_for_page before judging the outcome — ' +
+    'a placeholder shown before the backend responds is never evidence that the action failed or the page is empty, and never a reason to go back. ' +
     'When filling several fields or ticking several boxes in a row, run those steps in one batch_actions call. ' +
     '3. For irreversible or outward-facing operations — transfers, payments, orders, approval submissions, deleting data, sending messages to other people — ' +
     'stop first and explain in words what you are about to click and what will follow, then wait for the user\'s explicit consent before executing; ' +
@@ -1348,8 +1363,8 @@ const EN = {
   'tool.html.ref': 'Element number from list_elements',
   'tool.html.max': 'Maximum number of characters to return, default 4000',
   'tool.wait.d':
-    'Wait for the page to finish loading (content stops changing, loading indicators disappear) before continuing, for at most `seconds` seconds. ' +
-    'While a page is still loading, text such as "Loading" or "No data" is only a placeholder; call this first when an action or read result says the page is still loading, ' +
+    'Wait for the page content to stop changing before continuing, for at most `seconds` seconds. ' +
+    'Call it first when the page shows placeholders such as "Loading" or "No data", or an action or read result says the content is still changing, ' +
     'and do not draw conclusions from placeholders. Returns the elements that appeared while waiting and whether the page navigated.',
   'tool.wait.seconds': 'Maximum seconds to wait, 1–15, default 3; allow a few more when the backend is slow',
   'tool.shot.d':
@@ -1384,7 +1399,7 @@ const EN = {
   'tool.scroll.pages': 'How many screens to scroll, default 1 (ignored for top/bottom)',
   'tool.batch.d':
     'Run several in-page actions in order (click, type, pick a dropdown option, press a key, scroll), up to 10 per call. ' +
-    'Each step waits for the page to settle before the next; it stops when a step fails, the page navigates, the page is still loading, ' +
+    'Each step waits for the page to settle before the next; it stops when a step fails, the page navigates, the page content keeps changing, ' +
     'element numbers are rebuilt or the user switches tabs, and the remaining steps do not run. ' +
     'Returns each step\'s result and the combined page change. Use it to fill several form fields or tick several boxes in one go. ' +
     'Keep irreversible operations such as submitting, deleting or paying out of a batch: run them on their own after the user agrees.',
