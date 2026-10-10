@@ -332,7 +332,7 @@ test('batch_actions：某步失败就停，后面的不执行', async () => {
 test('batch_actions：页面跳转、仍在加载、编号重建、用户切页时停下，并说明原因', async () => {
   const cases = [
     [{ navigated: true, title: '新页', url: 'https://b.test/' }, 'res.batchHaltNavigated'],
-    [quiet({ loading: { busy: 1, waitedMs: 5000 } }), 'res.batchHaltLoading'],
+    [quiet({ loading: { waitedMs: 5000 } }), 'res.batchHaltLoading'],
     [quiet({ rebuilt: true }), 'res.batchHaltRebuilt'],
     [quiet({ userSwitched: { title: '别的页' } }), 'res.batchHaltSwitched'],
   ];

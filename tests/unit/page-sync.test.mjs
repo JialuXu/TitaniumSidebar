@@ -151,8 +151,8 @@ test('完整快照参数：采全文、带元素上限与注入文案，追加�
 
 test('第 26 条：稳定了或判定失败都不算「仍在加载」', () => {
   assert.equal(loadingOf(null), null);
-  assert.equal(loadingOf({ settled: true, busy: false, waitedMs: 400 }), null);
-  assert.deepEqual(loadingOf({ settled: false, busy: true, waitedMs: 2500 }), { busy: true, waitedMs: 2500 });
+  assert.equal(loadingOf({ settled: true, waitedMs: 400 }), null);
+  assert.deepEqual(loadingOf({ settled: false, waitedMs: 2500 }), { waitedMs: 2500 });
 });
 
 test('第 13 条：消息流提示行只在页面中途变化或仍在加载时出现', () => {
@@ -163,6 +163,6 @@ test('第 13 条：消息流提示行只在页面中途变化或仍在加载时�
   assert.equal(describeSyncNote({ kind: 'diff', diff: 'x' }, ''), t('ui.notePageUpdated'));
   assert.equal(describeSyncNote({ kind: 'unreadable', changed: false }, ''), '');
   assert.equal(describeSyncNote({ kind: 'unreadable', changed: true }, ''), t('ui.notePageUnreadable'));
-  assert.equal(describeSyncNote({ kind: 'full', first: true, loading: { busy: true } }, ''), t('ui.notePageLoading'));
-  assert.equal(describeSyncNote({ kind: 'diff', diff: 'x', loading: { busy: true } }, ''), `${t('ui.notePageUpdated')} · ${t('ui.notePageLoading')}`);
+  assert.equal(describeSyncNote({ kind: 'full', first: true, loading: { waitedMs: 2500 } }, ''), t('ui.notePageLoading'));
+  assert.equal(describeSyncNote({ kind: 'diff', diff: 'x', loading: { waitedMs: 2500 } }, ''), `${t('ui.notePageUpdated')} · ${t('ui.notePageLoading')}`);
 });

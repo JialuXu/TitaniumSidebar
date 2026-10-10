@@ -1117,7 +1117,7 @@ async function syncPageForSend() {
   }
   applySnapshot(snap, snap.tabId);
   updateContextChip();
-  // 读取时页面仍在加载：随判定结果一起带出去，凡是携带了页面内容的消息都交代一句
+  // 读取时页面内容仍在变动：随判定结果一起带出去，凡是携带了页面内容的消息都交代一句
   return decidePageSync(state.sentPage, state.page, Boolean(snap.loading));
 }
 

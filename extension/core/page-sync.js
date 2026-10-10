@@ -54,13 +54,13 @@ export const SETTLE = {
 };
 
 /**
- * 稳定判定 → 「仍在加载」标记（decidePageSync 与 formatPageChange 据此提醒模型）。
- * 稳定了或没判定成功都是 null：判定不了不能当「仍在加载」到处报警。
- * @param {{ settled: boolean, busy: boolean, waitedMs: number }|null} settle waitForSettle 的返回值
+ * 稳定判定 → 「内容仍在变动」标记（decidePageSync 与 formatPageChange 据此提醒模型）。
+ * 稳定了或没判定成功都是 null：判定不了不能当「仍在变动」到处报警。
+ * @param {{ settled: boolean, waitedMs: number }|null} settle waitForSettle 的返回值
  */
 export function loadingOf(settle) {
   if (!settle || settle.settled) return null;
-  return { busy: settle.busy, waitedMs: settle.waitedMs };
+  return { waitedMs: settle.waitedMs };
 }
 
 /* ========== 页面状态 ========== */
@@ -136,7 +136,7 @@ export function initialSentPage() {
  * 比对最新快照与 sentPage，判定携带方式。
  * @param {object} sentPage 模型上次实际看到的页面（initialSentPage 的形状，可带 gone 标记）
  * @param {{ url: string, maskedText: string }} page 最新快照（脱敏后）
- * @param {boolean} loading 读取时页面是否仍在加载，随判定结果带出去
+ * @param {boolean} loading 读取时页面内容是否仍在变动，随判定结果带出去
  * @returns {{ kind: 'none'|'diff'|'full', first?: boolean, navigated?: boolean, loading?: boolean, diff?: string }}
  */
 export function decidePageSync(sentPage, page, loading) {
@@ -172,7 +172,7 @@ export function composeSendContent(inputText, page, sentPage, sync) {
       textCapped: sync.kind === 'full' ? page.textCapped : sentPage.textCapped,
     };
   }
-  // 页面块之前的交代语：换页、仍在加载，各一句，可叠加
+  // 页面块之前的交代语：换页、内容仍在变动，各一句，可叠加
   const lead = [
     sync.kind === 'full' && sync.navigated ? t('prompt.leadSwitched') : '',
     sync.loading ? t('prompt.leadLoading') : '',
@@ -194,7 +194,7 @@ export function composeSendContent(inputText, page, sentPage, sync) {
 
 /**
  * 消息流里交代这次同步的那行浅色小字。只有页面在会话中途真的变了才提示，
- * 首次读取由页面胶囊出现即可说明；读取时仍在加载也要让用户知道，
+ * 首次读取由页面胶囊出现即可说明；读取时内容仍在变动也要让用户知道，
  * 否则回答里的「暂无数据」看起来像是 AI 读错了。没什么可交代时返回空串。
  * @param {object} sync decidePageSync 的结果，或外壳给出的 unreadable
  * @param {string} title 换页时显示的页面标题（外壳按胶囊宽度截好）

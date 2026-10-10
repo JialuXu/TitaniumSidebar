@@ -374,7 +374,7 @@ const PAGE_ACTIONS = {
 const PAGE_ACTION_BY_TOOL = Object.fromEntries(Object.values(PAGE_ACTIONS).map((spec) => [spec.tool, spec]));
 
 /**
- * batch_actions 某一步之后该不该停：页面跳转、用户切走标签页、编号整体重建、页面仍在加载——
+ * batch_actions 某一步之后该不该停：页面跳转、用户切走标签页、编号整体重建、页面内容仍在变动——
  * 这几种情况下后面几步手里的编号或时机都不再可靠。返回停下的原因文案，可以继续时返回空串。
  */
 function batchHalt(change) {
@@ -656,7 +656,7 @@ export async function dispatchToolCall(call, provider, turn = {}, registered = n
         const waited = Math.max(1, Math.round((change.waitedMs || 0) / 1000));
         meta.ok = true;
         meta.data = { seconds: waited, settled: !change.loading, navigated: Boolean(change.navigated) };
-        // 稳定了就明说；没稳定的话 formatPageChange 末尾会带上「仍在加载」的提醒
+        // 稳定了就明说；没稳定的话 formatPageChange 末尾会带上「内容仍在变动」的提醒
         const head = t('res.waited', { s: waited, settled: change.loading ? '' : t('res.waitedSettled') });
         return reply(provider.mask(withChangeSynced(head, change)));
       }
