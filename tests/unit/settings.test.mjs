@@ -103,14 +103,16 @@ test('导出：含 API Key 与上下文窗口，不含页面操作开关', () =>
   assert.equal(out.profiles[0].apiKey, 'sk-secret');
   assert.equal(out.profiles[0].contextWindow, 128000);
   assert.equal('actionsEnabled' in out, false);
+  assert.equal('debuggerEnabled' in out, false);
   assert.equal(out.locale, 'en');
 });
 
 test('导入：导出的文件原样恢复，且页面操作恒为关闭', () => {
   const file = buildSettingsExport({ profiles: [{ id: 'a', model: 'm', apiKey: 'k' }], activeProfileId: 'a', maskEnabled: false });
-  const res = parseSettingsImport(JSON.stringify({ ...file, actionsEnabled: true }));
+  const res = parseSettingsImport(JSON.stringify({ ...file, actionsEnabled: true, debuggerEnabled: true }));
   assert.equal(res.ok, true);
   assert.equal(res.config.actionsEnabled, false);
+  assert.equal(res.config.debuggerEnabled, false);
   assert.equal(res.config.maskEnabled, false);
   assert.deepEqual(res.config.profiles, file.profiles);
 });
@@ -137,13 +139,19 @@ test('第 34 条：上下文窗口回显，整千按 k，与输入写法互逆',
 });
 
 test('第 23 条：导入合并保留当前的页面操作开关，文件未记语言时沿用当前', () => {
-  const current = normalizeConfig({ actionsEnabled: true, locale: 'en' });
+  const current = normalizeConfig({ actionsEnabled: true, debuggerEnabled: true, locale: 'en' });
   const file = parseSettingsImport(JSON.stringify({ ...buildSettingsExport(normalizeConfig({ maskEnabled: false })), locale: undefined }));
   const merged = mergeImportedConfig(current, file.config);
   assert.equal(merged.actionsEnabled, true);
+  assert.equal(merged.debuggerEnabled, true);
   assert.equal(merged.maskEnabled, false);
   assert.equal(merged.locale, 'en');
   // 文件里手工加上的开关不采信：当前关着就还是关着
   const forged = parseSettingsImport(JSON.stringify({ ...buildSettingsExport(normalizeConfig()), actionsEnabled: true }));
   assert.equal(mergeImportedConfig(normalizeConfig(), forged.config).actionsEnabled, false);
+});
+
+test('调试通道开关缺省关闭，只认布尔真值', () => {
+  assert.equal(normalizeConfig({}).debuggerEnabled, false);
+  assert.equal(normalizeConfig({ debuggerEnabled: 1 }).debuggerEnabled, true);
 });

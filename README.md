@@ -64,8 +64,9 @@ Switch on **Allow page actions** in settings or **Page actions** in the **+** me
 - For irreversible operations — transfers, payments, orders, approval submissions, deletions — the AI explains what it is about to do and waits for your explicit go-ahead. This is a prompt-level guardrail, not a technical block.
 - After each action the extension waits for the page content to stop changing (up to 5 s) before reading the result; when the page shows placeholders such as "Loading" or "No data", the model waits before drawing conclusions.
 - While the switch is off, action tools are not registered with the model at all.
+- **Debugger channel** (settings, off by default): clicks, key presses and typing are sent through `chrome.debugger` as real browser input, and after each action the extension also waits for the network requests that action sent. While the AI operates the page, Chrome shows a "started debugging this browser" bar; it attaches on the first action of a turn and detaches when the turn ends. If attaching fails, or a real click would land on the wrong element, that step falls back to synthetic events and the result says so.
 
-**Known limitations** — actions are synthetic events (`isTrusted` is false), which a few strictly validating sites ignore; custom dropdown widgets need the AI to open them and click an option; load detection sees the page, not the network, so a slow backend that shows no loading state can still be read in its empty state ("wait a few seconds and look again" fixes it). Do not enable this on business data you do not want touched.
+**Known limitations** — without the debugger channel, actions are synthetic events (`isTrusted` is false), which a few strictly validating sites ignore, and load detection sees the page, not the network, so a slow backend can still be read in its empty state ("wait a few seconds and look again" fixes it); custom dropdown widgets need the AI to open them and click an option. Do not enable this on business data you do not want touched.
 
 ## How this differs from an in-bank production build
 
@@ -83,7 +84,7 @@ SSO/4A authentication, a domain allowlist, gateway-side redaction and audit logs
 | Network failure | Endpoint unreachable; make sure a local service is running |
 | "does not support tool calling / image input, degraded" | Normal fallback; switch to a model with that capability |
 | "Tab switched" | You changed tabs mid-conversation; switch back, or ask again about the current page |
-| Clicks / typing have no effect | A few sites ignore synthetic events, or the element numbers are stale — ask the AI to list elements again |
+| Clicks / typing have no effect | A few sites ignore synthetic events — turn on the debugger channel in settings; or the element numbers are stale — ask the AI to list elements again |
 
 ## Contributing and security
 

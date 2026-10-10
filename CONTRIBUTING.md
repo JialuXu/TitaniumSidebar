@@ -34,7 +34,7 @@ The same holds for the tests in `tests/`: they run on Node's built-in `node:test
 
 Chrome / Edge ≥ 114, ES2020+, no legacy fallback and no polyfills. Firefox and Safari are explicitly out of scope — neither has the MV3 side panel API. Don't add compatibility shims for them.
 
-Adding a new entry to `permissions` needs a strong justification in the PR description; the current set (`sidePanel`, `scripting`, `storage`) is intentionally minimal. `chrome.debugger` will never be added — it shows a permanent "debugging this browser" banner and does not exist in the future SDK form.
+Adding a new entry to `permissions` needs a strong justification in the PR description; the current set (`sidePanel`, `scripting`, `storage`, `debugger`) is intentionally minimal. `debugger` serves only the optional debugger channel (`extension/drivers/cdp.js`, off by default in settings). Builds that must not carry it — locked-down enterprise deployments — remove the permission and that one file; the extension then runs on the synthetic channel alone, which is also the only channel the future SDK form has.
 
 ### The core / shell split
 
@@ -43,6 +43,8 @@ This is the constraint most PRs get wrong.
 **`extension/core/` is platform-independent.** No `chrome.*` anywhere in it, no touching the sidebar's DOM, no assumptions about the runtime. Every module exports pure functions or classes taking and returning plain data. The self-test: *if you deleted the entire extension shell, `core/` should still import and run in an ordinary web page.* That rules out relying on Chromium-only computed properties too — things like `isContentEditable` need an attribute fallback so the code still behaves in a layout-less environment such as jsdom.
 
 **`extension/sidepanel.js` is the shell.** It does exactly three things: render UI and hold state, wire up `chrome.*` APIs, and glue the core modules together. No business logic belongs here. `core/tools.js` defines the tool protocol and dispatch; the actual execution comes in through a provider interface the shell injects.
+
+**`extension/drivers/` executes page actions** behind one interface (`act` / `settle` / `release`, see `drivers/index.js`): `synthetic.js` injects the core functions, `cdp.js` sends real input through `chrome.debugger`. The shell only picks a driver; `core/` never touches `chrome.debugger`, and the debugger channel uses the core's `locate` / `focus` / `probe` actions for everything that happens inside the page. Keep the two paths in their own files so a build without the `debugger` permission is one file deletion away.
 
 Config access goes through an injected `storage` interface (`get` / `set`), never `chrome.storage` directly from core.
 
@@ -83,7 +85,6 @@ Please don't propose these — they've been decided against:
 - **Mock data, demo modes or simulated business pages.** The extension talks to a real endpoint or it does nothing.
 - **Login / SSO / 4A auth, domain allowlists, OCR, RAG.** Covered by other in-bank layers.
 - **Firefox support**, and support for data-dense table-heavy systems — those go the structured-data-interface route, not DOM reading.
-- **`chrome.debugger`** as an action channel (see above).
 - **Technical hard-blocks on irreversible actions.** The guardrail is deliberately a prompt-level one; if you want to propose a real enforcement mechanism, open an issue and let's discuss the design first rather than sending a PR.
 
 ## Testing your change
@@ -154,7 +155,7 @@ By contributing you agree your contributions are licensed under the [MIT Licence
 
 Chrome / Edge ≥ 114，ES2020+，不做老浏览器降级、不加 polyfill。火狐与 Safari 明确不在范围内 —— 两者都没有 MV3 侧边栏 API，请不要为它们加兼容层。
 
-新增 `permissions` 条目需要在 PR 描述里给出充分理由，现有的三项（`sidePanel`、`scripting`、`storage`）是刻意压到最小的。`chrome.debugger` 永远不会加 —— 它会在浏览器顶部常驻「正在调试此浏览器」横幅，而且未来的 SDK 形态根本没有这条路。
+新增 `permissions` 条目需要在 PR 描述里给出充分理由，现有的四项（`sidePanel`、`scripting`、`storage`、`debugger`）是刻意压到最小的。`debugger` 只服务于可选的调试通道（`extension/drivers/cdp.js`，设置里默认关闭）。不能带这个权限的构建（管控严格的企业环境）去掉它并删掉这一个文件，扩展就只走合成事件通道 —— 那也是未来 SDK 形态唯一的通道。
 
 ### core / 外壳分层
 
@@ -163,6 +164,8 @@ Chrome / Edge ≥ 114，ES2020+，不做老浏览器降级、不加 polyfill。�
 **`extension/core/` 是平台无关层。** 里面不出现任何 `chrome.*`，不碰侧边栏的 DOM，不假设运行环境。每个模块用纯函数或类导出，输入输出都是普通数据。自检标准是：*假想删掉整个扩展外壳，`core/` 应该仍能在普通网页里被 import 并跑起来。* 由此推论，也不能依赖只有 Chromium 才有的计算属性 —— 像 `isContentEditable` 这类必须留属性回退，否则在 jsdom 这种没有排版引擎的环境里判定会失效。
 
 **`extension/sidepanel.js` 是外壳。** 它只做三件事：渲染 UI 与维护状态、接线 `chrome.*` API、把 core 模块串起来。业务逻辑一律不写在这里。`core/tools.js` 只定义工具协议与分发，真正的执行靠外壳注入的 provider 接口进来。
+
+**`extension/drivers/` 负责执行页内动作**，对外只有一个接口（`act` / `settle` / `release`，见 `drivers/index.js`）：`synthetic.js` 注入 core 的函数，`cdp.js` 经 `chrome.debugger` 发真实输入。外壳只挑选驱动；`core/` 从不碰 `chrome.debugger`，调试通道在页面里要做的事（定位、聚焦、读光标与滚动）都借 core 的 `locate` / `focus` / `probe` 动作完成。两条路径各在自己的文件里，去掉 `debugger` 权限的构建只需删一个文件。
 
 配置读写走外壳注入的 `storage` 接口（`get` / `set`），core 里绝不直接碰 `chrome.storage`。
 
@@ -203,7 +206,6 @@ Chrome / Edge ≥ 114，ES2020+，不做老浏览器降级、不加 polyfill。�
 - **mock 数据、演示模式、模拟业务系统页面。** 扩展要么连真实接口，要么什么都不做。
 - **登录 / SSO / 4A 鉴权、域名白名单、OCR、RAG。** 由行内其他层承担。
 - **火狐支持**，以及数据密集型大表格系统的适配 —— 后者走结构化数据接口路线，不走 DOM 读取。
-- 把 **`chrome.debugger`** 作为动作执行通道（理由见上）。
 - **对不可逆操作做技术硬拦截。** 现在的护栏刻意停在 prompt 层面；如果你想提一套真正的强制机制，请先开 Issue 讨论设计，不要直接发 PR。
 
 ## 如何验证你的改动

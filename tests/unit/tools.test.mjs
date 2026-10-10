@@ -481,3 +481,11 @@ test('list_elements：关键词也匹配输入框的当前值', async () => {
   assert.ok(res.toolMessage.content.includes('[481]'));
   assert.ok(!res.toolMessage.content.includes('[492]'));
 });
+
+test('调试通道退回合成事件时，结果里注明原因（单步与批量一致）', async () => {
+  const { provider } = fakeProvider({ act: { result: { ok: true, name: '卡片', fallback: 'unsafe-point' }, change: { navigated: false, newElements: [] } } });
+  const single = await dispatchToolCall(call('click_element', { ref: 3 }), provider, {}, registeredFor({ actions: true }));
+  assert.ok(single.toolMessage.content.startsWith(t('res.clicked', { ref: 3, name: ' "卡片"', checked: '' }) + t('res.fallback.unsafePoint')));
+  const batched = await dispatchToolCall(call('batch_actions', { steps: [{ action: 'click', ref: 3 }] }), provider, {}, registeredFor({ actions: true }));
+  assert.ok(batched.toolMessage.content.includes(t('res.fallback.unsafePoint')));
+});

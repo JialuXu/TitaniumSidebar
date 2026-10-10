@@ -26,7 +26,7 @@ tests/
 │   ├── fake-llm.mjs         假的 OpenAI 兼容接口：替换 fetch，按分片吐 SSE
 │   ├── memory-storage.mjs   内存版 storage（get / set / remove），可模拟配额满
 │   └── browser.mjs          加载 Playwright、读夹具、按 executeScript 的方式调用注入函数
-├── unit/                    core 各模块的行为测试，一个模块一个文件，与模块同名
+├── unit/                    core 各模块的行为测试，一个模块一个文件，与模块同名；drivers.test.mjs 测执行驱动的挑选
 │   └── <模块名>.test.mjs
 ├── dom/                     注入函数在真实 Chromium 里的行为（需要 Playwright，见下）
 │   ├── fixtures/            按组件库真实结构复刻的夹具页面
@@ -41,7 +41,7 @@ tests/
 
 | 覆盖到的 | 仍靠手动验收（[docs/acceptance.md](../docs/acceptance.md)） |
 |---|---|
-| 回合编排（tool 链配对、400 降级、同批跳转中止、轮数上限、中止占位、截图跟随消息、回合统计）、重新生成前的回退、流式解析与错误分类、脱敏、引用校验、页面同步与差异、请求链组装与压缩、上下文估算、历史淘汰、设置迁移与导入导出、Markdown 渲染、工具分发的闸门与预算、提示词拼装、技能匹配、活动行文案；`tests/dom/`：勾选类控件（原生、Element UI、antd、sr-only、纯 ARIA）的编号、视觉代理、点击与状态回读，动作后的状态变化，自定义下拉的展开与回填，按键的默认行为补偿（文本框移光标与翻页、删字、页面与区域滚动、富文本），输入框当前值的读取，页面就位判定（常驻占位不拖住、持续增删等到上限、文字跳动不算变动） | 外壳 `sidepanel.js`（界面渲染、`chrome.*` 接线与 provider）；`tests/dom/` 夹具之外的真实页面行为；截图标注（`annotate.js`，依赖 `OffscreenCanvas`）；真实模型接口的表现 |
+| 回合编排（tool 链配对、400 降级、同批跳转中止、轮数上限、中止占位、截图跟随消息、回合统计）、重新生成前的回退、流式解析与错误分类、脱敏、引用校验、页面同步与差异、请求链组装与压缩、上下文估算、历史淘汰、设置迁移与导入导出、Markdown 渲染、工具分发的闸门与预算、提示词拼装、技能匹配、活动行文案；`tests/dom/`：勾选类控件（原生、Element UI、antd、sr-only、纯 ARIA）的编号、视觉代理、点击与状态回读，动作后的状态变化，自定义下拉的展开与回填，按键的默认行为补偿（文本框移光标与翻页、删字、页面与区域滚动、富文本），输入框当前值的读取，页面就位判定（常驻占位不拖住、持续增删等到上限、文字跳动不算变动），调试通道（Playwright 的 CDP 会话扮演 chrome.debugger：真实点击与按键、内部控件退回合成事件、等接口返回、附加与断开） | 外壳 `sidepanel.js`（界面渲染、`chrome.*` 接线与 provider）；`tests/dom/` 夹具之外的真实页面行为；截图标注（`annotate.js`，依赖 `OffscreenCanvas`）；真实模型接口的表现 |
 
 对应验收标准的用例，名字里写了「第 N 条」，可以用 `--test-name-pattern` 单独跑。
 
@@ -80,7 +80,7 @@ Run from the repo root with **Node.js ≥ 22.7**:
 node --test "tests/**/*.test.mjs"
 ```
 
-`unit/` holds one behaviour test file per core module, including the agent loop in `agent.js`; `contracts/` holds static checks of the repository's hard constraints (no `chrome.*` in core, self-contained injected functions, bilingual catalogs in sync, version numbers consistent). `dom/` runs the injected functions in a real Chromium against fixture pages that replicate component-library markup (native, Element UI, antd, sr-only and pure-ARIA checkboxes, a custom dropdown, keyboard defaults in text fields, rich text and scrollable areas). It needs a temporary Playwright install:
+`unit/` holds one behaviour test file per core module, including the agent loop in `agent.js`; `contracts/` holds static checks of the repository's hard constraints (no `chrome.*` in core, self-contained injected functions, bilingual catalogs in sync, version numbers consistent). `dom/` runs the injected functions in a real Chromium against fixture pages that replicate component-library markup (native, Element UI, antd, sr-only and pure-ARIA checkboxes, a custom dropdown, keyboard defaults in text fields, rich text and scrollable areas, and the debugger channel driven through a Playwright CDP session). It needs a temporary Playwright install:
 
 ```sh
 npm install --no-save --no-package-lock playwright@1.56.1

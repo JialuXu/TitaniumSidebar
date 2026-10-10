@@ -5,7 +5,7 @@
   "description": "__MSG_extDescription__",
   "default_locale": "en",
   "minimum_chrome_version": "114",
-  "permissions": ["sidePanel", "scripting", "storage"],
+  "permissions": ["sidePanel", "scripting", "storage", "debugger"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"

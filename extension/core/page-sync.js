@@ -56,11 +56,12 @@ export const SETTLE = {
 /**
  * 稳定判定 → 「内容仍在变动」标记（decidePageSync 与 formatPageChange 据此提醒模型）。
  * 稳定了或没判定成功都是 null：判定不了不能当「仍在变动」到处报警。
- * @param {{ settled: boolean, waitedMs: number }|null} settle waitForSettle 的返回值
+ * @param {{ settled: boolean, waitedMs: number, requests?: number }|null} settle 驱动的就位判定结果；
+ *   requests 是调试通道看到的、这次动作发出还没返回的请求数
  */
 export function loadingOf(settle) {
   if (!settle || settle.settled) return null;
-  return { waitedMs: settle.waitedMs };
+  return { waitedMs: settle.waitedMs, requests: settle.requests || 0 };
 }
 
 /* ========== 页面状态 ========== */

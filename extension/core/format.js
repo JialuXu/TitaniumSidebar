@@ -233,13 +233,15 @@ export function formatPageStatus(viewport, stats) {
 }
 
 /**
- * 「页面内容仍在变动」的提醒（动作后与显式等待的摘要共用）。说得留有余地：
- * 可能仍在加载数据，也可能是行情刷新、滚动字幕这类永远静不下来的页面。
- * @param {{ waitedMs: number }|null|undefined} loading 等待结果，稳定时为空
+ * 「页面没有就位」的提醒（动作后与显式等待的摘要共用）。
+ * 调试通道看得到请求时说得笃定：这次操作发出的请求还没回来；
+ * 只知道 DOM 一直在变时说得留有余地：可能仍在加载，也可能是行情刷新这类永远静不下来的页面。
+ * @param {{ waitedMs: number, requests?: number }|null|undefined} loading 等待结果，稳定时为空
  */
 function formatLoadingNote(loading) {
   if (!loading) return '';
-  return t('fmt.chgUnstable', { s: Math.max(1, Math.round(loading.waitedMs / 1000)) });
+  const s = Math.max(1, Math.round(loading.waitedMs / 1000));
+  return loading.requests ? t('fmt.chgNetwork', { s, n: loading.requests }) : t('fmt.chgUnstable', { s });
 }
 
 /** 状态签名里一个字段的可读形式（字段与 snapshot.js 的 STATE_KEYS 对应） */
@@ -293,7 +295,7 @@ export function formatStateChanges(elements, { budget = BUDGETS.changedElements 
  * 导航后刻意不带新页全文——那会让回合内 token 迅速膨胀；
  * 模型需要细节时自行调 find_in_page / list_elements。
  * @param {{ navigated, restricted?, title?, url?, newElements?, changedElements?, viewport?, stats?,
- *           loading?: { waitedMs: number }|null }} change
+ *           loading?: { waitedMs: number, requests?: number }|null }} change
  *   changedElements 是状态变了的已有元素（勾选、展开、可用、显示文字），排在新增元素之后
  *   loading 非空表示等待上限内页面没有稳定下来，摘要末尾提醒模型占位文字不可当结论
  */

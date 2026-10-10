@@ -9,7 +9,7 @@
 // 为什么接口按「套」管理：同一个人在 DeepSeek 官方与行内本地部署之间来回切换是常态，
 // 每次重填三个字段既麻烦又容易把 Key 填错。一套 = 名称 + 接口地址 + 模型名 + Key + 是否支持视觉
 // + 上下文窗口；这两项是模型的属性而非用户偏好，跟着套走，切换后不必再改。
-// 脱敏、页面操作、语言是用户偏好，与用哪套接口无关，留在全局。
+// 脱敏、页面操作、调试通道、语言是用户偏好，与用哪套接口无关，留在全局。
 
 import { LOCALES } from './i18n.js';
 
@@ -19,6 +19,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   activeProfileId: '',
   maskEnabled: true,
   actionsEnabled: false, // 允许页面操作（点击/输入/跳转），默认关闭
+  debuggerEnabled: false, // 页面操作走调试通道（由浏览器发真实输入），默认关闭
   locale: '',            // 界面与模型文案的语言；空串=跟随浏览器（首次启动时判定）
 });
 
@@ -104,6 +105,7 @@ export function normalizeConfig(raw) {
     activeProfileId,
     maskEnabled: src.maskEnabled === undefined ? DEFAULT_CONFIG.maskEnabled : Boolean(src.maskEnabled),
     actionsEnabled: Boolean(src.actionsEnabled),
+    debuggerEnabled: Boolean(src.debuggerEnabled),
     locale: LOCALES.includes(src.locale) ? src.locale : '',
   };
 }
@@ -132,7 +134,7 @@ export function profileLabel(profile, fallback = '') {
 /**
  * 生成设置文件内容（普通对象，外壳负责 JSON.stringify 与下载）。
  *   - 含 API Key：备份的目的就是重装后不必重填 Key，明文风险由界面文案提醒；
- *   - 不含页面操作开关：那是一次有后果的授权，默认关闭且只能在界面上亲手打开，不随文件流转。
+ *   - 不含页面操作与调试通道两个开关：它们是有后果的授权，默认关闭且只能在界面上亲手打开，不随文件流转。
  * @param {object} config
  * @param {Date} [exportedAt]
  */
@@ -153,7 +155,7 @@ export function buildSettingsExport(config, exportedAt = new Date()) {
  * 解析设置文件文本。
  * @param {string} text
  * @returns {{ ok: true, config: object } | { ok: false, reason: 'bad-json'|'bad-kind'|'bad-version' }}
- *   config 已规整，其中 actionsEnabled 恒为 false：文件里本就不该有这个开关，
+ *   config 已规整，其中 actionsEnabled、debuggerEnabled 恒为 false：文件里本就不该有这两个开关，
  *   即便被手工加上也不采信，导入端应保留用户当前的开关状态。
  */
 export function parseSettingsImport(text) {
@@ -169,12 +171,12 @@ export function parseSettingsImport(text) {
   if (!Number.isInteger(data.version) || data.version < 1 || data.version > SETTINGS_FILE_VERSION) {
     return { ok: false, reason: 'bad-version' };
   }
-  return { ok: true, config: normalizeConfig({ ...data, actionsEnabled: false }) };
+  return { ok: true, config: normalizeConfig({ ...data, actionsEnabled: false, debuggerEnabled: false }) };
 }
 
 /**
  * 把解析好的设置文件合进当前配置：整体覆盖，两项例外——
- * 页面操作开关保持用户当前的状态（那是只能亲手打开的授权，文件里没有这一项）；
+ * 页面操作与调试通道两个开关保持用户当前的状态（只能亲手打开的授权，文件里没有这两项）；
  * 文件未记语言时沿用当前语言。
  * @param {object} current 当前配置
  * @param {object} imported parseSettingsImport 成功时的 config
@@ -183,6 +185,7 @@ export function mergeImportedConfig(current, imported) {
   return {
     ...imported,
     actionsEnabled: Boolean(current.actionsEnabled),
+    debuggerEnabled: Boolean(current.debuggerEnabled),
     locale: imported.locale || current.locale,
   };
 }

@@ -174,6 +174,9 @@ const ZH = {
   'ui.menuComingSoon': '即将上线',
   'ui.menuOn': '已开启',
   'ui.menuOff': '已关闭',
+  'ui.debuggerConfirm':
+    '开启调试通道后，AI 的点击、按键与输入由浏览器按真人操作执行，网页无法区分；' +
+    '每个回合里 AI 第一次操作页面时，浏览器顶部会出现「正在调试此浏览器」，回合结束后消失。\n\n确定开启吗？',
   'ui.actionsConfirm':
     '开启后，AI 可以按你的指令点击、输入、跳转当前页面，操作会自动执行。\n' +
     '每一步都会显示在对话中，可随时点「停止」。\n\n' +
@@ -202,6 +205,9 @@ const ZH = {
   'ui.cfgVisionHint': '启用截图工具；截图无法脱敏。',
   'ui.cfgContextWindow': '上下文窗口（tokens）',
   'ui.cfgActions': '允许页面操作',
+  'ui.cfgDebugger': '调试通道（真实点击与按键）',
+  'ui.cfgDebuggerHint': '开启页面操作时生效。点击、按键、输入由浏览器按真人操作执行；AI 操作期间浏览器顶部会显示「正在调试此浏览器」。',
+  'ui.cfgDebuggerUnavailable': '当前版本没有调试权限，页面操作使用合成事件。',
   'ui.cfgTest': '测试连接',
   'ui.cfgSave': '保存',
   'ui.cfgProfiles': '模型接口',
@@ -402,6 +408,9 @@ const ZH = {
   'fmt.st.pressed': '已按下',
   'fmt.st.pressedMixed': '部分按下',
   'fmt.st.unpressed': '未按下',
+  'fmt.chgNetwork':
+    '注意：等待 {s} 秒后，这次操作发出的 {n} 个网络请求还没有返回，页面上的「加载中」「暂无数据」等文字可能只是占位；' +
+    '先 wait_for_page 再核实，不要据此下结论。',
   'fmt.chgUnstable':
     '注意：页面内容在 {s} 秒内持续变动、尚未稳定——可能仍在加载数据，也可能是页面自身在持续刷新。' +
     '若看到「加载中」「暂无数据」这类占位，先 wait_for_page 再核实，不要据此下结论。',
@@ -455,6 +464,8 @@ const ZH = {
   'res.keySubmitted': '，已提交所属表单',
   'res.keyMoved': '，焦点移到「{name}」',
   'res.keyPrevented': '，页面自己处理了这个按键',
+  'res.fallback.unavailable': '（调试通道附加失败，这一步改用合成事件执行）',
+  'res.fallback.unsafePoint': '（元素中心点被遮挡或落在内部另一个控件上，这一步改用合成事件点击）',
   'res.keyCaret': '，光标从第 {from} 个字符移到第 {to} 个字符',
   'res.keyCaretMoved': '，光标已移动',
   'res.keyScrolled': '，{where}滚动了 {px} 像素',
@@ -832,6 +843,9 @@ const EN = {
   'ui.menuComingSoon': 'Coming soon',
   'ui.menuOn': 'On',
   'ui.menuOff': 'Off',
+  'ui.debuggerConfirm':
+    'With the debugger channel on, the AI\'s clicks, key presses and typing are carried out by the browser as real input that pages cannot tell apart; ' +
+    'the first time the AI operates the page in a turn, the browser shows a "started debugging this browser" bar, which goes away when the turn ends.\n\nTurn it on?',
   'ui.actionsConfirm':
     'Once enabled, the AI can click, type and navigate on the current page on your instruction, and does so automatically.\n' +
     'Every step appears in the conversation and you can hit "Stop" at any time.\n\n' +
@@ -860,6 +874,9 @@ const EN = {
   'ui.cfgVisionHint': 'Enables screenshots, which cannot be redacted.',
   'ui.cfgContextWindow': 'Context window (tokens)',
   'ui.cfgActions': 'Allow page actions',
+  'ui.cfgDebugger': 'Debugger channel (real clicks and keys)',
+  'ui.cfgDebuggerHint': 'Applies when page actions are on. Clicks, keys and typing are carried out by the browser as real input; while the AI operates the page, the browser shows a "started debugging this browser" bar.',
+  'ui.cfgDebuggerUnavailable': 'This build has no debugger permission; page actions use synthetic events.',
   'ui.cfgTest': 'Test connection',
   'ui.cfgSave': 'Save',
   'ui.cfgProfiles': 'Model endpoints',
@@ -1057,6 +1074,9 @@ const EN = {
   'fmt.st.pressed': 'pressed',
   'fmt.st.pressedMixed': 'partially pressed',
   'fmt.st.unpressed': 'not pressed',
+  'fmt.chgNetwork':
+    'Note: after waiting {s}s, {n} network request(s) sent by this action have not returned yet, so text such as "Loading" or "No data" may only be a placeholder; ' +
+    'call wait_for_page and verify before drawing conclusions.',
   'fmt.chgUnstable':
     'Note: the page content kept changing for {s}s and has not settled — it may still be loading data, or the page may refresh itself continuously. ' +
     'If you see placeholders such as "Loading" or "No data", call wait_for_page and verify before drawing conclusions.',
@@ -1110,6 +1130,8 @@ const EN = {
   'res.keySubmitted': ', which submitted the surrounding form',
   'res.keyMoved': ', focus moved to "{name}"',
   'res.keyPrevented': ', the page handled the key itself',
+  'res.fallback.unavailable': ' (the debugger channel could not attach, so this step used synthetic events)',
+  'res.fallback.unsafePoint': ' (the element\'s center is covered or lands on another control inside it, so this step clicked with synthetic events)',
   'res.keyCaret': ', caret moved from character {from} to {to}',
   'res.keyCaretMoved': ', caret moved',
   'res.keyScrolled': ', scrolled the {where} by {px}px',

@@ -67,10 +67,16 @@ for (const { file, name } of INJECTED) {
   });
 }
 
-test('INJECTED 清单没有漏登记：外壳传给 injectFunc 的函数都在清单里', () => {
+test('INJECTED 清单没有漏登记：外壳与执行驱动注入的函数都在清单里', () => {
   const shell = fs.readFileSync(new URL('../sidepanel.js', CORE_DIR), 'utf8');
   const injected = new Set([...shell.matchAll(/\binjectFunc\(\s*[\w.]+\s*,\s*(\w+)/g)].map((m) => m[1]));
   injected.delete('func'); // injectFunc 自身的定义
+  // 执行驱动（extension/drivers/）经构造时传入的 inject 注入
+  const DRIVERS_DIR = new URL('../drivers/', CORE_DIR);
+  for (const f of fs.readdirSync(DRIVERS_DIR).filter((n) => n.endsWith('.js'))) {
+    const code = fs.readFileSync(new URL(f, DRIVERS_DIR), 'utf8');
+    for (const m of code.matchAll(/\binject\(\s*[\w.]+\s*,\s*(\w+)/g)) injected.add(m[1]);
+  }
   assert.ok(injected.size > 0, '没在外壳里找到 injectFunc 的调用，检查方式需要跟着外壳一起改');
   const listed = new Set(INJECTED.map((i) => i.name));
   assert.deepEqual([...injected].filter((n) => !listed.has(n)), []);
