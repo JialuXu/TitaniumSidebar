@@ -1,7 +1,7 @@
 // core/llm-client.js —— OpenAI 兼容接口调用与 SSE 流式解析（平台无关层）
 //
 // 只依赖标准 fetch，不依赖扩展的 CORS 豁免（接口地址由外壳传入；
-// SDK 场景下 CORS 由网关开放或宿主同域反代解决，core 不关心）。
+// SDK 场景下 CORS 由部署环境放行，或由宿主页面同域反代，core 不关心）。
 // 错误统一抛结构化的 LlmError，可读文案映射在 core/agent.js 的 describeError，
 // 本文件不含任何面向用户的文案——LlmError.message 只是调试串，不进 UI。
 

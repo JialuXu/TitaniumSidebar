@@ -10,7 +10,7 @@
 //
 // 只接管点击、按键与文字输入；选择原生下拉、滚动、只读提取仍走合成事件通道。
 // 删掉本文件、在 drivers/index.js 里不再创建它，并从 manifest 去掉 debugger 权限，
-// 扩展就回到纯合成事件通道（行内定制版即如此）。
+// 扩展就回到纯合成事件通道。
 
 import { performAction } from '../core/actions.js';
 import { keyEffectFromProbes } from '../core/key-effect.js';
