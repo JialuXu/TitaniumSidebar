@@ -519,6 +519,9 @@ async function syncAfterAction({ mayNavigate, budget = SETTLE.action, opened = n
       newElements: snap.elements.filter((e) => e.isNew),
       changedElements: snap.elements.filter((e) => e.changes),
       target: ref == null || snap.rebuilt ? null : snap.elements.find((e) => e.ref === ref) || null,
+      // 批量动作合并逐步变化时据此剔除已经消失的新元素；编号整体重建后批量动作就此停下
+      liveRefs: snap.elements.map((e) => e.ref),
+      rebuilt: Boolean(snap.rebuilt),
       viewport: snap.viewport,
       stats: snap.stats,
       loading,
@@ -801,6 +804,7 @@ const TOOL_ICONS = {
   select_option: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m9 11 3 3 3-3"/>',
   press_key: '<path d="M20 4v7a4 4 0 0 1-4 4H4"/><path d="m9 10-5 5 5 5"/>',
   scroll_page: '<path d="M12 3v18"/><path d="m8 7 4-4 4 4M8 17l4 4 4-4"/>',
+  batch_actions: '<path d="m3 6 2 2 3-3M3 13l2 2 3-3"/><path d="M11 6h10M11 13h10M11 20h10"/>',
   navigate: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><ellipse cx="12" cy="12" rx="4" ry="9"/>',
   go_back: '<path d="M19 12H5"/><path d="m12 5-7 7 7 7"/>',
   refresh: '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>',

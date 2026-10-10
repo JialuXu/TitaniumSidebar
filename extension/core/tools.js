@@ -50,15 +50,20 @@ export const MAX_ACTION_ROUNDS = 15;
  * scroll_page / list_tabs 不在其中——它们可逆且不改动任何页面数据。
  */
 export const WRITE_TOOL_NAMES = new Set([
-  'click_element', 'input_text', 'select_option', 'press_key',
+  'click_element', 'input_text', 'select_option', 'press_key', 'batch_actions',
   'navigate', 'go_back', 'refresh', 'open_tab', 'switch_tab', 'close_tab',
 ]);
+
+/** batch_actions 单次最多几步：一张表单的字段够用，更长的流程分批做、中途核对 */
+export const MAX_BATCH_STEPS = 10;
 
 /**
  * wait_for_page 单次最长等待秒数。后台接口慢到十几秒的都有，再长就该让模型
  * 分几次等并如实告诉用户，而不是一次挂住半分钟。
  */
 export const MAX_WAIT_SECONDS = 15;
+
+const SCROLL_DIRECTIONS = ['up', 'down', 'top', 'bottom'];
 
 /** 动作工具允许的按键（与 core/actions.js 的 KEYS 表保持一致） */
 const ALLOWED_KEYS = [
@@ -159,9 +164,29 @@ export function buildToolDefs({ vision = false, actions = false } = {}) {
         },
         ['key']),
 
+      fn('batch_actions', t('tool.batch.d'),
+        {
+          steps: {
+            type: 'array', minItems: 1, maxItems: MAX_BATCH_STEPS, description: t('tool.batch.steps'),
+            items: {
+              type: 'object',
+              properties: {
+                action: { type: 'string', enum: Object.keys(PAGE_ACTIONS), description: t('tool.batch.action') },
+                ref: { type: 'integer', description: t('tool.batch.ref') },
+                text: { type: 'string', description: t('tool.batch.text') },
+                option: { type: 'string', description: t('tool.batch.option') },
+                key: { type: 'string', enum: ALLOWED_KEYS, description: t('tool.batch.key') },
+                direction: { type: 'string', enum: SCROLL_DIRECTIONS, description: t('tool.batch.direction') },
+              },
+              required: ['action'],
+            },
+          },
+        },
+        ['steps']),
+
       fn('scroll_page', t('tool.scroll.d'),
         {
-          direction: { type: 'string', enum: ['up', 'down', 'top', 'bottom'], description: t('tool.scroll.direction') },
+          direction: { type: 'string', enum: SCROLL_DIRECTIONS, description: t('tool.scroll.direction') },
           pages: { type: 'number', description: t('tool.scroll.pages') },
         },
         ['direction']),
@@ -244,6 +269,148 @@ function filterElements(elements, { scope, query }) {
 // 导航类工具只放行 http/https：javascript:、file:、chrome:// 一律不交给 provider
 const HTTP_URL = /^https?:\/\//i;
 
+/* ========== 页内动作（单步工具与 batch_actions 共用） ========== */
+
+// 勾选类控件以页面稳定后回读的状态为准：组件库在下一个微任务或下一帧才改 aria-checked，
+// 点击当下读到的还是旧值
+function toggledTarget(change) {
+  const el = change && change.target;
+  return el && TOGGLE_ROLES.has(el.role) && !el.isNew ? el : null;
+}
+
+const named = (name) => (name ? ` "${name}"` : '');
+
+/**
+ * 页内动作：参数 → performAction 载荷、成功文案与活动行数据。
+ * 键名即 batch_actions 每一步的 action；tool 是对应的单步工具名。
+ *   payload(a)            传给 provider.act 的载荷
+ *   ui(a)                 活动行数据的底子（失败时也带上）
+ *   text(a, r, change)    成功文案（不含页面变化摘要）
+ *   data(a, r, change)    成功时补进活动行数据
+ */
+const PAGE_ACTIONS = {
+  click: {
+    tool: 'click_element',
+    payload: (a) => ({ action: 'click', ref: Number(a.ref) }),
+    ui: (a) => ({ ref: Number(a.ref) }),
+    text: (a, r, change) => {
+      const el = toggledTarget(change);
+      let checked = '';
+      if (el) checked = t('res.clickState', { state: el.value || t('fmt.st.unchecked') });
+      else if (typeof r.checked === 'boolean') checked = t(r.checked ? 'res.checkedOn' : 'res.checkedOff');
+      const head = t('res.clicked', { ref: Number(a.ref), name: named(r.name), checked });
+      // 状态与上次交给模型时相同，就在结果里说明
+      return el && !el.changes ? `${head}\n${t('res.clickNoEffect')}` : head;
+    },
+    data: (a, r, change) => {
+      const el = toggledTarget(change);
+      return { name: r.name, ...(el && !el.changes ? { noEffect: true } : {}) };
+    },
+  },
+  input: {
+    tool: 'input_text',
+    payload: (a) => ({ action: 'input', ref: Number(a.ref), text: String(a.text == null ? '' : a.text) }),
+    ui: (a) => ({ ref: Number(a.ref), text: String(a.text == null ? '' : a.text) }),
+    text: (a, r) => t('res.inputDone', { ref: Number(a.ref), name: named(r.name), value: r.value }),
+    data: (a, r) => ({ name: r.name }),
+  },
+  select: {
+    tool: 'select_option',
+    payload: (a) => ({ action: 'select', ref: Number(a.ref), option: String(a.option == null ? '' : a.option) }),
+    ui: (a) => ({ ref: Number(a.ref), option: String(a.option == null ? '' : a.option) }),
+    text: (a, r) => t('res.selected', { ref: Number(a.ref), name: named(r.name), value: r.value }),
+    data: (a, r) => ({ name: r.name, value: r.value }),
+  },
+  key: {
+    tool: 'press_key',
+    payload: (a) => ({ action: 'key', key: String(a.key || ''), ...(a.ref == null ? {} : { ref: Number(a.ref) }) }),
+    ui: (a) => ({ key: String(a.key || ''), ref: a.ref == null ? null : Number(a.ref) }),
+    text: (a, r) => {
+      const extra = r.submitted
+        ? t('res.keySubmitted')
+        : (r.movedTo ? t('res.keyMoved', { name: r.movedTo }) : '');
+      const target = r.target ? t('res.keyTarget', { name: r.target }) : '';
+      return t('res.keyDone', { key: r.key, target, extra });
+    },
+    data: (a, r) => ({ key: r.key, submitted: r.submitted }),
+  },
+  scroll: {
+    tool: 'scroll_page',
+    payload: (a) => ({
+      action: 'scroll',
+      direction: SCROLL_DIRECTIONS.includes(a.direction) ? a.direction : 'down',
+      pages: Number(a.pages) || 1,
+    }),
+    ui: (a) => ({
+      direction: SCROLL_DIRECTIONS.includes(a.direction) ? a.direction : 'down',
+      pages: Number(a.pages) || 1,
+    }),
+    text: (a, r) => `${t('res.scrolled.' + r.direction)}\n${formatPageStatus(r.viewport, null)}`,
+    data: (a, r) => ({ direction: r.direction }),
+  },
+};
+
+/** 工具名 → 页内动作（单步工具分发用） */
+const PAGE_ACTION_BY_TOOL = Object.fromEntries(Object.values(PAGE_ACTIONS).map((spec) => [spec.tool, spec]));
+
+/**
+ * batch_actions 某一步之后该不该停：页面跳转、用户切走标签页、编号整体重建、页面仍在加载——
+ * 这几种情况下后面几步手里的编号或时机都不再可靠。返回停下的原因文案，可以继续时返回空串。
+ */
+function batchHalt(change) {
+  if (!change) return '';
+  if (change.navigated || change.restricted) return t('res.batchHaltNavigated');
+  if (change.userSwitched) return t('res.batchHaltSwitched');
+  if (change.rebuilt) return t('res.batchHaltRebuilt');
+  if (change.loading) return t('res.batchHaltLoading');
+  return '';
+}
+
+/**
+ * 把批量执行里逐步的页面变化合成一份：
+ * - 跳转了就以最后一步（跳转那一步）为准；
+ * - 新增元素取并集，最后一步时已不在页面上的去掉（点开下拉、选完收起，选项就不该再报）；
+ * - 状态变化按元素合并，每个字段取最早的 from 与最晚的 to，前后抵消的字段与元素去掉；
+ *   先新增、后又变了状态的元素只按新增报，信息取最新一份。
+ * @param {Array<object|null>} changes 每一步 provider.act 返回的 change
+ * @returns {object|null} formatPageChange 能直接用的页面变化
+ */
+export function mergePageChanges(changes) {
+  const list = (changes || []).filter(Boolean);
+  if (!list.length) return null;
+  const last = list[list.length - 1];
+  if (last.navigated || last.restricted) return last;
+
+  const fresh = new Map();
+  const changed = new Map();
+  for (const change of list) {
+    for (const el of change.newElements || []) {
+      fresh.set(el.ref, el);
+      changed.delete(el.ref);
+    }
+    for (const el of change.changedElements || []) {
+      if (fresh.has(el.ref)) {
+        const { changes: _ignored, ...info } = el;
+        fresh.set(el.ref, { ...info, isNew: true });
+        continue;
+      }
+      const prev = changed.get(el.ref);
+      const byKey = new Map((prev ? prev.changes : []).map((c) => [c.key, c]));
+      for (const c of el.changes) {
+        const before = byKey.get(c.key);
+        byKey.set(c.key, { key: c.key, from: before ? before.from : c.from, to: c.to });
+      }
+      changed.set(el.ref, { ...el, changes: [...byKey.values()] });
+    }
+  }
+  const alive = Array.isArray(last.liveRefs) ? new Set(last.liveRefs) : null;
+  const newElements = [...fresh.values()].filter((el) => !alive || alive.has(el.ref));
+  const changedElements = [...changed.values()]
+    .map((el) => ({ ...el, changes: el.changes.filter((c) => c.from !== c.to) }))
+    .filter((el) => el.changes.length);
+  return { ...last, newElements, changedElements };
+}
+
 /** 动作结果尾部统一附上页面变化摘要 */
 function withChange(text, change) {
   const tail = formatPageChange(change);
@@ -298,18 +465,65 @@ export async function dispatchToolCall(call, provider, turn = {}, registered = n
     return withChange(text, change);
   };
 
-  // 页内动作的公共壳：失败映射中文，成功拼「结果描述 + 页面变化摘要」
-  const doAct = async (payload, onSuccess, uiData) => {
-    const { result, change } = await provider.act(payload);
-    meta.data = { ...(uiData || {}) };
+  // 页内单步动作的公共壳：失败映射成可读文案，成功拼「结果描述 + 页面变化摘要」
+  const doAct = async (spec) => {
+    const { result, change } = await provider.act(spec.payload(args));
+    meta.data = spec.ui(args);
     if (!result || !result.ok) {
       meta.data.reason = result && result.reason;
       return reply(provider.mask(describeFailure(result, args)));
     }
     meta.ok = true;
     meta.data.navigated = Boolean(change && change.navigated);
-    Object.assign(meta.data, onSuccess.data ? onSuccess.data(result, change) : {});
-    return reply(provider.mask(withChangeSynced(onSuccess.text(result, change), change)));
+    Object.assign(meta.data, spec.data(args, result, change));
+    return reply(provider.mask(withChangeSynced(spec.text(args, result, change), change)));
+  };
+
+  // 批量动作：逐步执行，失败或遇到 batchHalt 就停；每步一行结果，末尾一份合并后的页面变化
+  const doBatch = async () => {
+    const steps = Array.isArray(args.steps) ? args.steps : [];
+    const total = steps.length;
+    meta.data = { total, done: 0 };
+    if (!total) return reply(t('res.batchEmpty'));
+    if (total > MAX_BATCH_STEPS) return reply(t('res.batchTooMany', { max: MAX_BATCH_STEPS }));
+
+    const lines = [];
+    const changes = [];
+    const step = (n, text) => lines.push(t('res.batchStep', { n, text: text.replace(/\n/g, '\n   ') }));
+    let noEffect = 0;
+    let tail = '';
+    for (let i = 0; i < total; i++) {
+      const a = steps[i] && typeof steps[i] === 'object' ? steps[i] : {};
+      const spec = PAGE_ACTIONS[a.action];
+      const failAt = (text, reason) => {
+        step(i + 1, text);
+        meta.data.reason = reason;
+        tail = t('res.batchFailed', { n: i + 1, rest: total - i - 1 });
+      };
+      if (!spec) { failAt(t('res.batchBadStep', { action: String(a.action || '') }), 'bad-step'); break; }
+      let outcome;
+      try {
+        outcome = await provider.act(spec.payload(a));
+      } catch (err) {
+        failAt((err && err.message) || t('res.toolFailed'), 'error');
+        break;
+      }
+      const { result, change } = outcome || {};
+      if (!result || !result.ok) { failAt(describeFailure(result, a), result && result.reason); break; }
+      meta.data.done = i + 1;
+      step(i + 1, spec.text(a, result, change));
+      if (spec.data(a, result, change).noEffect) noEffect++;
+      if (change) changes.push(change);
+      const halt = batchHalt(change);
+      if (halt && i < total - 1) { tail = t('res.batchStopped', { n: i + 1, reason: halt, rest: total - i - 1 }); break; }
+    }
+
+    const merged = mergePageChanges(changes);
+    meta.ok = !meta.data.reason;
+    meta.data.navigated = Boolean(merged && merged.navigated);
+    if (noEffect) meta.data.noEffect = noEffect;
+    const text = [t('res.batchHead', { done: meta.data.done, total }), ...lines, tail].filter(Boolean).join('\n');
+    return reply(provider.mask(merged ? withChangeSynced(text, merged) : text));
   };
 
   try {
@@ -445,71 +659,15 @@ export async function dispatchToolCall(call, provider, turn = {}, registered = n
       }
 
       /* ================= 动作组：页内 ================= */
-      case 'click_element': {
-        const ref = Number(args.ref);
-        // 勾选类控件以页面稳定后回读的状态为准：组件库在下一个微任务或下一帧才改 aria-checked，
-        // 点击当下读到的还是旧值。状态与上次交给模型时相同，就在结果里说明
-        const toggled = (change) => {
-          const el = change && change.target;
-          return el && TOGGLE_ROLES.has(el.role) && !el.isNew ? el : null;
-        };
-        return await doAct({ action: 'click', ref }, {
-          text: (r, change) => {
-            const el = toggled(change);
-            let checked = '';
-            if (el) checked = t('res.clickState', { state: el.value || t('fmt.st.unchecked') });
-            else if (typeof r.checked === 'boolean') checked = t(r.checked ? 'res.checkedOn' : 'res.checkedOff');
-            const head = t('res.clicked', { ref, name: r.name ? ` "${r.name}"` : '', checked });
-            return el && !el.changes ? `${head}\n${t('res.clickNoEffect')}` : head;
-          },
-          data: (r, change) => {
-            const el = toggled(change);
-            return { ref, name: r.name, ...(el && !el.changes ? { noEffect: true } : {}) };
-          },
-        }, { ref });
-      }
+      case 'click_element':
+      case 'input_text':
+      case 'select_option':
+      case 'press_key':
+      case 'scroll_page':
+        return await doAct(PAGE_ACTION_BY_TOOL[call.name]);
 
-      case 'input_text': {
-        const ref = Number(args.ref);
-        const text = String(args.text == null ? '' : args.text);
-        return await doAct({ action: 'input', ref, text }, {
-          text: (r) => t('res.inputDone', { ref, name: r.name ? ` "${r.name}"` : '', value: r.value }),
-          data: (r) => ({ ref, name: r.name }),
-        }, { ref, text });
-      }
-
-      case 'select_option': {
-        const ref = Number(args.ref);
-        const option = String(args.option == null ? '' : args.option);
-        return await doAct({ action: 'select', ref, option }, {
-          text: (r) => t('res.selected', { ref, name: r.name ? ` "${r.name}"` : '', value: r.value }),
-          data: (r) => ({ ref, name: r.name, value: r.value }),
-        }, { ref, option });
-      }
-
-      case 'press_key': {
-        const key = String(args.key || '');
-        const ref = args.ref == null ? null : Number(args.ref);
-        return await doAct({ action: 'key', key, ...(ref == null ? {} : { ref }) }, {
-          text: (r) => {
-            const extra = r.submitted
-              ? t('res.keySubmitted')
-              : (r.movedTo ? t('res.keyMoved', { name: r.movedTo }) : '');
-            const target = r.target ? t('res.keyTarget', { name: r.target }) : '';
-            return t('res.keyDone', { key: r.key, target, extra });
-          },
-          data: (r) => ({ key: r.key, submitted: r.submitted }),
-        }, { key, ref });
-      }
-
-      case 'scroll_page': {
-        const direction = ['up', 'down', 'top', 'bottom'].includes(args.direction) ? args.direction : 'down';
-        const pages = Number(args.pages) || 1;
-        return await doAct({ action: 'scroll', direction, pages }, {
-          text: (r) => `${t('res.scrolled.' + r.direction)}\n${formatPageStatus(r.viewport, null)}`,
-          data: (r) => ({ direction: r.direction }),
-        }, { direction, pages });
-      }
+      case 'batch_actions':
+        return await doBatch();
 
       /* ================= 动作组：浏览器级 ================= */
       case 'navigate': {

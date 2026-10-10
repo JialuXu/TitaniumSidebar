@@ -124,7 +124,8 @@ function countCall(stats, name, isAction, meta) {
     const reason = (meta.data && meta.data.reason) || 'error';
     stats.failures[reason] = (stats.failures[reason] || 0) + 1;
   }
-  if (meta.data && meta.data.noEffect) stats.noEffect++;
+  // 单步点击记 true，批量动作记次数
+  if (meta.data && meta.data.noEffect) stats.noEffect += Number(meta.data.noEffect);
 }
 
 /**

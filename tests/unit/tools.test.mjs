@@ -4,6 +4,7 @@ import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildToolDefs, dispatchToolCall, WRITE_TOOL_NAMES, MAX_TOOL_ROUNDS, MAX_ACTION_ROUNDS, MAX_WAIT_SECONDS,
+  MAX_BATCH_STEPS, mergePageChanges,
 } from '../../extension/core/tools.js';
 import { BUDGETS } from '../../extension/core/format.js';
 import { maskSensitive } from '../../extension/core/masker.js';
@@ -272,4 +273,154 @@ test('第 13 条：navigate / open_tab 只放行 http/https，别的网址不交
   assert.equal(calls.length, 0);
   await dispatchToolCall(call('navigate', { url: ' https://b.test/ ' }), provider, {}, reg);
   assert.deepEqual(calls[0], { name: 'navigate', arg: { url: 'https://b.test/' } });
+});
+
+/* ========== 批量动作 ========== */
+
+const batch = (steps) => call('batch_actions', { steps });
+const ACTIONS = () => registeredFor({ actions: true });
+const quiet = (extra = {}) => ({ navigated: false, newElements: [], ...extra });
+
+test('batch_actions：只在开启页面操作时注册，算有副作用的工具', () => {
+  assert.ok(!names(buildToolDefs()).includes('batch_actions'));
+  assert.ok(names(buildToolDefs({ actions: true })).includes('batch_actions'));
+  assert.ok(WRITE_TOOL_NAMES.has('batch_actions'));
+});
+
+test('batch_actions：逐步执行，每步一行结果，载荷与单步工具一致', async () => {
+  const replies = [
+    { result: { ok: true, name: '姓名', value: '张三' }, change: quiet() },
+    { result: { ok: true, name: '城市', value: '上海' }, change: quiet() },
+    { result: { ok: true, key: 'Tab', target: '城市', movedTo: '备注' }, change: quiet() },
+  ];
+  const { provider, calls } = fakeProvider({ act: () => replies.shift() });
+  const res = await dispatchToolCall(batch([
+    { action: 'input', ref: 3, text: '张三' },
+    { action: 'select', ref: 4, option: '上海' },
+    { action: 'key', key: 'Tab' },
+  ]), provider, {}, ACTIONS());
+  assert.deepEqual(calls.map((c) => c.arg), [
+    { action: 'input', ref: 3, text: '张三' },
+    { action: 'select', ref: 4, option: '上海' },
+    { action: 'key', key: 'Tab' },
+  ]);
+  const lines = res.toolMessage.content.split('\n');
+  assert.equal(lines[0], t('res.batchHead', { done: 3, total: 3 }));
+  assert.equal(lines[1], t('res.batchStep', { n: 1, text: t('res.inputDone', { ref: 3, name: ' "姓名"', value: '张三' }) }));
+  assert.equal(lines[2], t('res.batchStep', { n: 2, text: t('res.selected', { ref: 4, name: ' "城市"', value: '上海' }) }));
+  assert.equal(res.meta.ok, true);
+  assert.deepEqual(res.meta.data, { total: 3, done: 3, navigated: false });
+});
+
+test('batch_actions：某步失败就停，后面的不执行', async () => {
+  const replies = [
+    { result: { ok: true, name: 'A' }, change: quiet() },
+    { result: { ok: false, reason: 'hidden' }, change: null },
+  ];
+  const { provider, calls } = fakeProvider({ act: () => replies.shift() });
+  const res = await dispatchToolCall(batch([
+    { action: 'click', ref: 1 }, { action: 'click', ref: 2 }, { action: 'click', ref: 3 },
+  ]), provider, {}, ACTIONS());
+  assert.equal(calls.length, 2);
+  assert.ok(res.toolMessage.content.includes(t('res.batchStep', { n: 2, text: t('fail.hidden', { ref: 2 }) })));
+  assert.ok(res.toolMessage.content.includes(t('res.batchFailed', { n: 2, rest: 1 })));
+  assert.equal(res.meta.ok, false);
+  assert.equal(res.meta.data.reason, 'hidden');
+  assert.equal(res.meta.data.done, 1);
+});
+
+test('batch_actions：页面跳转、仍在加载、编号重建、用户切页时停下，并说明原因', async () => {
+  const cases = [
+    [{ navigated: true, title: '新页', url: 'https://b.test/' }, 'res.batchHaltNavigated'],
+    [quiet({ loading: { busy: 1, waitedMs: 5000 } }), 'res.batchHaltLoading'],
+    [quiet({ rebuilt: true }), 'res.batchHaltRebuilt'],
+    [quiet({ userSwitched: { title: '别的页' } }), 'res.batchHaltSwitched'],
+  ];
+  for (const [change, key] of cases) {
+    const { provider, calls } = fakeProvider({ act: { result: { ok: true, name: 'A' }, change } });
+    const res = await dispatchToolCall(batch([{ action: 'click', ref: 1 }, { action: 'click', ref: 2 }]), provider, {}, ACTIONS());
+    assert.equal(calls.length, 1, key);
+    assert.ok(res.toolMessage.content.includes(t('res.batchStopped', { n: 1, reason: t(key), rest: 1 })), key);
+    assert.equal(res.meta.ok, true, key);
+  }
+});
+
+test('batch_actions：跳转后把本回合的页面基准同步到新页，同批后续调用据 navigated 拦下', async () => {
+  const { provider } = fakeProvider({
+    act: { result: { ok: true, name: '下一页' }, change: { navigated: true, title: '新页', url: 'https://b.test/', stats: { textTotal: 777 } } },
+  });
+  const turn = { url: 'https://a.test/', textTotal: 50000 };
+  const res = await dispatchToolCall(batch([{ action: 'click', ref: 1 }]), provider, turn, ACTIONS());
+  assert.equal(res.meta.data.navigated, true);
+  assert.equal(turn.url, 'https://b.test/');
+  assert.ok(res.toolMessage.content.includes(t('fmt.chgNavigated', { title: '新页', url: 'https://b.test/' })));
+});
+
+test('batch_actions：空列表、超出步数、未知动作都不执行', async () => {
+  const { provider, calls } = fakeProvider();
+  const empty = await dispatchToolCall(batch([]), provider, {}, ACTIONS());
+  assert.equal(empty.toolMessage.content, t('res.batchEmpty'));
+  const many = Array.from({ length: MAX_BATCH_STEPS + 1 }, (_, i) => ({ action: 'click', ref: i + 1 }));
+  const tooMany = await dispatchToolCall(batch(many), provider, {}, ACTIONS());
+  assert.equal(tooMany.toolMessage.content, t('res.batchTooMany', { max: MAX_BATCH_STEPS }));
+  const bad = await dispatchToolCall(batch([{ action: 'drag', ref: 1 }]), provider, {}, ACTIONS());
+  assert.ok(bad.toolMessage.content.includes(t('res.batchBadStep', { action: 'drag' })));
+  assert.equal(bad.meta.data.reason, 'bad-step');
+  assert.equal(calls.length, 0);
+});
+
+test('batch_actions：provider 抛错时保留前面几步的结果', async () => {
+  let n = 0;
+  const { provider } = fakeProvider({
+    act: () => {
+      if (n++) throw new Error('标签页已切换');
+      return { result: { ok: true, name: 'A' }, change: quiet() };
+    },
+  });
+  const res = await dispatchToolCall(batch([{ action: 'click', ref: 1 }, { action: 'click', ref: 2 }]), provider, {}, ACTIONS());
+  assert.ok(res.toolMessage.content.includes(t('res.batchStep', { n: 1, text: t('res.clicked', { ref: 1, name: ' "A"', checked: '' }) })));
+  assert.ok(res.toolMessage.content.includes(t('res.batchStep', { n: 2, text: '标签页已切换' })));
+  assert.equal(res.meta.data.reason, 'error');
+});
+
+test('batch_actions：勾选态没变的步骤计入 noEffect', async () => {
+  const target = (ref, changes) => ({ ref, role: 'checkbox', name: `行${ref}`, value: '已选中', ...(changes ? { changes } : {}) });
+  const replies = [
+    { result: { ok: true, name: '行1' }, change: quiet({ target: target(1, [{ key: 'value', from: null, to: '已选中' }]) }) },
+    { result: { ok: true, name: '行2' }, change: quiet({ target: target(2) }) },
+  ];
+  const { provider } = fakeProvider({ act: () => replies.shift() });
+  const res = await dispatchToolCall(batch([{ action: 'click', ref: 1 }, { action: 'click', ref: 2 }]), provider, {}, ACTIONS());
+  assert.equal(res.meta.data.noEffect, 1);
+  // 多行的步骤结果缩进续行，仍归在这一步下面
+  assert.ok(res.toolMessage.content.includes(`\n   ${t('res.clickNoEffect')}`));
+});
+
+test('mergePageChanges：新增取并集并剔除已消失的，状态变化取最早 from 与最晚 to', () => {
+  const opt = (ref, name) => ({ ref, role: 'clickable', tag: 'div', name, isNew: true });
+  const merged = mergePageChanges([
+    quiet({
+      newElements: [opt(20, '北京'), opt(21, '上海')],
+      changedElements: [{ ref: 7, role: 'combobox', name: '城市', changes: [{ key: 'expanded', from: false, to: true }] }],
+    }),
+    quiet({
+      changedElements: [
+        { ref: 7, role: 'combobox', name: '上海', changes: [{ key: 'name', from: '城市', to: '上海' }, { key: 'expanded', from: true, to: false }] },
+        { ref: 21, role: 'clickable', name: '上海（已选）', changes: [{ key: 'name', from: '上海', to: '上海（已选）' }] },
+      ],
+      liveRefs: [7, 21],
+    }),
+  ]);
+  assert.deepEqual(merged.newElements, [{ ref: 21, role: 'clickable', name: '上海（已选）', isNew: true }]);
+  assert.deepEqual(merged.changedElements, [
+    { ref: 7, role: 'combobox', name: '上海', changes: [{ key: 'name', from: '城市', to: '上海' }] },
+  ]);
+});
+
+test('mergePageChanges：前后抵消的元素整条去掉；跳转以最后一步为准', () => {
+  const toggled = (from, to) => quiet({ changedElements: [{ ref: 5, role: 'checkbox', name: 'A', changes: [{ key: 'value', from, to }] }] });
+  assert.deepEqual(mergePageChanges([toggled(null, '已选中'), toggled('已选中', null)]).changedElements, []);
+  const nav = { navigated: true, title: '新页', url: 'https://b.test/' };
+  assert.equal(mergePageChanges([toggled(null, '已选中'), nav]), nav);
+  assert.equal(mergePageChanges([null]), null);
 });

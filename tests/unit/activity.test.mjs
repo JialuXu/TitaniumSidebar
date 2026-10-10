@@ -52,6 +52,19 @@ test('坏 JSON（args 为 null）按空值兜底', () => {
   assert.doesNotThrow(() => describeToolActivity('navigate', null, 'run'));
 });
 
+test('批量动作：进行中报步数，完成报完成几步，失败报停在第几步', () => {
+  const args = { steps: [{ action: 'click', ref: 1 }, { action: 'click', ref: 2 }, { action: 'click', ref: 3 }] };
+  assert.equal(describeToolActivity('batch_actions', args, 'run'), t('act.batch.run', { total: 3 }));
+  assert.equal(
+    describeToolActivity('batch_actions', args, 'done', { total: 3, done: 3 }),
+    t('act.batch.done', { done: 3, total: 3, jumped: '' }),
+  );
+  assert.equal(
+    describeToolActivity('batch_actions', args, 'fail', { total: 3, done: 1, reason: 'hidden' }),
+    t('act.batch.fail', { n: 2, total: 3 }),
+  );
+});
+
 test('未知工具走通用文案', () => {
   assert.equal(describeToolActivity('mystery', {}, 'run'), t('act.generic.run', { name: 'mystery' }));
 });
