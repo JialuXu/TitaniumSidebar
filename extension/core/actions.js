@@ -608,7 +608,7 @@ export function performAction(payload) {
       const twin = viewOf(target) || win;
       const tdoc = target.ownerDocument || doc;
 
-      // keyCode/which 已废弃但必须带：行内大量 jQuery 老系统仍在读它们
+      // keyCode/which 已废弃但必须带：不少旧的 jQuery 页面仍在读它们
       const init = {
         key: spec.key, code: spec.code, keyCode: spec.keyCode, which: spec.keyCode,
         bubbles: true, cancelable: true, composed: true, view: twin,

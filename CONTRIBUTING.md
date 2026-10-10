@@ -48,7 +48,7 @@ This is the constraint most PRs get wrong.
 
 Config access goes through an injected `storage` interface (`get` / `set`), never `chrome.storage` directly from core.
 
-The reason for all this: the same capabilities will later be packaged as an embedded SDK that in-house systems load with one `<script>` tag. `core/` gets reused verbatim; only the shell is rewritten. (The SDK shell itself is **not** in scope — please don't submit a floating-panel / Shadow DOM version.)
+The reason for all this: the same capabilities will later be packaged as an embedded SDK that a host page loads with one `<script>` tag. `core/` gets reused verbatim; only the shell is rewritten. (The SDK shell itself is **not** in scope — please don't submit a floating-panel / Shadow DOM version.)
 
 ### Injected functions must stay self-contained
 
@@ -82,8 +82,8 @@ Please don't propose these — they've been decided against:
 
 - **Reading the page automatically** when the sidebar opens or the tab changes. The page is read only when the user sends a message. This is the product's central privacy promise.
 - **Any telemetry, analytics or crash reporting.**
-- **Mock data, demo modes or simulated business pages.** The extension talks to a real endpoint or it does nothing.
-- **Login / SSO / 4A auth, domain allowlists, OCR, RAG.** Covered by other in-bank layers.
+- **Mock data, demo modes or simulated pages.** The extension talks to a real endpoint or it does nothing.
+- **Sign-in, domain allowlists, OCR, RAG.** Out of scope for this repository.
 - **Firefox support**, and support for data-dense table-heavy systems — those go the structured-data-interface route, not DOM reading.
 - **Technical hard-blocks on irreversible actions.** The guardrail is deliberately a prompt-level one; if you want to propose a real enforcement mechanism, open an issue and let's discuss the design first rather than sending a PR.
 
@@ -169,7 +169,7 @@ Chrome / Edge ≥ 114，ES2020+，不做老浏览器降级、不加 polyfill。�
 
 配置读写走外壳注入的 `storage` 接口（`get` / `set`），core 里绝不直接碰 `chrome.storage`。
 
-这么分层的原因：同样的能力将来要包装成内嵌 SDK，供行内业务系统一行 `<script>` 接入。届时 `core/` 原封复用，只重写外壳。（SDK 外壳本身**不在**本次范围内，请不要提交悬浮面板 / Shadow DOM 版本。）
+这么分层的原因：同样的能力将来要包装成内嵌 SDK，供宿主页面一行 `<script>` 接入。届时 `core/` 原封复用，只重写外壳。（SDK 外壳本身**不在**本次范围内，请不要提交悬浮面板 / Shadow DOM 版本。）
 
 ### 注入函数必须保持自包含
 
@@ -203,8 +203,8 @@ Chrome / Edge ≥ 114，ES2020+，不做老浏览器降级、不加 polyfill。�
 
 - **自动读取页面** —— 打开侧边栏或切换标签页时自动解读。页面只在用户发送消息时读取，这是产品最核心的隐私承诺。
 - **任何埋点、数据分析或崩溃上报。**
-- **mock 数据、演示模式、模拟业务系统页面。** 扩展要么连真实接口，要么什么都不做。
-- **登录 / SSO / 4A 鉴权、域名白名单、OCR、RAG。** 由行内其他层承担。
+- **mock 数据、演示模式、模拟页面。** 扩展要么连真实接口，要么什么都不做。
+- **登录鉴权、域名白名单、OCR、RAG。** 不在本仓库范围内。
 - **火狐支持**，以及数据密集型大表格系统的适配 —— 后者走结构化数据接口路线，不走 DOM 读取。
 - **对不可逆操作做技术硬拦截。** 现在的护栏刻意停在 prompt 层面；如果你想提一套真正的强制机制，请先开 Issue 讨论设计，不要直接发 PR。
 
