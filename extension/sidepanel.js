@@ -388,7 +388,8 @@ async function requireSnapshotTab() {
 }
 
 // 刷新元素快照：老元素保号、新元素续编；session 过期或缺失（页面已导航、
-// 或恢复历史会话后 page 已归零）时自动全量重建，模型据此拿到当前页面的有效编号
+// 或恢复历史会话后 page 已归零）时自动全量重建，模型据此拿到当前页面的有效编号。
+// 全量重建的结果带 rebuilt：状态基准随之重置，这一次比不出「哪些元素变了」
 async function refreshedElements(tab) {
   let res = await injectFunc(tab.id, snapshotPage, {
     mode: 'elements', session: state.page.session, maxElements: MAX_ELEMENTS, i18n: injectedStrings(),
@@ -404,7 +405,7 @@ async function refreshedElements(tab) {
       // session 与工作标签页是一对：只更 session 不认领 tabId 的话，page 归零后的路径
       // （恢复历史会话 + 重新生成）会一直绕过 tabId 守卫，用户中途切页也没人拦。
       if (state.page.tabId === null) state.page.tabId = tab.id;
-      res = { ok: true, elements: full.elements, viewport: full.viewport, stats: full.stats };
+      res = { ok: true, elements: full.elements, viewport: full.viewport, stats: full.stats, rebuilt: true };
     }
   }
   if (!res || !res.ok) throw new Error(t('sys.elementsUnreadable'));
@@ -488,7 +489,8 @@ function watchOpenedTabs(openerId) {
 // 但同样等内容稳定——联想下拉、校验提示都是输入后几百毫秒才出现的。
 // budget：稳定判定的预算，wait_for_page 按模型要求的秒数传入。
 // opened：本动作打开的标签页（watchOpenedTabs），只有它们会被收养为新的工作页。
-async function syncAfterAction({ mayNavigate, budget = SETTLE.action, opened = new Set() }) {
+// ref：按 ref 的动作所作用的元素，未跳转时把它稳定后的状态作为 target 带回（点击回读勾选态用）。
+async function syncAfterAction({ mayNavigate, budget = SETTLE.action, opened = new Set(), ref = null }) {
   if (mayNavigate) await sleep(300); // 静默期：给导航启动留出时间，否则会读到旧页面的 complete 状态
 
   // 激活页换了：本动作打开的新标签页收养为工作页；用户自己切过去的不跟随。
@@ -509,12 +511,17 @@ async function syncAfterAction({ mayNavigate, budget = SETTLE.action, opened = n
     return { ...(await rebuildPageAfterNavigation(tab)), loading, userSwitched };
   }
 
-  // 未跳转：增量刷新，把新出现的元素（带 * 标记）报告给模型
+  // 未跳转：增量刷新，把新出现的元素（带 * 标记）与状态变了的已有元素报告给模型
   try {
     const snap = await refreshedElements(tab);
     return {
       navigated: false,
       newElements: snap.elements.filter((e) => e.isNew),
+      changedElements: snap.elements.filter((e) => e.changes),
+      target: ref == null || snap.rebuilt ? null : snap.elements.find((e) => e.ref === ref) || null,
+      // 批量动作合并逐步变化时据此剔除已经消失的新元素；编号整体重建后批量动作就此停下
+      liveRefs: snap.elements.map((e) => e.ref),
+      rebuilt: Boolean(snap.rebuilt),
       viewport: snap.viewport,
       stats: snap.stats,
       loading,
@@ -634,7 +641,7 @@ const provider = {
       if (!result) throw new Error(t('sys.actFailed'));
       if (READ_ONLY[payload.action] || !result.ok) return { result, change: null };
       const change = await syncAfterAction({
-        mayNavigate: Boolean(MAY_NAVIGATE[payload.action]), opened: opened.ids,
+        mayNavigate: Boolean(MAY_NAVIGATE[payload.action]), opened: opened.ids, ref: payload.ref,
       });
       return { result, change };
     } finally {
@@ -797,6 +804,7 @@ const TOOL_ICONS = {
   select_option: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m9 11 3 3 3-3"/>',
   press_key: '<path d="M20 4v7a4 4 0 0 1-4 4H4"/><path d="m9 10-5 5 5 5"/>',
   scroll_page: '<path d="M12 3v18"/><path d="m8 7 4-4 4 4M8 17l4 4 4-4"/>',
+  batch_actions: '<path d="m3 6 2 2 3-3M3 13l2 2 3-3"/><path d="M11 6h10M11 13h10M11 20h10"/>',
   navigate: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><ellipse cx="12" cy="12" rx="4" ry="9"/>',
   go_back: '<path d="M19 12H5"/><path d="m12 5-7 7 7 7"/>',
   refresh: '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>',
@@ -1055,6 +1063,7 @@ async function runAgentLoop(el) {
         break;
       case 'final':
         turnError = ev.error;
+        console.info('[回合统计]', ev.stats); // 工具轮数、失败原因与点击无效的分布，前后对比用
         if (ev.message._error) {
           showErrorIn(el.root, ev.message._error);
         } else if (!ev.message.content && !ev.aborted) {

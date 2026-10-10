@@ -105,6 +105,30 @@ function imageOf(followUpMessage) {
 /* ========== 回合 ========== */
 
 /**
+ * 本回合的工具统计，供外壳打印到控制台：衡量「完成一件事要几轮」，
+ * 以及失败原因与点击无效的分布（感知层改动是否值得做，看的就是这些数字）。
+ * @returns {{ rounds: number, calls: number, actions: number,
+ *   tools: Record<string, number>, failures: Record<string, number>, noEffect: number }}
+ *   rounds 工具轮数；calls 实际执行的调用数；tools 按工具名计数；
+ *   failures 按失败原因计数（provider 抛错记 'error'）；noEffect 点击后勾选状态未变的次数
+ */
+function turnStats() {
+  return { rounds: 0, calls: 0, actions: 0, tools: {}, failures: {}, noEffect: 0 };
+}
+
+function countCall(stats, name, isAction, meta) {
+  stats.calls++;
+  stats.tools[name] = (stats.tools[name] || 0) + 1;
+  if (isAction) stats.actions++;
+  if (!meta.ok) {
+    const reason = (meta.data && meta.data.reason) || 'error';
+    stats.failures[reason] = (stats.failures[reason] || 0) + 1;
+  }
+  // 单步点击记 true，批量动作记次数
+  if (meta.data && meta.data.noEffect) stats.noEffect += Number(meta.data.noEffect);
+}
+
+/**
  * 一个问答回合（异步生成器），最多 MAX_TOOL_ROUNDS / MAX_ACTION_ROUNDS 轮工具调用。
  * 消息数组就地读写：用户消息由外壳在调用前追加好，回合里的 assistant / tool / 截图跟随消息
  * 都落进同一个数组；回合结束时历史里的截图换成占位、读到的正文收口（不变式 1）。
@@ -132,8 +156,9 @@ function imageOf(followUpMessage) {
  *   { type: 'tool-start', name, isAction, text }    一次工具调用开始
  *   { type: 'tool-done', name, isAction, ok, text, image }  调用结束，text 为定稿文案，image 为截图地址
  *   { type: 'next-round' }                          工具结果已回填，开始下一轮请求
- *   { type: 'final', message, error, aborted }      回合结束。message 为最终回复，报错文案已写在
- *                                                   message._error；中止在工具阶段时它是不入历史的空回复
+ *   { type: 'final', message, error, aborted, stats }  回合结束。message 为最终回复，报错文案已写在
+ *                                                   message._error；中止在工具阶段时它是不入历史的空回复。
+ *                                                   stats 为本回合的工具统计（见 turnStats）
  */
 export async function* runAgentTurn({
   messages, provider, profile, actionsEnabled, skillId, toolsBroken, perceivable, compact, sentPage, signal,
@@ -146,6 +171,7 @@ export async function* runAgentTurn({
   const turn = { readChars: 0, url: sentPage.url, textTotal: sentPage.textTotal || 0 };
   const aborted = () => Boolean(signal && signal.aborted);
   let rounds = 0;             // 已完成的工具轮数
+  const stats = turnStats();
   let broken = Boolean(toolsBroken);
   let imagesRetried = false;  // 「接口不支持图片」降级只重试一次
 
@@ -208,7 +234,7 @@ export async function* runAgentTurn({
         // 中止不算错误，保留已生成部分；错误文案落在消息上，历史回放时原样重现
         if (streamError && !isAbort(streamError)) message._error = describeError(streamError);
         messages.push(message);
-        yield { type: 'final', message, error: streamError, aborted: isAbort(streamError) };
+        yield { type: 'final', message, error: streamError, aborted: isAbort(streamError), stats: { ...stats, rounds } };
         return;
       }
 
@@ -255,6 +281,7 @@ export async function* runAgentTurn({
         if (call.name === 'capture_screenshot') stripImagesFromHistory(messages, pendingFollowUps);
         const { toolMessage, followUpMessage, meta } = await dispatchToolCall(call, provider, turn, registered);
         messages.push(toolMessage);
+        countCall(stats, call.name, isAction, meta);
         let image = '';
         if (followUpMessage) {
           followUpMessage._placeholder = t('sys.shotOmittedMeta', {
@@ -274,7 +301,7 @@ export async function* runAgentTurn({
 
       if (aborted()) {
         // 中止在工具阶段发生：没有最终回复文本，空回复不入历史
-        yield { type: 'final', message: { role: 'assistant', content: '' }, error: null, aborted: true };
+        yield { type: 'final', message: { role: 'assistant', content: '' }, error: null, aborted: true, stats: { ...stats, rounds } };
         return;
       }
 

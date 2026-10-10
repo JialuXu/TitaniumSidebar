@@ -95,6 +95,12 @@ export function describeToolActivity(name, args, phase, data = {}) {
       if (phase === 'fail') return t('act.scroll.fail');
       return t('act.scroll.done', { label });
     }
+    case 'batch_actions': {
+      const total = data.total ?? (Array.isArray(a.steps) ? a.steps.length : 0);
+      if (phase === 'run') return t('act.batch.run', { total });
+      if (phase === 'fail') return t('act.batch.fail', { n: (data.done ?? 0) + 1, total });
+      return t('act.batch.done', { done: data.done, total, jumped });
+    }
     case 'navigate':
       if (phase === 'run') return t('act.navigate.run', { url: a.url || '' });
       if (phase === 'fail') return t('act.navigate.fail', { url: a.url || '' });

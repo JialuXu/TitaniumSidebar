@@ -15,6 +15,7 @@
 //   fingerprints,     // 与 elements 同下标的指纹，建店时算好——重建时靠它把编号还给同一个元素
 //   misses,           // 与 elements 同下标：该空槽连续多少次全量重建无人认领（空槽回收的依据）
 //   seenMax,          // 已序列化给模型看过的最大 ref，超过它的元素标记为「新出现」
+//   states,           // 与 elements 同下标：上次交给模型时的状态签名，对比得出「哪些已有元素变了」
 // }
 
 /**
@@ -37,7 +38,7 @@
  * @param {{ mode?: 'full'|'elements'|'text', session?: string, inheritRefs?: boolean,
  *           maxTextLen?: number, maxScan?: number, maxElements?: number,
  *           offset?: number, length?: number, query?: string, maxResults?: number,
- *           i18n?: { textTruncated, checked, tableMeta } }} [options] 经 executeScript args 传入
+ *           i18n?: { textTruncated, checked, mixed, tableMeta } }} [options] 经 executeScript args 传入
  *   maxTextLen 是发给模型的截断长度，maxScan 是采集上限（不传则沿用 maxTextLen*2，
  *   让 `maxTextLen:1` 那条「只要元素映射」的重建路径继续省下文本通道的开销）。
  *   i18n 由外壳按当前语言传入（本函数注入页面执行，不能 import core/i18n.js）
@@ -64,6 +65,7 @@ export function snapshotPage(options) {
   const S = Object.assign({
     textTruncated: '……（内容过长已截断）',
     checked: '已选中',
+    mixed: '部分选中',
     tableMeta: '#{index} · {rows}行×{cols}列',
   }, opts.i18n || {});
 
@@ -90,6 +92,12 @@ export function snapshotPage(options) {
 
   // “整体可点”的容器角色：其内部后代若被完全覆盖则不重复编号（见 dedupeCandidates）
   const CONTAINER_ROLES = { link: 1, button: 1, clickable: 1, tab: 1, menuitem: 1 };
+
+  // 勾选类角色：状态取原生 checked/indeterminate 或 aria-checked
+  const TOGGLE_ROLES = { checkbox: 1, radio: 1, switch: 1, menuitemcheckbox: 1, menuitemradio: 1 };
+
+  // 状态签名的字段：动作前后逐项对比，报告「哪些已有元素变了」
+  const STATE_KEYS = ['role', 'name', 'value', 'disabled', 'expanded', 'selected', 'pressed'];
 
   function clamp(s, max) {
     const t = (s || '').replace(/\s+/g, ' ').trim();
@@ -121,6 +129,22 @@ export function snapshotPage(options) {
       } catch { /* 解析失败按读不到处理 */ }
     }
     return null;
+  }
+
+  // 视觉代理：组件库常把原生勾选框/单选框缩成 0×0（Element UI 的 el-checkbox__original），
+  // 用户点的是关联的 <label>，浏览器把这次点击转发给控件。编号、角色、状态与名称归控件本身，
+  // 位置与可见范围取自代理（与 actions.js / highlight.js 同一算法，自包含约束下各存一份）。
+  function visualProxy(el) {
+    const tag = el.tagName ? el.tagName.toUpperCase() : '';
+    const type = tag === 'INPUT' ? (el.getAttribute('type') || '').toLowerCase() : '';
+    if (type !== 'checkbox' && type !== 'radio') return el;
+    const r = el.getBoundingClientRect();
+    if (r.width >= 2 && r.height >= 2) return el;
+    for (const label of el.labels || []) {
+      const lr = label.getBoundingClientRect();
+      if (lr.width >= 2 && lr.height >= 2) return label;
+    }
+    return el;
   }
 
   // 可见性判定：可见则返回 computed style（供 cursor 等后续判定复用），隐藏返回 null（子树整体剪枝）
@@ -162,6 +186,7 @@ export function snapshotPage(options) {
     // <label> 点击会转发给关联控件（for 指向的，或内部包裹的），与控件本身重复；
     // 排除以免同一操作出现两个 ref。antd/element-ui 的勾选框全是 label 包裹写法。
     // 内部控件若被 display:none 隐藏则不排除——此时 label 是唯一可点的目标。
+    // 缩成 0×0 的控件照常编号，label 充当它的视觉代理（见 visualProxy）。
     if (tag === 'LABEL') {
       if (el.getAttribute('for')) return null;
       const inner = el.querySelector ? el.querySelector('input,select,textarea,button') : null;
@@ -251,10 +276,12 @@ export function snapshotPage(options) {
     return ctx === ownName ? null : ctx;
   }
 
-  // 表单控件当前值：密码框一律不取（隐私）；勾选类返回勾选态
+  // 表单控件当前值：密码框一律不取（隐私）；勾选类返回勾选态（含半选）
   function controlValue(el, role) {
-    if (role === 'checkbox' || role === 'radio' || role === 'switch') {
-      return el.checked ? S.checked : null;
+    if (TOGGLE_ROLES[role]) {
+      if (el.tagName.toUpperCase() === 'INPUT') return el.indeterminate ? S.mixed : (el.checked ? S.checked : null);
+      const v = (el.getAttribute('aria-checked') || '').toLowerCase();
+      return v === 'mixed' ? S.mixed : (v === 'true' ? S.checked : null);
     }
     if (role === 'select') {
       const opt = el.selectedOptions && el.selectedOptions[0];
@@ -304,10 +331,31 @@ export function snapshotPage(options) {
     return box;
   }
 
-  // 生成单个元素的 ElementInfo（bbox 为相对顶层视口的 CSS 像素）
+  // 展开、选定、按下三种 ARIA 状态，只写进确有该状态的元素；
+  // <details> 里的 <summary> 按 open 属性算展开
+  function ariaStates(el, info) {
+    const tag = el.tagName.toUpperCase();
+    const parent = el.parentElement;
+    const expanded = el.getAttribute('aria-expanded');
+    if (expanded === 'true' || expanded === 'false') info.expanded = expanded === 'true';
+    else if (tag === 'SUMMARY' && parent && parent.tagName.toUpperCase() === 'DETAILS') info.expanded = Boolean(parent.open);
+    if (el.getAttribute('aria-selected') === 'true') info.selected = true;
+    const pressed = el.getAttribute('aria-pressed');
+    if (pressed === 'true') info.pressed = true;
+    else if (pressed === 'mixed') info.pressed = 'mixed';
+  }
+
+  // 状态签名：缺失的字段统一记为 null，前后两次才能逐项比较
+  function stateOf(info) {
+    const sig = {};
+    for (const k of STATE_KEYS) sig[k] = info[k] === undefined ? null : info[k];
+    return sig;
+  }
+
+  // 生成单个元素的 ElementInfo（bbox 为相对顶层视口的 CSS 像素，量的是视觉代理）
   function elementInfo(el, ref) {
     const role = roleOf(el);
-    const rect = el.getBoundingClientRect();
+    const rect = visualProxy(el).getBoundingClientRect();
     const box = frameBox(el.ownerDocument);
     const bbox = {
       x: Math.round(rect.x + box.x), y: Math.round(rect.y + box.y),
@@ -325,6 +373,7 @@ export function snapshotPage(options) {
         bbox.x < box.r && bbox.y < box.b &&
         bbox.x + bbox.w > box.l && bbox.y + bbox.h > box.t,
     };
+    ariaStates(el, info);
     const ctx = rowContext(el, name);
     if (ctx) info.context = ctx;
     return info;
@@ -364,16 +413,31 @@ export function snapshotPage(options) {
     return out;
   }
 
+  // 同一控件的两层：ARIA 勾选类元素里包着原生勾选框/单选框（Element UI 的 el-switch 是
+  // div[role=switch] 套一个 0×0 的 input）。显示状态与点击处理都在外层，原生那层不另编号。
+  // 只看三层以内的祖先：再往外就是包含若干控件的容器了。
+  function nestedInToggle(c, index, list) {
+    if (c.role !== 'checkbox' && c.role !== 'radio') return false;
+    if (c.el.tagName.toUpperCase() !== 'INPUT') return false;
+    let p = c.el.parentElement;
+    for (let hop = 0; p && hop < 3; hop++, p = p.parentElement) {
+      const pi = index.get(p);
+      if (pi !== undefined && TOGGLE_ROLES[list[pi].role]) return true;
+    }
+    return false;
+  }
+
   // 包含去重：靠启发式认出的弱候选，若被“整体可点”的祖先几乎完全覆盖，就不单独编号。
   // 典型噪音是可点卡片/链接内部那层带 onclick 或 tabindex 的包装 div——
   // 它和外层指向同一次点击，两个 ref 只会让模型犹豫。
-  // 语义标签与显式 ARIA role 认定的强候选一律保留：卡片链接里的「加入购物车」按钮
-  // 同样是 100% 被包含的，但它是真正独立的操作目标。
+  // 语义标签与显式 ARIA role 认定的强候选保留（同一控件的两层见 nestedInToggle）：
+  // 卡片链接里的「加入购物车」按钮同样是 100% 被包含的，但它是真正独立的操作目标。
   function dedupeCandidates(list) {
     const index = new Map();
     list.forEach((c, i) => index.set(c.el, i));
     const rects = list.map((c) => c.el.getBoundingClientRect());
     return list.filter((c, i) => {
+      if (nestedInToggle(c, index, list)) return false;
       if (!c.weak) return true;
       let p = c.el.parentElement;
       while (p) {
@@ -463,21 +527,38 @@ export function snapshotPage(options) {
       known.add(c.el);
     }
 
-    // 产出仍然存活的元素（脱离文档或已无盒子的跳过，但保留槽位保证 ref 稳定）
+    // 产出仍然存活的元素（脱离文档或已无盒子的跳过，但保留槽位保证 ref 稳定）。
+    // 已有元素与上次交付时的状态签名逐项比较，变了的带上 changes（勾选、展开、可用、显示文字）
+    if (!Array.isArray(store.states)) store.states = [];
     const elements = [];
     let newCount = 0;
+    let changedCount = 0;
     store.elements.forEach((el, i) => {
       if (!el || !el.isConnected || !viewOf(el) || !visibleStyle(el)) return;
       const info = elementInfo(el, i + 1);
       if (info.bbox.w === 0 && info.bbox.h === 0) return;
-      if (i + 1 > seenMax) { info.isNew = true; newCount++; }
+      const now = stateOf(info);
+      const before = store.states[i];
+      store.states[i] = now;
+      if (i + 1 > seenMax) {
+        info.isNew = true;
+        newCount++;
+      } else if (before) {
+        const changes = STATE_KEYS
+          .filter((k) => before[k] !== now[k])
+          .map((k) => ({ key: k, from: before[k], to: now[k] }));
+        if (changes.length) { info.changes = changes; changedCount++; }
+      }
       elements.push(info);
     });
     store.seenMax = store.elements.length; // 本次已交付给模型，下次不再算新
 
     return {
       ok: true, elements, viewport: viewportInfo(), session: store.session,
-      stats: { totalElements: elements.length, elementsTruncated: overflow, newElements: newCount },
+      stats: {
+        totalElements: elements.length, elementsTruncated: overflow,
+        newElements: newCount, changedElements: changedCount,
+      },
     };
   }
 
@@ -919,10 +1000,13 @@ export function snapshotPage(options) {
 
   // 重建 ref 映射（session 换新，旧 session 的 ref 全部作废）。
   // 指纹在此刻算好并随店保存——元素一旦被 SPA 换掉就再也算不出正确的祖先链。
+  // 状态签名同样此刻记下，作为下一次增量刷新比较「变了没有」的基准
   const fingerprints = [];
   liveRefs.forEach((el, i) => { fingerprints[i] = fingerprint(el); });
+  const states = [];
+  elements.forEach((info) => { states[info.ref - 1] = stateOf(info); });
   const session = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-  win.__titanium = { session, elements: liveRefs, fingerprints, misses, seenMax: liveRefs.length };
+  win.__titanium = { session, elements: liveRefs, fingerprints, misses, seenMax: liveRefs.length, states };
 
   const title = (doc.title || '').trim();
   const url = doc.location ? doc.location.href : '';

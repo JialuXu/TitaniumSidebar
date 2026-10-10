@@ -96,7 +96,7 @@ Two layers: automated tests for `core/`, and a manual pass in the browser for ev
 node --test "tests/**/*.test.mjs"
 ```
 
-CI runs the same command on every PR. If you change how a core module behaves, add or update the cases in `tests/unit/<module>.test.mjs`; `tests/contracts/` checks the hard constraints above (no `chrome.*` in core, self-contained injected functions, both i18n catalogs in sync, version numbers consistent). Test code lives only in `tests/` — never add test-only exports or branches to `extension/`. See [tests/README.md](tests/README.md) for the layout.
+CI runs the same command on every PR. If you change how a core module behaves, add or update the cases in `tests/unit/<module>.test.mjs`; `tests/contracts/` checks the hard constraints above (no `chrome.*` in core, self-contained injected functions, both i18n catalogs in sync, version numbers consistent). Changes to how `snapshot.js`, `actions.js` or `highlight.js` perceive or operate elements go into `tests/dom/`, which runs them in a real Chromium against fixture pages; it needs a temporary Playwright install and is skipped without one (CI's `dom` job installs it). Test code lives only in `tests/` — never add test-only exports or branches to `extension/`. See [tests/README.md](tests/README.md) for the layout.
 
 **Manual pass.** The shell, the injected functions' behaviour on real pages and real model endpoints are not covered by the tests:
 
@@ -216,7 +216,7 @@ Chrome / Edge ≥ 114，ES2020+，不做老浏览器降级、不加 polyfill。�
 node --test "tests/**/*.test.mjs"
 ```
 
-CI 会在每个 PR 上跑同一条命令。改了某个 core 模块的行为，就在 `tests/unit/<模块名>.test.mjs` 里补上或更新用例；`tests/contracts/` 检查上面这些硬性约束（core 不调 `chrome.*`、注入函数自包含、中英两套文案对齐、各处版本号一致）。测试代码只放在 `tests/`，不要往 `extension/` 里加测试专用的导出或分支。目录说明见 [tests/README.md](tests/README.md)。
+CI 会在每个 PR 上跑同一条命令。改了某个 core 模块的行为，就在 `tests/unit/<模块名>.test.mjs` 里补上或更新用例；`tests/contracts/` 检查上面这些硬性约束（core 不调 `chrome.*`、注入函数自包含、中英两套文案对齐、各处版本号一致）。改了 `snapshot.js`、`actions.js`、`highlight.js` 感知或操作元素的方式，就在 `tests/dom/` 里补用例：它在真实 Chromium 里对着夹具页面跑，需要临时装 Playwright，没装时整体跳过（CI 的 `dom` 任务会装）。测试代码只放在 `tests/`，不要往 `extension/` 里加测试专用的导出或分支。目录说明见 [tests/README.md](tests/README.md)。
 
 **手动验证。** 外壳、注入函数在真实页面上的行为、真实模型接口，都不在自动化测试的覆盖范围内：
 
