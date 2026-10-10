@@ -180,6 +180,40 @@ test('click_element：成功时拼结果与页面变化', async () => {
   assert.ok(res.toolMessage.content.includes(t('fmt.chgNoNew')));
 });
 
+test('click_element：勾选类控件以稳定后回读的状态为准', async () => {
+  const target = { ref: 5, role: 'checkbox', name: '行一', value: '已选中', changes: [{ key: 'value', from: null, to: '已选中' }] };
+  const { provider } = fakeProvider({
+    act: { result: { ok: true, name: '行一', checked: false }, change: { navigated: false, newElements: [], changedElements: [target], target } },
+  });
+  const res = await dispatchToolCall(call('click_element', { ref: 5 }), provider, {}, registeredFor({ actions: true }));
+  const head = t('res.clicked', { ref: 5, name: ' "行一"', checked: t('res.clickState', { state: '已选中' }) });
+  assert.ok(res.toolMessage.content.startsWith(head));
+  assert.ok(!res.toolMessage.content.includes(t('res.clickNoEffect')));
+  assert.ok(res.toolMessage.content.includes(t('fmt.chgChanged', { n: 1 })));
+  assert.equal(res.meta.data.noEffect, undefined);
+});
+
+test('click_element：勾选态没有变化时如实说明', async () => {
+  const target = { ref: 6, role: 'switch', name: '通知', value: null };
+  const { provider } = fakeProvider({
+    act: { result: { ok: true, name: '通知' }, change: { navigated: false, newElements: [], target } },
+  });
+  const res = await dispatchToolCall(call('click_element', { ref: 6 }), provider, {}, registeredFor({ actions: true }));
+  const head = t('res.clicked', { ref: 6, name: ' "通知"', checked: t('res.clickState', { state: t('fmt.st.unchecked') }) });
+  assert.ok(res.toolMessage.content.startsWith(`${head}\n${t('res.clickNoEffect')}`));
+  assert.equal(res.meta.data.noEffect, true);
+});
+
+test('click_element：非勾选类元素不回读状态，也不判无效', async () => {
+  const target = { ref: 7, role: 'button', name: '提交' };
+  const { provider } = fakeProvider({
+    act: { result: { ok: true, name: '提交' }, change: { navigated: false, newElements: [], target } },
+  });
+  const res = await dispatchToolCall(call('click_element', { ref: 7 }), provider, {}, registeredFor({ actions: true }));
+  assert.ok(res.toolMessage.content.startsWith(t('res.clicked', { ref: 7, name: ' "提交"', checked: '' })));
+  assert.ok(!res.toolMessage.content.includes(t('res.clickNoEffect')));
+});
+
 test('click_element：失败原因映射成可读文案', async () => {
   const { provider } = fakeProvider({ act: { result: { ok: false, reason: 'gone' }, change: null } });
   const res = await dispatchToolCall(call('click_element', { ref: 3 }), provider, {}, registeredFor({ actions: true }));

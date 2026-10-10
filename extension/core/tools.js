@@ -15,6 +15,7 @@
 //   mask(text)                           → string（未开脱敏时为恒等函数）
 //   —— 页内动作（注入 performAction）——
 //   act(payload)                         → { result: performAction 返回值, change: 页面变化|null }
+//                                           按 ref 的动作在页面未跳转时，change.target 是该 ref 稳定后的 ElementInfo
 //   —— 浏览器级动作（chrome.tabs）——
 //   navigate({ url }) / goBack() / refresh()        → 页面变化（url 已在这里校验为 http/https）
 //   openTab({ url }) / switchTab({ tabId })         → 页面变化
@@ -29,6 +30,7 @@
 
 import {
   formatElements, formatSearchResults, formatReadResult, formatPageStatus, formatPageChange, formatTabs, BUDGETS,
+  TOGGLE_ROLES,
 } from './format.js';
 import { t, q } from './i18n.js';
 
@@ -306,8 +308,8 @@ export async function dispatchToolCall(call, provider, turn = {}, registered = n
     }
     meta.ok = true;
     meta.data.navigated = Boolean(change && change.navigated);
-    Object.assign(meta.data, onSuccess.data ? onSuccess.data(result) : {});
-    return reply(provider.mask(withChangeSynced(onSuccess.text(result), change)));
+    Object.assign(meta.data, onSuccess.data ? onSuccess.data(result, change) : {});
+    return reply(provider.mask(withChangeSynced(onSuccess.text(result, change), change)));
   };
 
   try {
@@ -445,12 +447,25 @@ export async function dispatchToolCall(call, provider, turn = {}, registered = n
       /* ================= 动作组：页内 ================= */
       case 'click_element': {
         const ref = Number(args.ref);
+        // 勾选类控件以页面稳定后回读的状态为准：组件库在下一个微任务或下一帧才改 aria-checked，
+        // 点击当下读到的还是旧值。状态与上次交给模型时相同，就在结果里说明
+        const toggled = (change) => {
+          const el = change && change.target;
+          return el && TOGGLE_ROLES.has(el.role) && !el.isNew ? el : null;
+        };
         return await doAct({ action: 'click', ref }, {
-          text: (r) => {
-            const checked = typeof r.checked === 'boolean' ? t(r.checked ? 'res.checkedOn' : 'res.checkedOff') : '';
-            return t('res.clicked', { ref, name: r.name ? ` "${r.name}"` : '', checked });
+          text: (r, change) => {
+            const el = toggled(change);
+            let checked = '';
+            if (el) checked = t('res.clickState', { state: el.value || t('fmt.st.unchecked') });
+            else if (typeof r.checked === 'boolean') checked = t(r.checked ? 'res.checkedOn' : 'res.checkedOff');
+            const head = t('res.clicked', { ref, name: r.name ? ` "${r.name}"` : '', checked });
+            return el && !el.changes ? `${head}\n${t('res.clickNoEffect')}` : head;
           },
-          data: (r) => ({ ref, name: r.name }),
+          data: (r, change) => {
+            const el = toggled(change);
+            return { ref, name: r.name, ...(el && !el.changes ? { noEffect: true } : {}) };
+          },
         }, { ref });
       }
 

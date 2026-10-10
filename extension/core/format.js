@@ -15,6 +15,7 @@ export const BUDGETS = {
   outlineBeyond: 1500, // 骨架里「截断之外」那段的独立预算（见 formatOutline）
   elements: 4000,    // 元素列表（工具结果）
   newElements: 1200, // 动作后的新增元素增量（回合内高频出现，预算收紧）
+  changedElements: 800, // 动作后已有元素的状态变化
   pageDiff: 1800,    // 页面更新摘要（同一网址内容变化时替代 12000 字全文重发）
   html: 4000,        // 单个元素的精简 HTML
   table: 50000,      // 单个表格的完整 Markdown（刻意远超正文预算，这是它存在的意义）
@@ -26,6 +27,9 @@ export const BUDGETS = {
   readPerTurn: 24000, // 每个用户回合读取总量的保险丝（并行读十段会撑爆上下文窗口）
   readRetained: 12000, // 跨回合保留的读取正文总量；≥ readMax 保证最近一次读取必留
 };
+
+/** 勾选类角色：值为空即未选中（与 snapshot.js 的 TOGGLE_ROLES 同一份名单） */
+export const TOGGLE_ROLES = new Set(['checkbox', 'radio', 'switch', 'menuitemcheckbox', 'menuitemradio']);
 
 /** 通用截断：超长切断并追加后缀 */
 export function clampText(s, max, suffix = '…') {
@@ -104,6 +108,7 @@ export function formatOutline(nodes, { dropped = 0, budget = BUDGETS.outline, be
  *   [15] button "确认"（不可用）
  *  *[16] button "展开更多"                       ← * 表示上次动作后新出现
  *   [17] checkbox（行：Slack - Set up Slack…）   ← 无名/短名控件带所在行锚点
+ *   [18] combobox "城市"（已展开）               ← 展开/选定/按下三种 ARIA 状态
  *
  * 同构折叠：role、标签、名称、禁用态**一字不差**且 ≥5 个的组（列表页每行重复的
  * 勾选框、星标、「删除」按钮）只展开前两个作样本，其余合并为一行 refs 摘要——
@@ -121,7 +126,12 @@ export function formatElements(elements, { budget = BUDGETS.elements, total, col
     const ctx = el.context ? t('fmt.rowCtx', { s: el.context }) : '';
     const href = el.href ? ` → ${el.href}` : '';
     const value = el.value ? t('fmt.value', { v: el.value }) : '';
-    const flag = el.disabled ? t('fmt.disabled') : '';
+    const flag = [
+      el.disabled ? t('fmt.disabled') : '',
+      el.expanded ? t('fmt.expanded') : '',
+      el.selected ? t('fmt.selected') : '',
+      el.pressed ? t('fmt.pressed') : '',
+    ].join('');
     return `${el.isNew ? '*' : ''}[${el.ref}] ${el.role}${name}${ctx}${href}${value}${flag}`;
   };
 
@@ -234,12 +244,59 @@ function formatLoadingNote(loading) {
   return t(loading.busy ? 'fmt.chgBusy' : 'fmt.chgUnstable', { s, n: loading.busy });
 }
 
+/** 状态签名里一个字段的可读形式（字段与 snapshot.js 的 STATE_KEYS 对应） */
+function stateWord(key, v, role) {
+  switch (key) {
+    case 'disabled': return t(v ? 'fmt.st.disabled' : 'fmt.st.enabled');
+    case 'expanded': return v == null ? t('fmt.st.none') : t(v ? 'fmt.st.expanded' : 'fmt.st.collapsed');
+    case 'selected': return t(v ? 'fmt.st.selected' : 'fmt.st.unselected');
+    case 'pressed': return t(v === 'mixed' ? 'fmt.st.pressedMixed' : (v ? 'fmt.st.pressed' : 'fmt.st.unpressed'));
+    case 'value':
+      if (v == null || v === '') return TOGGLE_ROLES.has(role) ? t('fmt.st.unchecked') : t('fmt.st.none');
+      return q(v);
+    default: return v == null || v === '' ? t('fmt.st.none') : q(v);
+  }
+}
+
+const CHANGE_KEY_TEXT = { role: 'fmt.chgRole', name: 'fmt.chgName', value: 'fmt.chgValue' };
+
+/**
+ * 已有元素的状态变化 → 行式文本。行格式：
+ *   [12] checkbox "行一"：值 未选中 → 「已选中」
+ *   [7] combobox "城市"：名称 「请选择」 → 「上海」；已展开 → 已收起
+ * @param {Array} elements 带 changes 的 ElementInfo（snapshot.js mode:'elements' 产出）
+ */
+export function formatStateChanges(elements, { budget = BUDGETS.changedElements } = {}) {
+  const lines = [];
+  let used = 0;
+  let shown = 0;
+  for (const el of elements) {
+    const parts = el.changes.map((c) => {
+      // 空值按元素当前角色解释：勾选类的空值是未选中
+      const role = c.key === 'value' ? el.role : null;
+      const from = stateWord(c.key, c.from, role);
+      const to = stateWord(c.key, c.to, role);
+      return t(CHANGE_KEY_TEXT[c.key] || 'fmt.chgFlag', { from, to });
+    });
+    const line = t('fmt.chgItem', {
+      ref: el.ref, role: el.role, name: el.name ? ` "${el.name}"` : '', parts: parts.join(t('fmt.chgSep')),
+    });
+    if (used + line.length + 1 > budget) break;
+    lines.push(line);
+    used += line.length + 1;
+    shown++;
+  }
+  if (shown < elements.length) lines.push(t('fmt.chgMore', { n: elements.length - shown }));
+  return lines.join('\n');
+}
+
 /**
  * 动作执行后的页面变化摘要（动作类工具结果的统一尾巴）。
  * 导航后刻意不带新页全文——那会让回合内 token 迅速膨胀；
  * 模型需要细节时自行调 find_in_page / list_elements。
- * @param {{ navigated, restricted?, title?, url?, newElements?, viewport?, stats?,
+ * @param {{ navigated, restricted?, title?, url?, newElements?, changedElements?, viewport?, stats?,
  *           loading?: { busy: number, waitedMs: number }|null }} change
+ *   changedElements 是状态变了的已有元素（勾选、展开、可用、显示文字），排在新增元素之后
  *   loading 非空表示等待上限内页面没有稳定下来，摘要末尾提醒模型占位文字不可当结论
  */
 export function formatPageChange(change) {
@@ -265,6 +322,11 @@ export function formatPageChange(change) {
     } else {
       lines.push(t('fmt.chgNew', { n: fresh.length }));
       lines.push(formatElements(fresh, { budget: BUDGETS.newElements }));
+    }
+    const changed = change.changedElements || [];
+    if (changed.length) {
+      lines.push(t('fmt.chgChanged', { n: changed.length }));
+      lines.push(formatStateChanges(changed));
     }
     lines.push(truncated);
   }

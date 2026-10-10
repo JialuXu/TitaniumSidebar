@@ -67,6 +67,7 @@ export function injectedStrings() {
   return {
     textTruncated: t('inj.textTruncated'),
     checked: t('inj.checked'),
+    mixed: t('inj.mixed'),
     tableMeta: t('inj.tableMeta'),
     passwordMasked: t('inj.passwordMasked'),
     tableTruncated: t('inj.tableTruncated'),
@@ -354,6 +355,9 @@ const ZH = {
   'fmt.rowCtx': '（行：{s}）',
   'fmt.value': ' 值:"{v}"',
   'fmt.disabled': '（不可用）',
+  'fmt.expanded': '（已展开）',
+  'fmt.selected': '（已选定）',
+  'fmt.pressed': '（已按下）',
   'fmt.collapsed': '……同类还有 {n} 个：refs {refs}',
   'fmt.moreElements': '……（共 {total} 个，仅列出前 {shown} 个）',
   'fmt.collapseNote': '（同类元素已折叠；要定位具体某一行的控件，用 query 参数过滤元素名或行文字）',
@@ -375,6 +379,25 @@ const ZH = {
   'fmt.chgNoNew': '页面未跳转，也没有新增可交互元素。',
   'fmt.chgUserSwitched': '注意：操作期间用户自己切到了另一个标签页「{title}」（不是本次动作打开的）。工作页仍是原页面，接下来的动作不会执行；请停下来问用户：是切回原页面继续，还是在新页面上继续（在新页面上发一条消息即可）。',
   'fmt.chgNew': '页面未跳转，新增 {n} 个可交互元素（带 * 前缀）：',
+  'fmt.chgChanged': '{n} 个已有元素的状态变了：',
+  'fmt.chgItem': '[{ref}] {role}{name}：{parts}',
+  'fmt.chgSep': '；',
+  'fmt.chgRole': '角色 {from} → {to}',
+  'fmt.chgName': '名称 {from} → {to}',
+  'fmt.chgValue': '值 {from} → {to}',
+  'fmt.chgFlag': '{from} → {to}',
+  'fmt.chgMore': '……另有 {n} 个元素的状态变化未列出',
+  'fmt.st.none': '（空）',
+  'fmt.st.unchecked': '未选中',
+  'fmt.st.disabled': '不可用',
+  'fmt.st.enabled': '可用',
+  'fmt.st.expanded': '已展开',
+  'fmt.st.collapsed': '已收起',
+  'fmt.st.selected': '已选定',
+  'fmt.st.unselected': '未选定',
+  'fmt.st.pressed': '已按下',
+  'fmt.st.pressedMixed': '部分按下',
+  'fmt.st.unpressed': '未按下',
   'fmt.chgBusy':
     '注意：等待 {s} 秒后页面仍在加载（可见 {n} 处加载指示器）。此刻页面上的「加载中」「暂无数据」等文字只是占位，' +
     '不要据此断定没有数据、操作失败或需要回退；请先 wait_for_page 等它加载完，再 list_elements 或 read_page_text 核实。',
@@ -422,6 +445,8 @@ const ZH = {
   'res.clicked': '已点击元素 [{ref}]{name}{checked}。',
   'res.checkedOn': '，当前已勾选',
   'res.checkedOff': '，当前未勾选',
+  'res.clickState': '，当前{state}',
+  'res.clickNoEffect': '注意：点击后它的勾选状态没有变化。',
   'res.inputDone': '已在 [{ref}]{name} 中填入：{value}',
   'res.selected': '已在下拉框 [{ref}]{name} 中选择「{value}」。',
   'res.keyDone': '已按下 {key}{target}{extra}。',
@@ -468,6 +493,7 @@ const ZH = {
   /* ---------- 注入函数文案 ---------- */
   'inj.textTruncated': '……（内容过长已截断）',
   'inj.checked': '已选中',
+  'inj.mixed': '部分选中',
   'inj.tableMeta': '#{index} · {rows}行×{cols}列',
   'inj.passwordMasked': '（已写入，不回显）',
   'inj.tableTruncated': '\n……（表格过长已截断）',
@@ -514,6 +540,7 @@ const ZH = {
     '一、先感知再动作——操作前用 list_elements 确认目标编号与语义，不要凭猜测使用编号。' +
     '二、一次只做一步，根据每次动作返回的页面变化摘要决定下一步；' +
     '页面跳转后所有编号都会重置，必须重新 list_elements；带 * 的元素是上次操作后新出现的；' +
+    '摘要里列出的状态变化（勾选、展开、可用、显示文字）就是这次动作的结果，可直接据此确认；' +
     '摘要提示页面仍在加载时，先 wait_for_page 再判断动作结果——加载完成前的「暂无数据」「加载中」只是占位，' +
     '不要据此认定操作失败、页面没有数据，更不要据此回退。' +
     '三、涉及不可逆或对外产生影响的操作——转账、支付、下单、提交审批、删除数据、对外发送消息等——' +
@@ -638,7 +665,8 @@ const ZH = {
     '用于理解布局、图表、图片等文字无法表达的内容。注意：截图内容不经过脱敏。',
   'tool.click.d':
     '点击指定编号的元素（按钮、链接、勾选框等）。点击前会自动滚动到它。' +
-    '执行后返回页面是否跳转、以及新出现了哪些可交互元素。',
+    '执行后返回页面是否跳转、新出现了哪些可交互元素、哪些已有元素的状态变了；' +
+    '勾选框、单选框、开关附带点击后的勾选状态。',
   'tool.click.ref': 'list_elements 中的元素编号',
   'tool.input.d':
     '在指定编号的输入框中填入文本，会先清空原有内容（整体替换，不是追加）。' +
@@ -945,6 +973,9 @@ const EN = {
   'fmt.rowCtx': ' (row: {s})',
   'fmt.value': ' value:"{v}"',
   'fmt.disabled': ' (disabled)',
+  'fmt.expanded': ' (expanded)',
+  'fmt.selected': ' (selected)',
+  'fmt.pressed': ' (pressed)',
   'fmt.collapsed': '…{n} more of the same kind: refs {refs}',
   'fmt.moreElements': '…({total} in total, only the first {shown} listed)',
   'fmt.collapseNote': '(identical elements were collapsed; to target a control on a specific row, filter by element name or row text with the query parameter)',
@@ -966,6 +997,25 @@ const EN = {
   'fmt.chgNoNew': 'The page did not navigate and no new interactive elements appeared.',
   'fmt.chgUserSwitched': 'Note: during the action the user switched to another tab "{title}" on their own (it was not opened by this action). The working page is still the original one and further actions will not run; stop and ask the user whether to switch back and continue, or to continue on the new page (just send a message from it).',
   'fmt.chgNew': 'The page did not navigate; {n} new interactive elements appeared (prefixed with *):',
+  'fmt.chgChanged': '{n} existing elements changed state:',
+  'fmt.chgItem': '[{ref}] {role}{name}: {parts}',
+  'fmt.chgSep': '; ',
+  'fmt.chgRole': 'role {from} → {to}',
+  'fmt.chgName': 'name {from} → {to}',
+  'fmt.chgValue': 'value {from} → {to}',
+  'fmt.chgFlag': '{from} → {to}',
+  'fmt.chgMore': '…state changes on {n} more elements not listed',
+  'fmt.st.none': '(none)',
+  'fmt.st.unchecked': 'unchecked',
+  'fmt.st.disabled': 'disabled',
+  'fmt.st.enabled': 'enabled',
+  'fmt.st.expanded': 'expanded',
+  'fmt.st.collapsed': 'collapsed',
+  'fmt.st.selected': 'selected',
+  'fmt.st.unselected': 'not selected',
+  'fmt.st.pressed': 'pressed',
+  'fmt.st.pressedMixed': 'partially pressed',
+  'fmt.st.unpressed': 'not pressed',
   'fmt.chgBusy':
     'Note: after waiting {s}s the page is still loading ({n} loading indicator(s) visible). Text such as "Loading" or "No data" ' +
     'on the page right now is only a placeholder — do not conclude that there is no data, that the action failed, or that you should go back; ' +
@@ -1014,6 +1064,8 @@ const EN = {
   'res.clicked': 'Clicked element [{ref}]{name}{checked}.',
   'res.checkedOn': ', now checked',
   'res.checkedOff': ', now unchecked',
+  'res.clickState': ', now {state}',
+  'res.clickNoEffect': 'Note: its checked state did not change after the click.',
   'res.inputDone': 'Typed into [{ref}]{name}: {value}',
   'res.selected': 'Selected "{value}" in dropdown [{ref}]{name}.',
   'res.keyDone': 'Pressed {key}{target}{extra}.',
@@ -1060,6 +1112,7 @@ const EN = {
   /* ---------- Strings passed into injected functions ---------- */
   'inj.textTruncated': '…(content too long, truncated)',
   'inj.checked': 'checked',
+  'inj.mixed': 'partially checked',
   'inj.tableMeta': '#{index} · {rows} rows × {cols} cols',
   'inj.passwordMasked': '(written, not echoed back)',
   'inj.tableTruncated': '\n…(table too long, truncated)',
@@ -1106,6 +1159,7 @@ const EN = {
     '1. Perceive before acting — confirm the target number and its meaning with list_elements before operating; never use a number you guessed. ' +
     '2. Do one step at a time and decide the next from the page-change summary each action returns; ' +
     'all numbers reset after a navigation, so call list_elements again; elements marked * appeared after the last action; ' +
+    'the state changes listed in the summary (checked, expanded, enabled, displayed text) are this action\'s outcome and can confirm it directly; ' +
     'when the summary says the page is still loading, call wait_for_page before judging the outcome — "No data" or "Loading" before loading finishes is only a placeholder, ' +
     'never evidence that the action failed or the page is empty, and never a reason to go back. ' +
     '3. For irreversible or outward-facing operations — transfers, payments, orders, approval submissions, deleting data, sending messages to other people — ' +
@@ -1237,7 +1291,8 @@ const EN = {
     'Use it for layout, charts, images and anything text cannot express. Note: screenshots are not redacted.',
   'tool.click.d':
     'Click the element with the given number (button, link, checkbox, …), scrolling to it first. ' +
-    'Returns whether the page navigated and which interactive elements newly appeared.',
+    'Returns whether the page navigated, which interactive elements newly appeared and which existing elements changed state; ' +
+    'checkboxes, radio buttons and switches also report their checked state after the click.',
   'tool.click.ref': 'Element number from list_elements',
   'tool.input.d':
     'Type text into the input with the given number, clearing the existing value first (whole-value replacement, not appending). ' +

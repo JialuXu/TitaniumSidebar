@@ -1,0 +1,162 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>勾选类控件夹具</title>
+<!--
+  按组件库的真实结构与样式复刻：编号、点击、状态回读要对这些写法都成立。
+  框架改 DOM 一律放在微任务里做，模拟 Vue nextTick / React 批量更新——点击当下读到的是旧值。
+-->
+<style>
+  body { font: 14px/1.5 sans-serif; margin: 16px; }
+  section { margin: 8px 0; }
+  /* Element UI 2.x：原生 input 缩成 0×0，外观画在 el-checkbox__inner 上 */
+  .el-checkbox { cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+  .el-checkbox__input { position: relative; display: inline-block; cursor: pointer; }
+  .el-checkbox__inner { display: inline-block; width: 14px; height: 14px; border: 1px solid #999; }
+  .is-checked .el-checkbox__inner, .is-indeterminate .el-checkbox__inner { background: #409eff; }
+  .el-checkbox__original { opacity: 0; outline: none; position: absolute; margin: 0; width: 0; height: 0; z-index: -1; }
+  /* Element UI 2.x 开关：div[role=switch] 套一个 0×0 的 input，点击处理挂在外层 */
+  .el-switch { display: inline-flex; align-items: center; cursor: pointer; }
+  .el-switch__input { position: absolute; width: 0; height: 0; opacity: 0; margin: 0; }
+  .el-switch__core { display: inline-block; width: 40px; height: 20px; border-radius: 10px; background: #dcdfe6; }
+  .el-switch.is-checked .el-switch__core { background: #409eff; }
+  /* antd 4.x：原生 input 透明但铺满外框 */
+  .ant-checkbox-wrapper { cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+  .ant-checkbox { position: relative; display: inline-block; }
+  .ant-checkbox-input { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; cursor: pointer; opacity: 0; margin: 0; }
+  .ant-checkbox-inner { display: block; width: 16px; height: 16px; border: 1px solid #999; }
+  /* 无障碍隐藏（sr-only）：1×1 并裁掉，label 用 for 关联 */
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); border: 0; }
+  .fake-box { display: inline-block; width: 14px; height: 14px; border: 1px solid #999; cursor: pointer; }
+  [role=checkbox].aria-box { display: inline-block; padding: 2px 6px; border: 1px solid #999; cursor: pointer; }
+  [role=listbox] { border: 1px solid #ccc; padding: 4px; }
+  [role=option] { cursor: pointer; padding: 2px 4px; }
+</style>
+<body>
+  <section id="native">
+    <label><input type="checkbox" id="native-cb"> 原生勾选</label>
+    <label><input type="radio" name="r" id="native-r1"> 选项甲</label>
+    <label><input type="radio" name="r" id="native-r2"> 选项乙</label>
+  </section>
+
+  <table>
+    <thead>
+      <tr>
+        <th>
+          <label class="el-checkbox" id="el-head">
+            <span class="el-checkbox__input is-indeterminate" role="checkbox" aria-checked="mixed" tabindex="0">
+              <span class="el-checkbox__inner"></span><input type="checkbox" class="el-checkbox__original" aria-hidden="true">
+            </span>
+          </label>
+        </th>
+        <th>姓名</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>
+          <label class="el-checkbox" id="el-row1">
+            <span class="el-checkbox__input"><span class="el-checkbox__inner"></span><input type="checkbox" class="el-checkbox__original"></span>
+            <span class="el-checkbox__label">张三</span>
+          </label>
+        </td>
+        <td>北京</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <section>
+    <div class="el-switch" role="switch" aria-checked="false" id="el-switch">
+      <input type="checkbox" class="el-switch__input"><span class="el-switch__core"></span><span>接收通知</span>
+    </div>
+  </section>
+
+  <section>
+    <label class="ant-checkbox-wrapper" id="antd">
+      <span class="ant-checkbox"><input type="checkbox" class="ant-checkbox-input"><span class="ant-checkbox-inner"></span></span>
+      <span>antd 选项</span>
+    </label>
+  </section>
+
+  <section>
+    <input type="checkbox" class="sr-only" id="sr-cb"><label for="sr-cb"><span class="fake-box"></span> 记住我</label>
+  </section>
+
+  <section>
+    <span role="checkbox" class="aria-box" aria-checked="false" tabindex="0" id="aria-cb">纯 ARIA 勾选</span>
+    <span role="checkbox" class="aria-box" aria-checked="false" tabindex="0" id="aria-dead">点了没反应</span>
+  </section>
+
+  <section>
+    <label><input type="checkbox" id="agree"> 我已阅读协议</label>
+    <button id="next" disabled>下一步</button>
+  </section>
+
+  <section>
+    <div role="combobox" tabindex="0" aria-expanded="false" aria-controls="city-list" id="city">请选择城市</div>
+    <div role="listbox" id="city-list" hidden>
+      <div role="option">北京</div>
+      <div role="option">上海</div>
+    </div>
+  </section>
+
+<script>
+  const later = (fn) => queueMicrotask(fn);
+
+  // Element 数据行：v-model 监听 change，下一个微任务里刷外观
+  const row = document.querySelector('#el-row1 input');
+  row.addEventListener('change', () => later(() => row.parentElement.classList.toggle('is-checked', row.checked)));
+
+  // Element 表头：半选态由外层 span 承担 role 与 aria-checked，原生 input 此时 aria-hidden；
+  // 点一下变成全选：span 交出角色，input 回到无障碍树
+  const head = document.querySelector('#el-head input');
+  head.addEventListener('change', () => later(() => {
+    const host = head.parentElement;
+    host.classList.remove('is-indeterminate');
+    host.classList.toggle('is-checked', head.checked);
+    host.removeAttribute('role');
+    host.removeAttribute('aria-checked');
+    host.removeAttribute('tabindex');
+    head.setAttribute('aria-hidden', 'false');
+  }));
+
+  // Element 开关：click.prevent 挂在外层，自己切换状态
+  const sw = document.getElementById('el-switch');
+  sw.addEventListener('click', (e) => {
+    e.preventDefault();
+    later(() => {
+      const on = sw.getAttribute('aria-checked') !== 'true';
+      sw.setAttribute('aria-checked', String(on));
+      sw.classList.toggle('is-checked', on);
+      sw.querySelector('input').checked = on;
+    });
+  });
+
+  // 纯 ARIA 勾选框
+  const aria = document.getElementById('aria-cb');
+  aria.addEventListener('click', () => later(() => {
+    aria.setAttribute('aria-checked', String(aria.getAttribute('aria-checked') !== 'true'));
+  }));
+
+  // 勾选协议后「下一步」才可用
+  const agree = document.getElementById('agree');
+  agree.addEventListener('change', () => later(() => { document.getElementById('next').disabled = !agree.checked; }));
+
+  // 自定义下拉：点开出选项，点选项回填并收起
+  const city = document.getElementById('city');
+  const list = document.getElementById('city-list');
+  city.addEventListener('click', () => later(() => {
+    const open = city.getAttribute('aria-expanded') !== 'true';
+    city.setAttribute('aria-expanded', String(open));
+    list.hidden = !open;
+  }));
+  list.addEventListener('click', (e) => {
+    const opt = e.target.closest('[role=option]');
+    if (!opt) return;
+    later(() => {
+      city.textContent = opt.textContent;
+      city.setAttribute('aria-expanded', 'false');
+      list.hidden = true;
+    });
+  });
+</script>
+</body>

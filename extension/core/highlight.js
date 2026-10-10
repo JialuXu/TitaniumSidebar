@@ -34,6 +34,21 @@ export function highlightElement(payload) {
 
   const el = store.elements[ref - 1];
   if (!el || !el.isConnected) return { ok: false, reason: 'gone' };
+  // 视觉代理：缩成 0×0 的原生勾选框/单选框，框画在用户看得见的关联 <label> 上
+  // （与 snapshot.js / actions.js 同一算法，自包含约束下各存一份）
+  function visualProxy(node) {
+    const tag = node.tagName ? node.tagName.toUpperCase() : '';
+    const type = tag === 'INPUT' ? (node.getAttribute('type') || '').toLowerCase() : '';
+    if (type !== 'checkbox' && type !== 'radio') return node;
+    const r = node.getBoundingClientRect();
+    if (r.width >= 2 && r.height >= 2) return node;
+    for (const label of node.labels || []) {
+      const lr = label.getBoundingClientRect();
+      if (lr.width >= 2 && lr.height >= 2) return label;
+    }
+    return node;
+  }
+  const box = visualProxy(el);
   // 同源框架里的元素：覆盖层画在元素自己那份文档里，fixed 定位与 getBoundingClientRect
   // 同一原点，不必换算坐标，框架内滚动时也能就地跟随。框架被移除或跳走后旧文档
   // 没有视图，元素按失效处理（与 actions.js / snapshot.js 同一口径）。
@@ -46,8 +61,8 @@ export function highlightElement(payload) {
   }
 
   // behavior:'instant'：平滑滚动与紧随其后的 bbox 测量存在竞态，定位会画偏
-  if (doScroll) el.scrollIntoView({ block: 'center', behavior: 'instant' });
-  let rect = el.getBoundingClientRect();
+  if (doScroll) box.scrollIntoView({ block: 'center', behavior: 'instant' });
+  let rect = box.getBoundingClientRect();
   if (rect.width === 0 && rect.height === 0) return { ok: false, reason: 'hidden' };
 
   // 唯一 id 覆盖层：已有旧高亮先移除（连同其监听器一起，避免叠加）
@@ -65,7 +80,7 @@ export function highlightElement(payload) {
   label.textContent = String(ref);
 
   function position() {
-    rect = el.getBoundingClientRect();
+    rect = box.getBoundingClientRect();
     overlay.style.cssText =
       'position:fixed;z-index:2147483647;pointer-events:none;box-sizing:border-box;' +
       'border:2px solid #1a5fb4;background:rgba(26,95,180,0.08);border-radius:2px;' +
@@ -96,7 +111,7 @@ export function highlightElement(payload) {
   edoc.documentElement.appendChild(overlay);
   store.overlay = overlay;
 
-  const name = (el.textContent || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  const name = (el.textContent || el.getAttribute('aria-label') || box.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
   return {
     ok: true,
     name,

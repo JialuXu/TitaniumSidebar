@@ -4,9 +4,9 @@ import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BUDGETS, clampText, formatOutline, formatElements, formatTextDiff,
-  formatReadResult, formatSearchResults, formatPageChange, formatPageStatus, formatTabs,
+  formatReadResult, formatSearchResults, formatPageChange, formatPageStatus, formatTabs, formatStateChanges,
 } from '../../extension/core/format.js';
-import { setLocale, t } from '../../extension/core/i18n.js';
+import { setLocale, t, q } from '../../extension/core/i18n.js';
 
 beforeEach(() => setLocale('zh'));
 
@@ -209,6 +209,55 @@ test('动作后的变化摘要：跳转、没有新增、用户自己切走', ()
   const switched = formatPageChange({ navigated: false, newElements: [], userSwitched: { title: '别的页' } });
   assert.ok(switched.endsWith(t('fmt.chgUserSwitched', { title: '别的页' })));
   assert.equal(formatPageChange(null), '');
+});
+
+test('元素行带展开/选定/按下状态', () => {
+  const line = formatElements([{ ref: 3, role: 'combobox', tag: 'div', name: '城市', expanded: true, selected: true, pressed: true }]);
+  assert.equal(line, `[3] combobox "城市"${t('fmt.expanded')}${t('fmt.selected')}${t('fmt.pressed')}`);
+  const collapsed = formatElements([{ ref: 3, role: 'combobox', tag: 'div', name: '城市', expanded: false }]);
+  assert.equal(collapsed, '[3] combobox "城市"');
+});
+
+test('动作后已有元素的状态变化排在新增元素之后', () => {
+  const out = formatPageChange({
+    navigated: false,
+    newElements: [],
+    changedElements: [
+      { ref: 12, role: 'checkbox', name: '行一', changes: [{ key: 'value', from: null, to: '已选中' }] },
+      {
+        ref: 7, role: 'combobox', name: '上海',
+        changes: [{ key: 'name', from: '请选择', to: '上海' }, { key: 'expanded', from: true, to: false }],
+      },
+      { ref: 9, role: 'button', name: '下一步', changes: [{ key: 'disabled', from: true, to: false }] },
+    ],
+  });
+  const lines = out.split('\n');
+  assert.equal(lines[0], t('fmt.chgNoNew'));
+  assert.equal(lines[1], t('fmt.chgChanged', { n: 3 }));
+  assert.equal(lines[2], t('fmt.chgItem', {
+    ref: 12, role: 'checkbox', name: ' "行一"',
+    parts: t('fmt.chgValue', { from: t('fmt.st.unchecked'), to: q('已选中') }),
+  }));
+  assert.equal(lines[3], t('fmt.chgItem', {
+    ref: 7, role: 'combobox', name: ' "上海"',
+    parts: t('fmt.chgName', { from: q('请选择'), to: q('上海') }) + t('fmt.chgSep') +
+      t('fmt.chgFlag', { from: t('fmt.st.expanded'), to: t('fmt.st.collapsed') }),
+  }));
+  assert.equal(lines[4], t('fmt.chgItem', {
+    ref: 9, role: 'button', name: ' "下一步"',
+    parts: t('fmt.chgFlag', { from: t('fmt.st.disabled'), to: t('fmt.st.enabled') }),
+  }));
+});
+
+test('状态变化超预算时注明还有几个没列出', () => {
+  const many = Array.from({ length: 40 }, (_, i) => ({
+    ref: i + 1, role: 'checkbox', name: `第 ${i + 1} 行的勾选框`, changes: [{ key: 'value', from: null, to: '已选中' }],
+  }));
+  const out = formatStateChanges(many);
+  assert.ok(out.length <= BUDGETS.changedElements + 40);
+  const listed = out.split('\n').filter((l) => l.startsWith('[')).length;
+  assert.ok(listed > 0 && listed < 40);
+  assert.ok(out.endsWith(t('fmt.chgMore', { n: 40 - listed })));
 });
 
 test('标签页列表标出工作页', () => {

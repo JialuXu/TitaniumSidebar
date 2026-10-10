@@ -209,7 +209,31 @@ test('第 15 条：工具阶段中止，未执行的调用补占位，空回复�
   assert.equal(fetches.length, 1);
   assertToolChain(messages);
   assert.equal(messages.at(-1).content, t('sys.aborted'));
-  assert.deepEqual(events.at(-1), { type: 'final', message: { role: 'assistant', content: '' }, error: null, aborted: true });
+  const { stats, ...final } = events.at(-1);
+  assert.deepEqual(final, { type: 'final', message: { role: 'assistant', content: '' }, error: null, aborted: true });
+  assert.equal(stats.calls, 1); // 中止后补占位的那次不算执行
+});
+
+test('回合统计：轮数、调用数、动作数、失败原因与点击无效次数', async (ctx) => {
+  scripted(ctx, [
+    toolCalls({ id: 'c1', name: 'click_element', args: { ref: 1 } }, { id: 'c2', name: 'click_element', args: { ref: 2 } }),
+    toolCalls({ id: 'c3', name: 'list_elements' }),
+    text('好了'),
+  ]);
+  const { provider } = fakeProvider({
+    act: ({ ref }) => (ref === 1
+      ? { result: { ok: false, reason: 'hidden' }, change: null }
+      : {
+        result: { ok: true, name: '同意' },
+        change: { navigated: false, newElements: [], target: { ref: 2, role: 'checkbox', name: '同意', value: null } },
+      }),
+  });
+  const { events } = await turn({ provider, actionsEnabled: true });
+  assert.deepEqual(events.at(-1).stats, {
+    rounds: 2, calls: 3, actions: 2,
+    tools: { click_element: 2, list_elements: 1 },
+    failures: { hidden: 1 }, noEffect: 1,
+  });
 });
 
 test('轮数上限：到顶后插一条系统提示，下一轮不带 tools，网关仍返回的调用整批丢弃', async (ctx) => {

@@ -84,8 +84,25 @@ export function performAction(payload) {
     return !style || style.display === 'none' || style.visibility === 'hidden';
   }
 
+  // 视觉代理：组件库常把原生勾选框/单选框缩成 0×0（Element UI 的 el-checkbox__original），
+  // 用户点的是关联的 <label>，浏览器把这次点击转发给控件。名称、可用性与勾选态读控件本身，
+  // 可见性、坐标与点击落点取自代理（与 snapshot.js 同一算法，自包含约束下各存一份）。
+  function visualProxy(el) {
+    const tag = el.tagName ? el.tagName.toUpperCase() : '';
+    const type = tag === 'INPUT' ? (el.getAttribute('type') || '').toLowerCase() : '';
+    if (type !== 'checkbox' && type !== 'radio') return el;
+    const r = el.getBoundingClientRect();
+    if (r.width >= 2 && r.height >= 2) return el;
+    for (const label of el.labels || []) {
+      const lr = label.getBoundingClientRect();
+      if (lr.width >= 2 && lr.height >= 2) return label;
+    }
+    return el;
+  }
+
   // ref → 元素句柄，校验链与 highlight.js 保持一致（stale/bad-ref/gone/hidden）。
-  // 成功时一并返回元素所在的 view：框架内元素的事件与选区不能用顶层 window 构造。
+  // 成功时一并返回元素所在的 view：框架内元素的事件与选区不能用顶层 window 构造；
+  // 以及视觉代理 box：尺寸校验、坐标与点击落点都按它算。
   function resolveElement(ref, needVisible) {
     const store = win.__titanium;
     if (!store || !Array.isArray(store.elements)) return { err: 'stale' };
@@ -97,13 +114,14 @@ export function performAction(payload) {
     const el = store.elements[ref - 1];
     const view = el && el.isConnected ? viewOf(el) : null;
     if (!view) return { err: 'gone' };
+    const box = visualProxy(el);
     if (needVisible !== false) {
       const style = view.getComputedStyle(el);
       if (style && (style.display === 'none' || style.visibility === 'hidden')) return { err: 'hidden' };
-      const r = el.getBoundingClientRect();
+      const r = box.getBoundingClientRect();
       if (r.width === 0 && r.height === 0) return { err: 'hidden' };
     }
-    return { el, view };
+    return { el, view, box };
   }
 
   function nameOf(el) {
@@ -270,14 +288,15 @@ export function performAction(payload) {
       const got = resolveElement(opts.ref, true);
       if (got.err) return { ok: false, reason: got.err };
       const el = got.el;
+      const box = got.box;
       const ewin = got.view;
-      const name = nameOf(el);
+      const name = nameOf(el) || nameOf(box);
       if (isDisabled(el)) return { ok: false, reason: 'disabled', name };
 
       // 视口外先滚到中央；instant 避免平滑滚动与随后的坐标测量产生竞态
-      if (offscreen(el)) el.scrollIntoView({ block: 'center', behavior: 'instant' });
+      if (offscreen(box)) box.scrollIntoView({ block: 'center', behavior: 'instant' });
       // 事件坐标以元素所在文档的视口为原点，框架内元素不必换算到顶层
-      const r = el.getBoundingClientRect();
+      const r = box.getBoundingClientRect();
       const cx = Math.round(r.left + r.width / 2);
       const cy = Math.round(r.top + r.height / 2);
       const base = {
@@ -285,11 +304,12 @@ export function performAction(payload) {
         clientX: cx, clientY: cy, screenX: cx, screenY: cy, button: 0,
       };
       const pointer = { pointerId: 1, pointerType: 'mouse', isPrimary: true };
-      const target = hitTarget(el, cx, cy);
+      // 点在代理上：label 的激活行为把点击转发给控件，与真实用户的路径一致
+      const target = hitTarget(box, cx, cy);
       // 聚焦命中点所在、最近的可聚焦元素：真实点击由 mousedown 的默认行为完成这一步，合成事件没有。
       // 找到的在元素之外时（元素本身不可聚焦而祖先可聚焦）只尝试元素本身：动作只作用于模型点的元素及其内部
       const focusable = target.closest('a[href],button,input,select,textarea,[tabindex],[contenteditable]:not([contenteditable=false])');
-      try { (focusable && el.contains(focusable) ? focusable : el).focus({ preventScroll: true }); } catch { /* 不可聚焦元素忽略 */ }
+      try { (focusable && box.contains(focusable) ? focusable : el).focus({ preventScroll: true }); } catch { /* 不可聚焦元素忽略 */ }
       // 完整还原真实鼠标事件序列：只发 click 会让依赖 mousedown 的菜单/拖拽组件失效
       target.dispatchEvent(new ewin.PointerEvent('pointerdown', { ...base, ...pointer, buttons: 1 }));
       target.dispatchEvent(new ewin.MouseEvent('mousedown', { ...base, buttons: 1 }));
