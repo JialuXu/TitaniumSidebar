@@ -241,7 +241,7 @@ export function performAction(payload) {
     try { return typeof el.selectionStart === 'number'; } catch { return false; }
   }
 
-  // 文本框里某个字符位置所在行的顶边（相对内容区，含上内边距）与行高。
+  // 文本框里某个字符位置所在行的行框顶边（相对内容区，含上内边距）与行高。
   // 用一个排版相同、不可见的镜像 div 量：自动换行之后的视觉行，只能这样算出来
   function caretBox(field, pos, view) {
     const d = field.ownerDocument;
@@ -259,17 +259,27 @@ export function performAction(payload) {
     mark.textContent = '\u200b';
     mirror.appendChild(mark);
     (d.body || d.documentElement).appendChild(mirror);
-    const box = { top: mark.offsetTop, height: mark.offsetHeight || parseFloat(cs.lineHeight) || 20 };
+    // 零宽标记只有字形那么高，行框比它高出上下各半个行距
+    const glyph = mark.offsetHeight || 16;
+    const height = parseFloat(cs.lineHeight) || glyph * 1.2;
+    const box = { top: mark.offsetTop - (height - glyph) / 2, height };
     mirror.remove();
     return box;
   }
 
-  // 光标所在行滚进文本框的可见范围（setSelectionRange 本身不滚）
+  // 光标所在行滚进文本框的可见范围（setSelectionRange 本身不滚），返回实际滚动量
   function revealCaret(field, view) {
-    if (field.scrollHeight <= field.clientHeight) return;
+    if (field.scrollHeight <= field.clientHeight) return 0;
+    const cs = view.getComputedStyle(field);
+    const padTop = parseFloat(cs.paddingTop) || 0;
+    const padBottom = parseFloat(cs.paddingBottom) || 0;
     const box = caretBox(field, field.selectionEnd, view);
-    if (box.top < field.scrollTop) field.scrollTop = box.top;
-    else if (box.top + box.height > field.scrollTop + field.clientHeight) field.scrollTop = box.top + box.height - field.clientHeight;
+    const before = field.scrollTop;
+    if (box.top - padTop < field.scrollTop) field.scrollTop = Math.max(0, Math.round(box.top - padTop));
+    else if (box.top + box.height + padBottom > field.scrollTop + field.clientHeight) {
+      field.scrollTop = Math.round(box.top + box.height + padBottom - field.clientHeight);
+    }
+    return Math.round(field.scrollTop - before);
   }
 
   // 元素自身或最近的可滚动祖先；都不能滚就是整页
@@ -294,7 +304,8 @@ export function performAction(payload) {
 
   /**
    * 补上合成按键缺失的浏览器默认行为，返回实际效果（moved 表示有没有产生变化）：
-   *   { kind:'caret', moved, from?, to? }   移动光标；文本框带字符位置，并把光标所在行滚进可见范围
+   *   { kind:'caret', moved, from?, to?, px? }  移动光标；文本框带字符位置，并把光标所在行滚进可见范围，
+   *                                         px 为这一步让文本框滚动的量（光标没动、只是滚回光标处也算有变化）
    *   { kind:'scroll', moved, where, px }   滚动文本框（field）、所在区域（area）或整页（page），px 为实际滚动量
    *   { kind:'delete', moved, removed }     Backspace/Delete 删掉的字符数
    * 不需要补偿的按键（Escape 等）与原生控件自有键盘行为的（select、勾选框、滑块等）返回 null。
@@ -344,8 +355,8 @@ export function performAction(payload) {
         }
       }
       try { target.setSelectionRange(to, to); } catch { return null; }
-      if (multi) revealCaret(target, view);
-      return { kind: 'caret', moved: from !== to, from, to };
+      const px = multi ? revealCaret(target, view) : 0;
+      return { kind: 'caret', moved: from !== to || px !== 0, from, to, px };
     }
 
     // 原生控件自带的键盘行为（下拉、勾选、滑块、日期等）不在这里模拟

@@ -57,8 +57,8 @@ describe('按键补偿（真实 DOM）', { skip: !playwright && '未安装 playw
   test('多行文本框：Home / End 到本行首尾，上下方向键按行移动并保持列', async () => {
     const ref = await refFor('#lines');
     await caretAt('#lines', 5); // 「第二行比较长」的第 2 个字后面
-    assert.deepEqual((await key('End', ref)).effect, { kind: 'caret', moved: true, from: 5, to: 10 });
-    assert.deepEqual((await key('Home', ref)).effect, { kind: 'caret', moved: true, from: 10, to: 4 });
+    assert.deepEqual((await key('End', ref)).effect, { kind: 'caret', moved: true, from: 5, to: 10, px: 0 });
+    assert.deepEqual((await key('Home', ref)).effect, { kind: 'caret', moved: true, from: 10, to: 4, px: 0 });
     await caretAt('#lines', 6);
     assert.equal((await key('ArrowDown', ref)).effect.to, 12); // 下一行「三」只有一个字，落到行尾
     assert.equal((await key('ArrowUp', ref)).effect.to, 5);
@@ -74,6 +74,21 @@ describe('按键补偿（真实 DOM）', { skip: !playwright && '未安装 playw
     const after = await field('#wrap');
     assert.equal(after.caret, after.value.indexOf('末段'));
     assert.ok(after.scrollTop > 0, '光标所在行滚进了可见范围');
+  });
+
+  test('光标已在开头、文本框被翻到下面时按 Home：滚回顶部，算有变化', async () => {
+    const ref = await refFor('#wrap');
+    await caretAt('#wrap', 0);
+    await key('PageDown', ref);
+    await key('PageDown', ref);
+    assert.ok((await field('#wrap')).scrollTop > 0);
+    const res = await key('Home', ref);
+    assert.equal(res.effect.moved, true);
+    assert.equal(res.effect.to, 0);
+    assert.ok(res.effect.px < 0);
+    assert.equal((await field('#wrap')).scrollTop, 0);
+    // 已在顶部再按一次：光标与滚动都不变
+    assert.deepEqual((await key('Home', ref)).effect, { kind: 'caret', moved: false, from: 0, to: 0, px: 0 });
   });
 
   test('单行输入框：Home / End / 左右方向键移光标', async () => {

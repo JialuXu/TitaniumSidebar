@@ -431,7 +431,8 @@ const keyCall = (k, ref) => call('press_key', { key: k, ...(ref ? { ref } : {}) 
 
 test('press_key：如实回报光标移动、滚动与删字', async () => {
   const cases = [
-    [{ kind: 'caret', moved: true, from: 5, to: 10 }, t('res.keyCaret', { from: 5, to: 10 })],
+    [{ kind: 'caret', moved: true, from: 5, to: 10, px: 0 }, t('res.keyCaret', { from: 5, to: 10 })],
+    [{ kind: 'caret', moved: true, from: 0, to: 0, px: -132 }, t('res.keyScrolled', { where: t('res.keyWhere.field'), px: 132 })],
     [{ kind: 'caret', moved: true }, t('res.keyCaretMoved')],
     [{ kind: 'scroll', moved: true, where: 'field', px: -120 }, t('res.keyScrolled', { where: t('res.keyWhere.field'), px: 120 })],
     [{ kind: 'delete', moved: true, removed: 1 }, t('res.keyDeleted', { n: 1 })],

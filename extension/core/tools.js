@@ -284,8 +284,10 @@ function keyEffectText(effect) {
   if (!effect || !effect.moved) return '';
   if (effect.kind === 'delete') return t('res.keyDeleted', { n: effect.removed });
   if (effect.kind === 'scroll') return t('res.keyScrolled', { where: t('res.keyWhere.' + effect.where), px: Math.abs(effect.px) });
-  if (typeof effect.from === 'number') return t('res.keyCaret', { from: effect.from, to: effect.to });
-  return t('res.keyCaretMoved');
+  if (typeof effect.from !== 'number') return t('res.keyCaretMoved');
+  const caret = effect.from !== effect.to ? t('res.keyCaret', { from: effect.from, to: effect.to }) : '';
+  const scrolled = effect.px ? t('res.keyScrolled', { where: t('res.keyWhere.field'), px: Math.abs(effect.px) }) : '';
+  return caret + scrolled;
 }
 
 // 补偿过、却什么都没变：光标、滚动、内容不动，页面上也没有新元素或状态变化
