@@ -87,7 +87,8 @@ export function describeToolActivity(name, args, phase, data = {}) {
       const key = phase === 'done' ? data.key : (a.key || '');
       if (phase === 'run') return t('act.key.run', { key });
       if (phase === 'fail') return t('act.key.fail', { key });
-      return t('act.key.done', { key, submitted: data.submitted ? t('act.key.submitted') : '', jumped });
+      return t('act.key.done', { key, submitted: data.submitted ? t('act.key.submitted') : '', jumped }) +
+        (data.noEffect ? t('act.key.noEffect') : '');
     }
     case 'scroll_page': {
       const label = t('act.scroll.' + (a.direction || 'down'));

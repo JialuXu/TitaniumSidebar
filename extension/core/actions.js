@@ -10,8 +10,9 @@
 //
 // 与真实用户操作的差异（模型需要知道，已写进工具描述）：
 //   1. 合成事件的 isTrusted 为 false，极少数站点会据此忽略；
-//   2. 合成键盘事件不产生浏览器默认行为（不会真的提交表单/移动焦点），
-//      因此本文件对 Enter/Tab 做了显式补偿（requestSubmit / 手动移焦）。
+//   2. 合成键盘事件不产生浏览器默认行为（不提交表单、不移焦点、不移光标、不滚动、不删字），
+//      因此本文件按键语义逐个补偿：Enter 提交、Tab 移焦、导航键移光标或滚动、
+//      Backspace/Delete 删字（见 keyDefault），并把补偿的实际效果如实回报。
 
 /**
  * 在页面上执行一个动作。
@@ -231,6 +232,165 @@ export function performAction(payload) {
     }, extra || {});
   }
 
+  /* ---------- 按键的默认行为补偿 ---------- */
+
+  // 能用选区 API 编辑的单行/多行文本框（number、email 等类型的 selectionStart 读取会抛错或为 null）
+  function textField(el) {
+    const tag = el.tagName ? el.tagName.toUpperCase() : '';
+    if (tag !== 'TEXTAREA' && tag !== 'INPUT') return false;
+    try { return typeof el.selectionStart === 'number'; } catch { return false; }
+  }
+
+  // 文本框里某个字符位置所在行的顶边（相对内容区，含上内边距）与行高。
+  // 用一个排版相同、不可见的镜像 div 量：自动换行之后的视觉行，只能这样算出来
+  function caretBox(field, pos, view) {
+    const d = field.ownerDocument;
+    const cs = view.getComputedStyle(field);
+    const mirror = d.createElement('div');
+    for (const k of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'lineHeight',
+      'textTransform', 'wordSpacing', 'textIndent', 'tabSize', 'paddingTop', 'paddingLeft', 'paddingRight']) {
+      mirror.style[k] = cs[k];
+    }
+    const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+    mirror.style.cssText += ';position:absolute;visibility:hidden;left:-99999px;top:0;box-sizing:content-box;' +
+      'white-space:pre-wrap;overflow-wrap:break-word;border:0;width:' + Math.max(0, field.clientWidth - padX) + 'px';
+    mirror.textContent = field.value.slice(0, pos);
+    const mark = d.createElement('span');
+    mark.textContent = '\u200b';
+    mirror.appendChild(mark);
+    (d.body || d.documentElement).appendChild(mirror);
+    const box = { top: mark.offsetTop, height: mark.offsetHeight || parseFloat(cs.lineHeight) || 20 };
+    mirror.remove();
+    return box;
+  }
+
+  // 光标所在行滚进文本框的可见范围（setSelectionRange 本身不滚）
+  function revealCaret(field, view) {
+    if (field.scrollHeight <= field.clientHeight) return;
+    const box = caretBox(field, field.selectionEnd, view);
+    if (box.top < field.scrollTop) field.scrollTop = box.top;
+    else if (box.top + box.height > field.scrollTop + field.clientHeight) field.scrollTop = box.top + box.height - field.clientHeight;
+  }
+
+  // 元素自身或最近的可滚动祖先；都不能滚就是整页
+  function scrollHost(node, view, vertical) {
+    const d = node.ownerDocument;
+    for (let n = node; n && n.nodeType === 1 && n !== d.body && n !== d.documentElement; n = n.parentElement) {
+      const st = view.getComputedStyle(n);
+      const ov = vertical ? st.overflowY : st.overflowX;
+      const room = vertical ? n.scrollHeight > n.clientHeight : n.scrollWidth > n.clientWidth;
+      if (room && (ov === 'auto' || ov === 'scroll' || ov === 'overlay')) return { el: n, page: false };
+    }
+    return { el: d.scrollingElement || d.documentElement, page: true };
+  }
+
+  // 滚动一个容器并量出实际滚了多少（到顶/到底时为 0）
+  function scrollBy(host, vertical, delta, to) {
+    const prop = vertical ? 'scrollTop' : 'scrollLeft';
+    const before = host[prop];
+    host[prop] = to != null ? to : before + delta;
+    return Math.round(host[prop] - before);
+  }
+
+  /**
+   * 补上合成按键缺失的浏览器默认行为，返回实际效果（moved 表示有没有产生变化）：
+   *   { kind:'caret', moved, from?, to? }   移动光标；文本框带字符位置，并把光标所在行滚进可见范围
+   *   { kind:'scroll', moved, where, px }   滚动文本框（field）、所在区域（area）或整页（page），px 为实际滚动量
+   *   { kind:'delete', moved, removed }     Backspace/Delete 删掉的字符数
+   * 不需要补偿的按键（Escape 等）与原生控件自有键盘行为的（select、勾选框、滑块等）返回 null。
+   * 方向键上下按逻辑行移动（自动换行的长段落里一次跨过整段），PageUp/PageDown 按可见高度滚动。
+   */
+  function keyDefault(key, target, view) {
+    const tag = target.tagName ? target.tagName.toUpperCase() : '';
+    const NAV = { Home: 1, End: 1, ArrowUp: 1, ArrowDown: 1, ArrowLeft: 1, ArrowRight: 1, PageUp: 1, PageDown: 1 };
+    const isDelete = key === 'Backspace' || key === 'Delete';
+    if (!NAV[key] && !isDelete) return null;
+    const d = target.ownerDocument;
+
+    // 文本框
+    if (textField(target)) {
+      if (isDelete) {
+        const len = target.value.length;
+        let ok = false;
+        try { ok = d.execCommand(key === 'Delete' ? 'forwardDelete' : 'delete'); } catch { ok = false; }
+        const removed = ok ? len - target.value.length : 0;
+        return { kind: 'delete', moved: removed > 0, removed };
+      }
+      const multi = tag === 'TEXTAREA';
+      if (multi && (key === 'PageUp' || key === 'PageDown')) {
+        const px = scrollBy(target, true, (key === 'PageDown' ? 1 : -1) * Math.round(target.clientHeight * 0.9));
+        return { kind: 'scroll', moved: px !== 0, where: 'field', px };
+      }
+      const v = target.value;
+      const back = key === 'Home' || key === 'ArrowLeft' || key === 'ArrowUp' || key === 'PageUp';
+      const from = back ? target.selectionStart : target.selectionEnd;
+      const lineStart = (i) => v.lastIndexOf('\n', i - 1) + 1;
+      const lineEnd = (i) => { const n = v.indexOf('\n', i); return n === -1 ? v.length : n; };
+      let to = from;
+      if (key === 'Home') to = multi ? lineStart(from) : 0;
+      else if (key === 'End') to = multi ? lineEnd(from) : v.length;
+      else if (key === 'ArrowLeft') to = Math.max(0, from - 1);
+      else if (key === 'ArrowRight') to = Math.min(v.length, from + 1);
+      else if (!multi) to = key === 'ArrowUp' || key === 'PageUp' ? 0 : v.length;
+      else {
+        // 上下移一行，保持列位置；首行再往上到开头，末行再往下到结尾
+        const col = from - lineStart(from);
+        if (key === 'ArrowUp') {
+          const s = lineStart(from);
+          to = s === 0 ? 0 : Math.min(lineStart(s - 1) + col, s - 1);
+        } else {
+          const e = lineEnd(from);
+          to = e === v.length ? v.length : Math.min(e + 1 + col, lineEnd(e + 1));
+        }
+      }
+      try { target.setSelectionRange(to, to); } catch { return null; }
+      if (multi) revealCaret(target, view);
+      return { kind: 'caret', moved: from !== to, from, to };
+    }
+
+    // 原生控件自带的键盘行为（下拉、勾选、滑块、日期等）不在这里模拟
+    if (tag === 'SELECT' || tag === 'INPUT' || tag === 'TEXTAREA') return null;
+
+    // 富文本编辑区：Selection.modify 按视觉行移动光标，删字走 execCommand（产生真实的 input 事件）
+    if (selfEditable(target) || (target.closest && target.closest('[contenteditable]:not([contenteditable=false])'))) {
+      const sel = view.getSelection();
+      if (isDelete) {
+        const before = (target.textContent || '').length;
+        try { d.execCommand(key === 'Delete' ? 'forwardDelete' : 'delete'); } catch { /* 按没删处理 */ }
+        const removed = Math.max(0, before - (target.textContent || '').length);
+        return { kind: 'delete', moved: removed > 0, removed };
+      }
+      const MOVES = {
+        Home: ['backward', 'lineboundary'], End: ['forward', 'lineboundary'],
+        ArrowLeft: ['backward', 'character'], ArrowRight: ['forward', 'character'],
+        ArrowUp: ['backward', 'line'], ArrowDown: ['forward', 'line'],
+      };
+      if (MOVES[key] && sel && typeof sel.modify === 'function' && sel.rangeCount) {
+        const r0 = sel.getRangeAt(0);
+        const before = [r0.endContainer, r0.endOffset];
+        sel.modify('move', MOVES[key][0], MOVES[key][1]);
+        const r1 = sel.getRangeAt(0);
+        const host = r1.endContainer.nodeType === 1 ? r1.endContainer : r1.endContainer.parentElement;
+        if (host && host.scrollIntoView) host.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+        return { kind: 'caret', moved: before[0] !== r1.endContainer || before[1] !== r1.endOffset };
+      }
+    }
+
+    // 其余：滚动焦点所在的可滚动区域，没有就滚整页；Backspace/Delete 在可编辑区之外没有默认行为
+    if (isDelete) return null;
+    const vertical = key !== 'ArrowLeft' && key !== 'ArrowRight';
+    const host = scrollHost(target, view, vertical);
+    const page = Math.round((host.page ? view.innerHeight : host.el.clientHeight) * 0.9);
+    const STEP = 40;
+    let px = 0;
+    if (key === 'PageDown' || key === 'PageUp') px = scrollBy(host.el, true, key === 'PageDown' ? page : -page);
+    else if (key === 'Home') px = scrollBy(host.el, true, 0, 0);
+    else if (key === 'End') px = scrollBy(host.el, true, 0, host.el.scrollHeight);
+    else if (key === 'ArrowDown' || key === 'ArrowUp') px = scrollBy(host.el, true, key === 'ArrowDown' ? STEP : -STEP);
+    else if (key === 'ArrowLeft' || key === 'ArrowRight') px = scrollBy(host.el, false, key === 'ArrowRight' ? STEP : -STEP);
+    return { kind: 'scroll', moved: px !== 0, where: host.page ? 'page' : 'area', px };
+  }
+
   // 可见表格收集：遍历顺序与剪枝规则必须与 snapshot.js 完全一致（含内嵌框架的下钻），
   // 否则 table_index 会与页面结构里标注的 #N 对不上
   function collectTables() {
@@ -443,6 +603,7 @@ export function performAction(payload) {
       // 合成键盘事件不触发浏览器默认行为，这里按键语义手动补全（页面已 preventDefault 的不补）
       let submitted = false;
       let movedTo = null;
+      const effect = prevented ? null : keyDefault(spec.key, target, twin);
       const targetTag = target.tagName ? target.tagName.toUpperCase() : '';
       if (!prevented && spec.key === 'Enter') {
         if (targetTag === 'BUTTON' || targetTag === 'A' || targetTag === 'SUMMARY') {
@@ -474,7 +635,7 @@ export function performAction(payload) {
         }
       }
 
-      return finish({ key: spec.key, target: nameOf(target), prevented, submitted, movedTo });
+      return finish({ key: spec.key, target: nameOf(target), prevented, submitted, movedTo, effect });
     }
 
     /* —— 滚动 —— */
@@ -530,6 +691,11 @@ export function performAction(payload) {
         }
       }
       const clone = got.el.cloneNode(true);
+      // 克隆只带着 HTML 里写的初值；输入框与文本框换成当前值，密码框打码（克隆与原件结构一一对应）
+      const fieldsOf = (root) => [root, ...root.querySelectorAll('input,textarea')]
+        .filter((n) => n.tagName === 'INPUT' || n.tagName === 'TEXTAREA');
+      const liveFields = fieldsOf(got.el);
+      const cloneFields = fieldsOf(clone);
       filterAttrs(clone);
       (function strip(node) {
         for (const child of Array.prototype.slice.call(node.childNodes)) {
@@ -541,6 +707,13 @@ export function performAction(payload) {
           strip(child);
         }
       })(clone);
+      liveFields.forEach((src, i) => {
+        const dst = cloneFields[i];
+        const type = (src.getAttribute('type') || '').toLowerCase();
+        if (src.tagName === 'TEXTAREA') dst.textContent = src.value;
+        else if (type === 'password') dst.setAttribute('value', src.value ? S.passwordMasked : '');
+        else if (type !== 'checkbox' && type !== 'radio' && type !== 'hidden') dst.setAttribute('value', src.value);
+      });
 
       let html = (clone.outerHTML || '').replace(/\s+/g, ' ').replace(/> </g, '><').trim();
       const truncated = html.length > maxLen;

@@ -41,7 +41,7 @@ tests/
 
 | 覆盖到的 | 仍靠手动验收（[docs/acceptance.md](../docs/acceptance.md)） |
 |---|---|
-| 回合编排（tool 链配对、400 降级、同批跳转中止、轮数上限、中止占位、截图跟随消息、回合统计）、重新生成前的回退、流式解析与错误分类、脱敏、引用校验、页面同步与差异、请求链组装与压缩、上下文估算、历史淘汰、设置迁移与导入导出、Markdown 渲染、工具分发的闸门与预算、提示词拼装、技能匹配、活动行文案；`tests/dom/`：勾选类控件（原生、Element UI、antd、sr-only、纯 ARIA）的编号、视觉代理、点击与状态回读，动作后的状态变化，自定义下拉的展开与回填 | 外壳 `sidepanel.js`（界面渲染、`chrome.*` 接线与 provider）；`tests/dom/` 夹具之外的真实页面行为，以及 `settle.js`；截图标注（`annotate.js`，依赖 `OffscreenCanvas`）；真实模型接口的表现 |
+| 回合编排（tool 链配对、400 降级、同批跳转中止、轮数上限、中止占位、截图跟随消息、回合统计）、重新生成前的回退、流式解析与错误分类、脱敏、引用校验、页面同步与差异、请求链组装与压缩、上下文估算、历史淘汰、设置迁移与导入导出、Markdown 渲染、工具分发的闸门与预算、提示词拼装、技能匹配、活动行文案；`tests/dom/`：勾选类控件（原生、Element UI、antd、sr-only、纯 ARIA）的编号、视觉代理、点击与状态回读，动作后的状态变化，自定义下拉的展开与回填，按键的默认行为补偿（文本框移光标与翻页、删字、页面与区域滚动、富文本），输入框当前值的读取 | 外壳 `sidepanel.js`（界面渲染、`chrome.*` 接线与 provider）；`tests/dom/` 夹具之外的真实页面行为，以及 `settle.js`；截图标注（`annotate.js`，依赖 `OffscreenCanvas`）；真实模型接口的表现 |
 
 对应验收标准的用例，名字里写了「第 N 条」，可以用 `--test-name-pattern` 单独跑。
 
@@ -80,7 +80,7 @@ Run from the repo root with **Node.js ≥ 22.7**:
 node --test "tests/**/*.test.mjs"
 ```
 
-`unit/` holds one behaviour test file per core module, including the agent loop in `agent.js`; `contracts/` holds static checks of the repository's hard constraints (no `chrome.*` in core, self-contained injected functions, bilingual catalogs in sync, version numbers consistent). `dom/` runs the injected functions in a real Chromium against fixture pages that replicate component-library markup (native, Element UI, antd, sr-only and pure-ARIA checkboxes, a custom dropdown). It needs a temporary Playwright install:
+`unit/` holds one behaviour test file per core module, including the agent loop in `agent.js`; `contracts/` holds static checks of the repository's hard constraints (no `chrome.*` in core, self-contained injected functions, bilingual catalogs in sync, version numbers consistent). `dom/` runs the injected functions in a real Chromium against fixture pages that replicate component-library markup (native, Element UI, antd, sr-only and pure-ARIA checkboxes, a custom dropdown, keyboard defaults in text fields, rich text and scrollable areas). It needs a temporary Playwright install:
 
 ```sh
 npm install --no-save --no-package-lock playwright@1.56.1

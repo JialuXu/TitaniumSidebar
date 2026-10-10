@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>按键夹具</title>
+<!-- 按键的浏览器默认行为：文本框里移光标、翻页，别处滚动；页面自己处理的按键不补 -->
+<style>
+  body { font: 14px/1.5 sans-serif; margin: 16px; }
+  textarea { width: 360px; font: 14px/20px sans-serif; padding: 4px; }
+  #area { height: 120px; overflow: auto; border: 1px solid #ccc; }
+  #area > div { height: 1200px; }
+  #tall { height: 3000px; }
+  #ce { width: 360px; border: 1px solid #ccc; }
+  [role=listbox] { border: 1px solid #ccc; }
+</style>
+<body>
+  <textarea id="wrap" rows="4"></textarea>
+  <textarea id="lines" rows="3">第一行
+第二行比较长
+三
+第四行</textarea>
+  <input id="one" value="abcdef">
+  <input id="pwd" type="password" value="secret">
+  <input id="long" value="">
+  <select id="sel"><option>甲</option><option>乙</option></select>
+  <div id="area" tabindex="0"><div>可滚动区域</div></div>
+  <div id="ce" contenteditable="true">第一行<br>第二行<br>第三行</div>
+  <div role="listbox" tabindex="0" id="lb" aria-activedescendant="o1">
+    <div role="option" id="o1">选项一</div><div role="option" id="o2">选项二</div>
+  </div>
+  <div id="tall"></div>
+<script>
+  // 一段会自动换行很多次的长文本：方向键、End 之后要把光标所在行滚进可见范围
+  document.getElementById('wrap').value =
+    '依据Query第7段披露后全批照此执行、不得改口和第12段01中的全部信号须与之保持一致。'.repeat(12) + '\n末段';
+  document.getElementById('long').value = '长'.repeat(120);
+  window.inputs = 0;
+  document.getElementById('one').addEventListener('input', () => { window.inputs++; });
+  // 页面自己处理方向键：拦下默认行为，切换选中项
+  const lb = document.getElementById('lb');
+  lb.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    lb.setAttribute('aria-activedescendant', 'o2');
+  });
+</script>
+</body>

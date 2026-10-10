@@ -424,3 +424,59 @@ test('mergePageChanges：前后抵消的元素整条去掉；跳转以最后一�
   assert.equal(mergePageChanges([toggled(null, '已选中'), nav]), nav);
   assert.equal(mergePageChanges([null]), null);
 });
+
+/* ========== 按键补偿的回报 ========== */
+
+const keyCall = (k, ref) => call('press_key', { key: k, ...(ref ? { ref } : {}) });
+
+test('press_key：如实回报光标移动、滚动与删字', async () => {
+  const cases = [
+    [{ kind: 'caret', moved: true, from: 5, to: 10 }, t('res.keyCaret', { from: 5, to: 10 })],
+    [{ kind: 'caret', moved: true }, t('res.keyCaretMoved')],
+    [{ kind: 'scroll', moved: true, where: 'field', px: -120 }, t('res.keyScrolled', { where: t('res.keyWhere.field'), px: 120 })],
+    [{ kind: 'delete', moved: true, removed: 1 }, t('res.keyDeleted', { n: 1 })],
+  ];
+  for (const [effect, piece] of cases) {
+    const { provider } = fakeProvider({ act: { result: { ok: true, key: 'End', target: '描述', effect }, change: { navigated: false, newElements: [] } } });
+    const res = await dispatchToolCall(keyCall('End', 3), provider, {}, registeredFor({ actions: true }));
+    const head = t('res.keyDone', { key: 'End', target: t('res.keyTarget', { name: '描述' }), extra: piece });
+    assert.ok(res.toolMessage.content.startsWith(head), piece);
+    assert.equal(res.meta.data.noEffect, undefined);
+  }
+});
+
+test('press_key：什么都没变时附上说明并计入 noEffect；页面有变化或页面自己处理了就不算', async () => {
+  const idle = { kind: 'scroll', moved: false, where: 'page', px: 0 };
+  const run = async (result, change) => {
+    const { provider } = fakeProvider({ act: { result: { ok: true, key: 'Home', ...result }, change } });
+    return dispatchToolCall(keyCall('Home'), provider, {}, registeredFor({ actions: true }));
+  };
+  const still = await run({ effect: idle }, { navigated: false, newElements: [] });
+  assert.ok(still.toolMessage.content.includes(t('res.keyNoChange')));
+  assert.equal(still.meta.data.noEffect, true);
+
+  const changed = await run({ effect: idle }, {
+    navigated: false, newElements: [],
+    changedElements: [{ ref: 2, role: 'option', name: '乙', changes: [{ key: 'selected', from: null, to: true }] }],
+  });
+  assert.ok(!changed.toolMessage.content.includes(t('res.keyNoChange')));
+
+  const handled = await run({ prevented: true, effect: null }, { navigated: false, newElements: [] });
+  assert.ok(handled.toolMessage.content.includes(t('res.keyPrevented')));
+  assert.ok(!handled.toolMessage.content.includes(t('res.keyNoChange')));
+});
+
+test('list_elements：关键词也匹配输入框的当前值', async () => {
+  const { provider } = fakeProvider({
+    listElements: {
+      elements: [
+        { ref: 481, role: 'textbox', tag: 'textarea', name: '', value: '依据Query第7段披露后…', inViewport: true },
+        { ref: 492, role: 'textbox', tag: 'textarea', name: '', value: '依据Query第6段九类定义…', inViewport: true },
+      ],
+    },
+  });
+  const res = await dispatchToolCall(call('list_elements', { query: '第7段', scope: 'page' }), provider, {}, registeredFor({}));
+  assert.equal(res.meta.data.count, 1);
+  assert.ok(res.toolMessage.content.includes('[481]'));
+  assert.ok(!res.toolMessage.content.includes('[492]'));
+});

@@ -313,6 +313,7 @@ const ZH = {
   'act.key.fail': '按下 {key} 失败',
   'act.key.done': '已按下 {key}{submitted}{jumped}',
   'act.key.submitted': '，已提交表单',
+  'act.key.noEffect': '（页面无变化）',
   'act.scroll.run': '正在{label}滚动…',
   'act.scroll.fail': '滚动失败',
   'act.scroll.done': '已{label}滚动',
@@ -456,6 +457,15 @@ const ZH = {
   'res.keyTarget': '（作用于 "{name}"）',
   'res.keySubmitted': '，已提交所属表单',
   'res.keyMoved': '，焦点移到「{name}」',
+  'res.keyPrevented': '，页面自己处理了这个按键',
+  'res.keyCaret': '，光标从第 {from} 个字符移到第 {to} 个字符',
+  'res.keyCaretMoved': '，光标已移动',
+  'res.keyScrolled': '，{where}滚动了 {px} 像素',
+  'res.keyWhere.field': '输入框',
+  'res.keyWhere.area': '所在的可滚动区域',
+  'res.keyWhere.page': '页面',
+  'res.keyDeleted': '，删掉了 {n} 个字符',
+  'res.keyNoChange': '注意：按键后光标、滚动位置与内容都没有变化，页面上也没有出现变化（可能已经在开头或末尾）。',
   'res.batchEmpty': 'batch_actions 的 steps 为空，没有执行任何动作。',
   'res.batchTooMany': 'batch_actions 一次最多 {max} 步，请拆成几批，中途核对结果。没有执行任何动作。',
   'res.batchHead': '批量执行：完成 {done}/{total} 步。',
@@ -667,7 +677,8 @@ const ZH = {
   'tool.table.index': '表格序号，从 1 开始，对应页面结构里的 #N',
   'tool.html.d':
     '返回指定编号元素的精简 HTML（已去掉脚本、样式与无关属性）。' +
-    '用于理解自定义组件的内部结构——例如某个下拉/日期控件到底由哪些子元素组成。',
+    '用于理解自定义组件的内部结构——例如某个下拉/日期控件到底由哪些子元素组成。' +
+    '输入框与文本框给出当前的完整值，要读一段很长的文本框内容时直接用它。',
   'tool.html.ref': 'list_elements 中的元素编号',
   'tool.html.max': '返回的最大字符数，默认 4000',
   'tool.wait.d':
@@ -695,7 +706,9 @@ const ZH = {
   'tool.select.option': '选项的显示文本（也可传 value）',
   'tool.key.d':
     '按下一个功能键。不带 ref 时作用于当前焦点元素，带 ref 时先聚焦该元素再按。' +
-    '常用于输入后回车提交、Escape 关闭弹层、方向键在下拉候选中移动。',
+    '常用于输入后回车提交、Escape 关闭弹层、方向键在下拉候选中移动。' +
+    '在文本框里方向键、Home/End 移动光标（上下按换行符分行），PageUp/PageDown 滚动文本框；在别处它们滚动焦点所在区域或整页。' +
+    '结果会说明光标移到了哪里、滚动了多少，没有任何变化时也会说明。',
   'tool.key.key': '按键名',
   'tool.key.ref': '可选，先聚焦到该编号的元素',
   'tool.scroll.d':
@@ -958,6 +971,7 @@ const EN = {
   'act.key.fail': 'Failed to press {key}',
   'act.key.done': 'Pressed {key}{submitted}{jumped}',
   'act.key.submitted': ', form submitted',
+  'act.key.noEffect': ' (nothing changed)',
   'act.scroll.run': 'Scrolling {label}…',
   'act.scroll.fail': 'Scrolling failed',
   'act.scroll.done': 'Scrolled {label}',
@@ -1102,6 +1116,15 @@ const EN = {
   'res.keyTarget': ' (on "{name}")',
   'res.keySubmitted': ', which submitted the surrounding form',
   'res.keyMoved': ', focus moved to "{name}"',
+  'res.keyPrevented': ', the page handled the key itself',
+  'res.keyCaret': ', caret moved from character {from} to {to}',
+  'res.keyCaretMoved': ', caret moved',
+  'res.keyScrolled': ', scrolled the {where} by {px}px',
+  'res.keyWhere.field': 'field',
+  'res.keyWhere.area': 'surrounding scrollable area',
+  'res.keyWhere.page': 'page',
+  'res.keyDeleted': ', deleted {n} characters',
+  'res.keyNoChange': 'Note: the caret, scroll position and content did not change, and nothing changed on the page (it may already be at the start or end).',
   'res.batchEmpty': 'batch_actions got an empty steps list; nothing was run.',
   'res.batchTooMany': 'batch_actions runs at most {max} steps per call; split them into batches and check the results in between. Nothing was run.',
   'res.batchHead': 'Batch: {done}/{total} steps completed.',
@@ -1320,7 +1343,8 @@ const EN = {
   'tool.table.index': 'Table index, starting at 1, matching #N in the page outline',
   'tool.html.d':
     'Return the trimmed HTML of the element with the given number (scripts, styles and irrelevant attributes removed). ' +
-    'Use it to understand the internals of a custom widget — which children a dropdown or date picker is actually made of.',
+    'Use it to understand the internals of a custom widget — which children a dropdown or date picker is actually made of. ' +
+    'Inputs and text areas show their full current value: use it to read a long text area.',
   'tool.html.ref': 'Element number from list_elements',
   'tool.html.max': 'Maximum number of characters to return, default 4000',
   'tool.wait.d':
@@ -1348,7 +1372,9 @@ const EN = {
   'tool.select.option': 'The option label to pick (its value also works)',
   'tool.key.d':
     'Press one functional key. Without ref it applies to the focused element; with ref that element is focused first. ' +
-    'Commonly used to submit with Enter after typing, close a layer with Escape, or move through dropdown candidates with arrow keys.',
+    'Commonly used to submit with Enter after typing, close a layer with Escape, or move through dropdown candidates with arrow keys. ' +
+    'In a text field the arrow keys and Home/End move the caret (up/down move by line breaks) and PageUp/PageDown scroll the field; elsewhere they scroll the focused area or the page. ' +
+    'The result says where the caret moved and how far things scrolled, and says so when nothing changed.',
   'tool.key.key': 'Key name',
   'tool.key.ref': 'Optional; focus the element with this number first',
   'tool.scroll.d':
