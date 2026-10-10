@@ -104,7 +104,7 @@ const els = {};
   'btn-history', 'history-pop', 'history-list', 'btn-clear-history',
   'settings-mask', 'settings', 'btn-close-settings', 'cfg-locale',
   'cfg-profile', 'btn-profile-add', 'btn-profile-del', 'cfg-name', 'cfg-baseurl', 'cfg-model',
-  'cfg-apikey', 'cfg-vision', 'cfg-context', 'cfg-mask', 'cfg-actions', 'cfg-debugger', 'cfg-debugger-hint', 'btn-test', 'btn-save', 'test-result',
+  'cfg-apikey', 'cfg-vision', 'cfg-context', 'cfg-mask', 'cfg-actions', 'cfg-debugger', 'btn-test', 'btn-save', 'test-result',
   'btn-export', 'btn-import', 'import-file', 'app-version',
 ].forEach((id) => {
   els[id.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = document.getElementById(id);
@@ -245,12 +245,10 @@ function fillConfigForm() {
   els.cfgLocale.value = state.config.locale;
   els.cfgMask.checked = state.config.maskEnabled;
   els.cfgActions.checked = state.config.actionsEnabled;
-  // 没有 debugger 权限的构建里开关置灰，说明换成「需要调试权限」
+  // 没有 debugger 权限的构建里开关置灰
   const available = debuggerAvailable();
   els.cfgDebugger.disabled = !available;
   els.cfgDebugger.checked = available && state.config.debuggerEnabled;
-  els.cfgDebuggerHint.dataset.i18n = available ? 'ui.cfgDebuggerHint' : 'ui.cfgDebuggerUnavailable'; // 切换语言时随界面重译
-  els.cfgDebuggerHint.textContent = t(els.cfgDebuggerHint.dataset.i18n);
   fillProfileForm();
 }
 
