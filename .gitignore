@@ -17,9 +17,13 @@ CLAUDE.md
 # 录屏原片（转成 docs/media 下的 GIF 后不入库）
 *.mov
 
+# 个人开发计划（仓库根目录的 Plan-*.md，本地保留）
+/Plan-*.md
+
 # 编辑器杂项
 .vscode/
 .idea/
+.trae/
 
 # tests/dom/ 临时安装的 Playwright
 node_modules/
