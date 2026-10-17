@@ -13,6 +13,10 @@
 //   captureScreenshot()                  → { dataUrl, markCount, viewport }
 //   waitForPage({ seconds })             → 页面变化（另带 waitedMs：实际等了多久）
 //   mask(text)                           → string（未开脱敏时为恒等函数）
+//   —— 代码执行 ——
+//   runCode({ code, tables, timeoutMs, signal })
+//                                        → { stdout, stderr, exitCode } | { timedOut: true } | { aborted: true }
+//                                           代码在与页面、网络隔离的沙箱里运行；tables 已逐格脱敏
 //   —— 页内动作（注入 performAction）——
 //   act(payload)                         → { result: performAction 返回值, change: 页面变化|null }
 //                                           按 ref 的动作在页面未跳转时，change.target 是该 ref 稳定后的 ElementInfo
@@ -30,7 +34,7 @@
 
 import {
   formatElements, formatSearchResults, formatReadResult, formatPageStatus, formatPageChange, formatTabs, BUDGETS,
-  TOGGLE_ROLES,
+  TOGGLE_ROLES, formatCodeResult, clipMiddle,
 } from './format.js';
 import { t, q } from './i18n.js';
 
@@ -62,6 +66,15 @@ export const MAX_BATCH_STEPS = 10;
  * 分几次等并如实告诉用户，而不是一次挂住半分钟。
  */
 export const MAX_WAIT_SECONDS = 15;
+
+/** run_javascript 的超时：纯计算几毫秒就完，5 秒还没完多半是死循环 */
+export const CODE_TIMEOUT_MS = 5000;
+
+/** run_javascript 的代码长度上限：页面数字走 tables 参数，代码本身用不着这么长 */
+export const MAX_CODE_LENGTH = 20000;
+
+/** run_javascript 一次最多传入几张表格 */
+export const MAX_CODE_TABLES = 5;
 
 const SCROLL_DIRECTIONS = ['up', 'down', 'top', 'bottom'];
 
@@ -129,6 +142,17 @@ export function buildToolDefs({ vision = false, actions = false } = {}) {
     // 等待不改动页面，归感知组：只读模式下用户刚点开的页面同样可能还没加载完
     fn('wait_for_page', t('tool.wait.d'),
       { seconds: { type: 'integer', minimum: 1, maximum: MAX_WAIT_SECONDS, description: t('tool.wait.seconds') } }),
+
+    // 代码在沙箱里运行，碰不到页面、文件与网络，随感知组注册；调不调由模型按问题判断
+    fn('run_javascript', t('tool.js.d', { s: CODE_TIMEOUT_MS / 1000 }),
+      {
+        code: { type: 'string', description: t('tool.js.code', { max: MAX_CODE_LENGTH }) },
+        tables: {
+          type: 'array', items: { type: 'integer', minimum: 1 }, maxItems: MAX_CODE_TABLES,
+          description: t('tool.js.tables', { max: MAX_CODE_TABLES }),
+        },
+      },
+      ['code']),
   ];
 
   /* ---------- 视觉组 ---------- */
@@ -447,9 +471,10 @@ function withChange(text, change) {
  * 执行一次工具调用，产出回填消息历史所需的对象。
  * @param {{ id: string, name: string, arguments: string }} call llm-client 拼装好的调用
  * @param {object} provider 外壳注入的执行接口（见文件头注释）
- * @param {{ readChars?: number, url?: string, textTotal?: number }} [turn]
+ * @param {{ readChars?: number, url?: string, textTotal?: number, signal?: AbortSignal }} [turn]
  *   本回合的读取账本与「模型手里那份页面」的基准：外壳在回合开始时按 sentPage 填好，
  *   读取时对不上就给模型一句告警（位置会随页面变化漂移，不变式 9）。
+ *   signal 是本回合的中止信号，用户点「停止」时正在运行的代码随之终止。
  * @param {Set<string>} [registered] 本次请求实际注册的工具名。不在其中的调用一律不执行：
  *   开关只决定工具组不组进请求，网关照样可能返回未注册的 click_element / capture_screenshot，
  *   不拦就等于绕过「允许页面操作」与视觉开关。缺省视为什么都没注册，而不是不校验。
@@ -550,6 +575,73 @@ export async function dispatchToolCall(call, provider, turn = {}, registered = n
     if (noEffect) meta.data.noEffect = noEffect;
     const text = [t('res.batchHead', { done: meta.data.done, total }), ...lines, tail].filter(Boolean).join('\n');
     return reply(provider.mask(merged ? withChangeSynced(text, merged) : text));
+  };
+
+  // 代码执行：取表并逐格脱敏 → 沙箱运行 → 截断。
+  // 脱敏只在入口做：表格逐格过脱敏，代码拿到的页面数据与模型看到的同一口径（只在输出端脱敏的话，
+  // 代码把号码逐位插入空格再打印就能绕过）。代码出自模型、表格已打码，输出里带不出模型没见过的号码，
+  // 输出因此原样交回；再整段过一遍脱敏只会误伤算出来的数（150 亿元的合计正好是 1[3-9] 开头的 11 位数）
+  const doRunCode = async () => {
+    const code = typeof args.code === 'string' ? args.code : '';
+    // 只给一个序号时也照收：函数调用能力弱的模型常把数组写成单个整数
+    const indexes = args.tables == null ? [] : [].concat(args.tables).map(Number);
+    meta.data = { seconds: CODE_TIMEOUT_MS / 1000 };
+    if (!code.trim()) {
+      meta.data.reason = 'empty-code';
+      return reply(t('res.codeEmpty'));
+    }
+    if (code.length > MAX_CODE_LENGTH) {
+      meta.data.reason = 'code-too-large';
+      return reply(t('res.codeTooLarge', { max: MAX_CODE_LENGTH }));
+    }
+    if (indexes.some((n) => !Number.isInteger(n))) {
+      meta.data.reason = 'bad-tables';
+      return reply(t('res.codeBadTables'));
+    }
+    if (indexes.length > MAX_CODE_TABLES) {
+      meta.data.reason = 'too-many-tables';
+      return reply(t('res.codeTooManyTables', { max: MAX_CODE_TABLES }));
+    }
+
+    const tables = [];
+    const notes = [];
+    for (const index of indexes) {
+      const { result } = await provider.act({ action: 'extract_table', tableIndex: index, maxLen: BUDGETS.table, format: 'rows' });
+      if (!result || !result.ok) {
+        meta.data.reason = (result && result.reason) || 'error';
+        // 传了几张表时要说清是哪一张没取到，以及代码一行都没跑
+        return reply(t('res.codeTableFailed', { index, reason: describeFailure(result, args) }));
+      }
+      let masked = 0;
+      const rows = result.rows.map((row) => row.map((cell) => {
+        const safe = provider.mask(cell);
+        if (safe !== cell) masked++;
+        return safe;
+      }));
+      tables.push(rows);
+      // 首行随结果报给模型：序号是按模型上次看到的结构骨架给的，页面此后插进一张表就会错位，
+      // 而表格内容模型看不到，只有首行能让它认出取到的是不是那张表
+      notes.push({ index, rows: result.rowCount, cols: result.colCount, kept: result.keptRows, masked, head: (rows[0] || []).join(' | ') });
+    }
+
+    let res;
+    try {
+      res = await provider.runCode({ code, tables, timeoutMs: CODE_TIMEOUT_MS, signal: turn.signal });
+    } catch (err) {
+      meta.data.reason = 'sandbox-error';
+      return reply((err && err.message) || t('res.toolFailed'));
+    }
+    if (res.aborted) {
+      meta.data.reason = 'aborted';
+      return reply(t('res.codeAborted'));
+    }
+    meta.ok = !res.timedOut && !res.exitCode;
+    if (res.timedOut) meta.data.reason = 'timeout';
+    else if (res.exitCode) meta.data.reason = 'code-error';
+    // 活动行报的行数含错误输出：只用 console.warn / error 输出的代码，模型拿到的并不是「没有输出」
+    meta.data.lines = `${res.stdout || ''}\n${res.stderr || ''}`.split('\n').filter((l) => l.trim()).length;
+    const text = formatCodeResult({ tables: notes, result: res, timeoutMs: CODE_TIMEOUT_MS });
+    return reply(clipMiddle(text, BUDGETS.code));
   };
 
   try {
@@ -666,6 +758,9 @@ export async function dispatchToolCall(call, provider, turn = {}, registered = n
         const head = t('res.waited', { s: waited, settled: change.loading ? '' : t('res.waitedSettled') });
         return reply(provider.mask(withChangeSynced(head, change)));
       }
+
+      case 'run_javascript':
+        return await doRunCode();
 
       case 'capture_screenshot': {
         const shot = await provider.captureScreenshot();

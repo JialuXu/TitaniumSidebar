@@ -697,6 +697,39 @@ body {
   cursor: zoom-out;
 }
 
+/* 代码运行详情：活动行文字下方可展开，代码与模型拿到的结果原样等宽显示 */
+.tool-detail { margin: 2px 0 6px; }
+
+.tool-detail > summary {
+  width: fit-content;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.tool-detail > summary:hover { color: var(--accent); }
+
+.tool-detail-label {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.tool-detail pre {
+  margin: 2px 0 0;
+  padding: 8px 10px;
+  max-height: 240px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
 /* 空回复的灰色说明 */
 .md-note { color: var(--text-2); }
 

@@ -1,0 +1,58 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>表格夹具</title>
+<!-- run_javascript 的 tables 参数：按行取表，合并单元格展开，列号与页面上看到的对齐 -->
+<body>
+  <!-- #1：首列跨两行（rowspan），表头跨两列（colspan），单元格里有竖线与换行 -->
+  <table id="merged">
+    <tr><th>地区</th><th colspan="2">营收（亿元）</th></tr>
+    <tr><td rowspan="2">华东</td><td>2023</td><td>1,234.5</td></tr>
+    <tr><td>2024</td><td>1,500 | 预计</td></tr>
+    <tr><td>华北</td><td>2024</td><td>
+      980
+    </td></tr>
+  </table>
+
+  <!-- #2：rowspan="0" 占到表尾；右侧单元格被上方的 rowspan 占着 -->
+  <table id="tail">
+    <tr><td rowspan="0">全年</td><td>Q1</td><td rowspan="3">合计</td></tr>
+    <tr><td>Q2</td></tr>
+    <tr><td>Q3</td></tr>
+  </table>
+
+  <!-- #3：外层单元格里嵌一张表，外层的行不含内层的行 -->
+  <table id="outer">
+    <tr><td>外层</td><td><table id="inner"><tr><td>内层</td></tr></table></td></tr>
+  </table>
+
+  <!-- #5（#4 是上面的内层表）：长表，用来测预算截断 -->
+  <table id="long"><tbody></tbody></table>
+
+  <!-- #6：rowspan 止于所在区段：表头只有一行，rowspan="2" 只占这一行；rowspan="0" 只占满本区段 -->
+  <table id="groups">
+    <thead><tr><th rowspan="2">地区</th><th>营收</th></tr></thead>
+    <tbody>
+      <tr><td>华东</td><td>100</td></tr>
+      <tr><td rowspan="0">华北</td><td>80</td></tr>
+      <tr><td>90</td></tr>
+    </tbody>
+    <tbody>
+      <tr><td>华南</td><td>70</td></tr>
+    </tbody>
+  </table>
+
+  <!-- #7：不规范的表：第二行的 colspan 盖住了上方 rowspan 占着的格子，上方单元格不再往下延 -->
+  <table id="overlap">
+    <tr><td>甲</td><td rowspan="2">乙</td></tr>
+    <tr><td colspan="2">丙</td></tr>
+    <tr><td>丁</td><td>戊</td></tr>
+  </table>
+<script>
+  const body = document.querySelector('#long tbody');
+  for (let i = 1; i <= 500; i++) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${i}</td><td>${'值'.repeat(20)}</td>`;
+    body.appendChild(tr);
+  }
+</script>
+</body>

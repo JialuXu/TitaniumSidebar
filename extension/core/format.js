@@ -18,7 +18,8 @@ export const BUDGETS = {
   changedElements: 800, // 动作后已有元素的状态变化
   pageDiff: 1800,    // 页面更新摘要（同一网址内容变化时替代 12000 字全文重发）
   html: 4000,        // 单个元素的精简 HTML
-  table: 50000,      // 单个表格的完整 Markdown（刻意远超正文预算，这是它存在的意义）
+  table: 50000,      // 单个表格的完整 Markdown（刻意远超正文预算，这是它存在的意义）；也是传进代码的单表上限
+  code: 8000,        // 代码运行结果（run_javascript 工具结果，超出保留头尾）
   snippet: 120,      // 搜索结果单条上下文半径
   name: 80,          // 元素可访问名
   // —— read_page_text 的三道闸：单次、每回合、跨回合 ——
@@ -415,6 +416,62 @@ export function formatReadResult(res, { warning = '' } = {}) {
     ? t('res.readMore', { n: rest, next: res.end })
     : (res.capped ? t('res.readCappedEnd') : t('res.readEnd'));
   return [warning, head, res.text, tail].filter(Boolean).join('\n');
+}
+
+// 切点不落在数字串中间（与 snapshot.js 的 clampEdge 同一规则）：被切掉半截的数字紧挨着省略标记，
+// 模型会把它当成完整的数。往前退至多 40 位，仍在数字串里就照切
+const DIGIT_RUN = /[0-9Xx]/;
+function digitSafeEdge(s, p) {
+  const inRun = (i) => i > 0 && i < s.length && DIGIT_RUN.test(s[i - 1]) && DIGIT_RUN.test(s[i]);
+  let q = p;
+  while (q > 0 && p - q < 40 && inRun(q)) q--;
+  return inRun(q) ? p : q;
+}
+
+/**
+ * 超长文本保留头尾各一半，中间注明省略了多少字；两个切点都不落在数字串中间。
+ * 代码输出的结论常在末尾（循环打印之后的汇总），只留开头会把它丢掉。
+ * 只超出一点点时，两个切点可能退到同一串数字的开头，省下的字还抵不上省略标记：
+ * 这时原样返回，超出的部分不过几十字。
+ * @param {string} text
+ * @param {number} max
+ */
+export function clipMiddle(text, max) {
+  const s = text || '';
+  if (s.length <= max) return s;
+  const half = Math.floor(max / 2);
+  const end = digitSafeEdge(s, half);
+  const start = digitSafeEdge(s, s.length - half);
+  const marker = t('inj.outputOmitted', { n: start - end });
+  if (start - end <= marker.length) return s;
+  return s.slice(0, end) + marker + s.slice(start);
+}
+
+/**
+ * 代码运行结果 → 文本（run_javascript 工具结果；截断由调用方在此之后做）。
+ * 开头逐表报出传进代码的表格：行列数、是否只传入了前若干行、被脱敏打码的单元格数——
+ * 打码的格子在代码里已经不是数字，parseFloat("1**********") 还会得到 1 而不报错，模型必须知道——
+ * 以及首行，供模型核对取到的是不是要算的那张表。
+ * @param {{ tables: Array<{ index: number, rows: number, cols: number, kept: number, masked: number, head?: string }>,
+ *           result: { stdout?: string, stderr?: string, exitCode?: number, timedOut?: boolean },
+ *           timeoutMs: number }} o
+ *   tables 里 rows 为原表行数、kept 为实际传入的行数、head 为首行（单元格以 | 相连）
+ */
+export function formatCodeResult({ tables, result, timeoutMs }) {
+  const lines = tables.map((tb, i) => t('res.codeTable', {
+    index: tb.index, i, rows: tb.rows, cols: tb.cols,
+    cut: tb.kept < tb.rows ? t('res.codeTableCut', { kept: tb.kept }) : '',
+    masked: tb.masked ? t('res.codeTableMasked', { n: tb.masked }) : '',
+    head: tb.head ? t('res.codeTableHead', { cells: clampText(tb.head, 120) }) : '',
+  }));
+  if (result.timedOut) lines.push(t('res.codeTimeout', { s: timeoutMs / 1000 }));
+  else lines.push(t(result.exitCode ? 'res.codeThrew' : 'res.codeOk'));
+  const stdout = (result.stdout || '').replace(/\n+$/, '');
+  const stderr = (result.stderr || '').replace(/\n+$/, '');
+  if (stdout) lines.push(t('res.codeStdout'), stdout);
+  if (stderr) lines.push(t('res.codeStderr'), stderr);
+  if (!stdout && !stderr && !result.timedOut) lines.push(t('res.codeNoOutput'));
+  return lines.join('\n');
 }
 
 /**

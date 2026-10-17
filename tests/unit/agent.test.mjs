@@ -1,4 +1,4 @@
-// core/agent.js —— 回合编排与压缩请求（验收标准第 6、8、9、10、15、21、28、34 条）
+// core/agent.js —— 回合编排与压缩请求（验收标准第 6、8、9、10、15、21、28、34、39 条）
 
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -148,6 +148,8 @@ test('同批跳转中止：跳转之后的调用补占位不执行，tool 链仍
   const skipped = events.filter((e) => e.name === 'click_element');
   assert.deepEqual(skipped.map((e) => e.type), ['tool-start', 'tool-done']);
   assert.ok(skipped.every((e) => e.isAction));
+  // tool-done 与执行过的调用同一形状，带参数与回填内容（展开详情实时与回放一致）
+  assert.deepEqual([skipped[1].args, skipped[1].content], [{ ref: 1 }, t('sys.batchBroken')]);
   assert.ok(WRITE_TOOL_NAMES.has('navigate') && events.find((e) => e.name === 'navigate').isAction);
 });
 
@@ -329,4 +331,29 @@ test('第 6 条：错误映射成带排查建议的文案', () => {
   assert.equal(describeError(new LlmError('http', { status: 400, detail: 'context_length_exceeded' })), t('err.contextOverflow'));
   assert.ok(describeError(new LlmError('http', { status: 418, detail: 'teapot' })).includes('teapot'));
   assert.equal(describeError(new Error('boom')), t('err.unknown', { message: 'boom' }));
+});
+
+test('第 39 条：代码运行收到本回合的中止信号，活动行事件带上代码与回填结果', async (ctx) => {
+  const controller = new AbortController();
+  scripted(ctx, [toolCalls({ id: 'c1', name: 'run_javascript', args: { code: 'print(6 * 7)' } }), text('42')]);
+  const { provider, calls } = fakeProvider({ runCode: () => ({ stdout: '42\n', stderr: '', exitCode: 0 }) });
+  const { events } = await turn({ provider, signal: controller.signal });
+  assert.equal(calls[0].arg.signal, controller.signal);
+  const done = events.find((e) => e.type === 'tool-done');
+  assert.equal(done.args.code, 'print(6 * 7)');
+  assert.equal(done.content, [t('res.codeOk'), t('res.codeStdout'), '42'].join('\n'));
+  assert.equal(done.isAction, false);
+});
+
+test('第 39 条：代码运行中点停止，回填「已停止运行」，tool 链完整，不再请求', async (ctx) => {
+  const controller = new AbortController();
+  const fetches = scripted(ctx, [
+    toolCalls({ id: 'c1', name: 'run_javascript', args: { code: 'while (true) {}' } }, { id: 'c2', name: 'find_in_page', args: { query: 'a' } }),
+  ]);
+  const { provider } = fakeProvider({ runCode: () => { controller.abort(); return { aborted: true }; } });
+  const { events, messages } = await turn({ provider, signal: controller.signal });
+  assertToolChain(messages);
+  assert.deepEqual(messages.slice(-2).map((m) => m.content), [t('res.codeAborted'), t('sys.aborted')]);
+  assert.equal(fetches.length, 1);
+  assert.equal(events.at(-1).aborted, true);
 });

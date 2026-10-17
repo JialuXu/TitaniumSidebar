@@ -1,10 +1,10 @@
-// core/tools.js —— 工具定义与分发（验收标准第 4、7、10、24、26、28 条）
+// core/tools.js —— 工具定义与分发（验收标准第 4、7、10、24、26、28、39 条）
 
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildToolDefs, dispatchToolCall, WRITE_TOOL_NAMES, MAX_TOOL_ROUNDS, MAX_ACTION_ROUNDS, MAX_WAIT_SECONDS,
-  MAX_BATCH_STEPS, mergePageChanges,
+  MAX_BATCH_STEPS, mergePageChanges, CODE_TIMEOUT_MS, MAX_CODE_LENGTH, MAX_CODE_TABLES,
 } from '../../extension/core/tools.js';
 import { BUDGETS } from '../../extension/core/format.js';
 import { maskSensitive } from '../../extension/core/masker.js';
@@ -12,7 +12,7 @@ import { setLocale, t } from '../../extension/core/i18n.js';
 
 beforeEach(() => setLocale('zh'));
 
-const PERCEPTION = ['find_in_page', 'read_page_text', 'list_elements', 'highlight_element', 'extract_table', 'get_element_html', 'wait_for_page'];
+const PERCEPTION = ['find_in_page', 'read_page_text', 'list_elements', 'highlight_element', 'extract_table', 'get_element_html', 'wait_for_page', 'run_javascript'];
 const names = (defs) => defs.map((d) => d.function.name);
 const registeredFor = (caps) => new Set(names(buildToolDefs(caps)));
 const call = (name, args, id = 'call_1') => ({ id, name, arguments: args === undefined ? '' : JSON.stringify(args) });
@@ -37,6 +37,7 @@ function fakeProvider(overrides = {}) {
     act: { result: { ok: true, name: '提交' }, change: { navigated: false, newElements: [] } },
     navigate: { navigated: true, title: '新页', url: 'https://b.test/', stats: { textTotal: 777 } },
     listTabs: [],
+    runCode: { stdout: '', stderr: '', exitCode: 0 },
   };
   const provider = { mask: (s) => maskSensitive(s).text };
   for (const [k, v] of Object.entries({ ...base, ...overrides })) provider[k] = record(k, v);
@@ -488,4 +489,139 @@ test('调试通道退回合成事件时，结果里注明原因（单步与批�
   assert.ok(single.toolMessage.content.startsWith(t('res.clicked', { ref: 3, name: ' "卡片"', checked: '' }) + t('res.fallback.unsafePoint')));
   const batched = await dispatchToolCall(call('batch_actions', { steps: [{ action: 'click', ref: 3 }] }), provider, {}, registeredFor({ actions: true }));
   assert.ok(batched.toolMessage.content.includes(t('res.fallback.unsafePoint')));
+});
+
+/* ========== run_javascript ========== */
+
+/** extract_table 的 rows 模式返回值 */
+const rowsResult = (rows, extra = {}) => ({
+  result: { ok: true, rows, rowCount: rows.length, colCount: rows[0].length, keptRows: rows.length, ...extra },
+  change: null,
+});
+const runJs = (args, provider, turn = {}) => dispatchToolCall(call('run_javascript', args), provider, turn, registeredFor({}));
+
+test('第 39 条：run_javascript 随感知组注册，不算有副作用的工具', () => {
+  assert.ok(names(buildToolDefs()).includes('run_javascript'));
+  assert.ok(!WRITE_TOOL_NAMES.has('run_javascript'));
+  const def = buildToolDefs().find((d) => d.function.name === 'run_javascript').function;
+  assert.deepEqual(def.parameters.required, ['code']);
+  assert.equal(def.parameters.properties.tables.maxItems, MAX_CODE_TABLES);
+  assert.ok(def.description.includes(String(CODE_TIMEOUT_MS / 1000)));
+});
+
+test('第 39 条：切到 English 后 run_javascript 的描述与参数说明都是英文', () => {
+  setLocale('en');
+  const def = buildToolDefs().find((d) => d.function.name === 'run_javascript');
+  assert.ok(!/[一-鿿]/.test(JSON.stringify(def)), JSON.stringify(def));
+});
+
+test('第 39 条：不带 tables 时只运行代码，不碰页面', async () => {
+  const { provider, calls } = fakeProvider({ runCode: { stdout: '3\n', stderr: '', exitCode: 0 } });
+  const res = await runJs({ code: 'print(1 + 2)' }, provider);
+  assert.deepEqual(calls.map((c) => c.name), ['runCode']);
+  assert.deepEqual(calls[0].arg, { code: 'print(1 + 2)', tables: [], timeoutMs: CODE_TIMEOUT_MS, signal: undefined });
+  assert.equal(res.toolMessage.content, [t('res.codeOk'), t('res.codeStdout'), '3'].join('\n'));
+  assert.equal(res.meta.ok, true);
+  assert.equal(res.meta.data.lines, 1);
+});
+
+test('第 39 条：表格按行取回、逐格脱敏后才交给代码，结果开头报出行列、打码格数与首行', async () => {
+  const rows = [['姓名', '手机', '金额'], ['张三', '13812345678', '1,234.5'], ['李四', '13900001111', '20']];
+  const { provider, calls } = fakeProvider({ act: rowsResult(rows), runCode: { stdout: '1254.5\n', stderr: '', exitCode: 0 } });
+  const res = await runJs({ code: 'print(1)', tables: [2] }, provider);
+  assert.deepEqual(calls[0].arg, { action: 'extract_table', tableIndex: 2, maxLen: BUDGETS.table, format: 'rows' });
+  const [table] = calls[1].arg.tables;
+  assert.deepEqual(table[1], ['张三', '1**********', '1,234.5']);
+  assert.ok(!JSON.stringify(calls[1].arg.tables).includes('13812345678'), '代码拿到的就是打码后的值');
+  const head = t('res.codeTable', {
+    index: 2, i: 0, rows: 3, cols: 3, cut: '', masked: t('res.codeTableMasked', { n: 2 }),
+    head: t('res.codeTableHead', { cells: '姓名 | 手机 | 金额' }),
+  });
+  assert.ok(res.toolMessage.content.startsWith(head + '\n'));
+});
+
+test('第 39 条：表格过长只传入前若干行，结果里写明；只给一个序号也照收', async () => {
+  const { provider, calls } = fakeProvider({ act: rowsResult([['a'], ['1']], { rowCount: 900, keptRows: 2 }) });
+  const res = await runJs({ code: 'print(1)', tables: 4 }, provider);
+  assert.equal(calls[0].arg.tableIndex, 4);
+  assert.ok(res.toolMessage.content.includes(t('res.codeTableCut', { kept: 2 })));
+  assert.ok(res.toolMessage.content.includes('900'));
+});
+
+test('第 39 条：输出原样交回，算出的大额合计不被当成号码打码；超长时保留头尾，切点不把数字切成半截', async () => {
+  // 每行一个 10 位数，切在半截的话省略标记两侧会出现短于 10 位的数字。
+  // 首尾两个合计分别撞上手机号（1[3-9] 开头 11 位）与银行卡（14–19 位）的脱敏规则
+  const lines = Array.from({ length: 2000 }, (_, i) => String(1000000000 + i * 7));
+  const stdout = `合计 15234567890.12\n${lines.join('\n')}\n总资产 44697079000000`;
+  const { provider } = fakeProvider({ runCode: { stdout, stderr: '', exitCode: 0 } });
+  const out = (await runJs({ code: 'x' }, provider)).toolMessage.content;
+  assert.ok(out.length < BUDGETS.code + 100);
+  assert.ok(out.includes('合计 15234567890.12'));
+  assert.ok(out.endsWith('总资产 44697079000000'), '尾部的结论保留');
+  const [before, after] = t('inj.outputOmitted', { n: '\u0000' }).split('\u0000');
+  const parts = out.split(new RegExp(`${before}\\d+${after}`));
+  assert.equal(parts.length, 2);
+  const runs = parts.flatMap((p) => p.match(/\d{5,}/g) || []).slice(1, -1); // 去掉首尾两个合计
+  assert.ok(runs.length > 100);
+  assert.deepEqual(runs.filter((r) => r.length !== 10), []);
+});
+
+test('第 39 条：表格序号不存在时不运行代码，结果里点名是哪一张', async () => {
+  const act = ({ tableIndex }) => (tableIndex <= 3
+    ? rowsResult([['a'], ['1']])
+    : { result: { ok: false, reason: 'bad-table-index', total: 3 }, change: null });
+  const { provider, calls } = fakeProvider({ act });
+  const res = await runJs({ code: 'x', tables: [2, 9] }, provider);
+  assert.ok(!calls.some((c) => c.name === 'runCode'));
+  assert.equal(res.toolMessage.content, t('res.codeTableFailed', { index: 9, reason: t('fail.badTableIndex', { total: 3 }) }));
+  assert.equal(res.meta.data.reason, 'bad-table-index');
+});
+
+test('第 39 条：空代码、超长代码、表格过多、序号不是整数都不运行', async () => {
+  const cases = [
+    [{ code: '  ' }, t('res.codeEmpty'), 'empty-code'],
+    [{ code: 'x'.repeat(MAX_CODE_LENGTH + 1) }, t('res.codeTooLarge', { max: MAX_CODE_LENGTH }), 'code-too-large'],
+    [{ code: 'x', tables: [1, 2, 3, 4, 5, 6] }, t('res.codeTooManyTables', { max: MAX_CODE_TABLES }), 'too-many-tables'],
+    [{ code: 'x', tables: ['第二个'] }, t('res.codeBadTables'), 'bad-tables'],
+  ];
+  for (const [args, text, reason] of cases) {
+    const { provider, calls } = fakeProvider();
+    const res = await runJs(args, provider);
+    assert.equal(calls.length, 0, reason);
+    assert.equal(res.toolMessage.content, text);
+    assert.equal(res.meta.data.reason, reason);
+  }
+});
+
+test('第 39 条：超时、抛异常照常回填，由模型决定改代码重跑还是如实告知', async () => {
+  const slow = fakeProvider({ runCode: { timedOut: true } });
+  const timedOut = await runJs({ code: 'while (true) {}' }, slow.provider);
+  assert.equal(timedOut.toolMessage.content, t('res.codeTimeout', { s: CODE_TIMEOUT_MS / 1000 }));
+  assert.deepEqual([timedOut.meta.ok, timedOut.meta.data.reason], [false, 'timeout']);
+
+  const broken = fakeProvider({ runCode: { stdout: '', stderr: 'TypeError: x is not a function\n', exitCode: 1 } });
+  const threw = await runJs({ code: 'x()' }, broken.provider);
+  assert.equal(threw.toolMessage.content, [t('res.codeThrew'), t('res.codeStderr'), 'TypeError: x is not a function'].join('\n'));
+  assert.deepEqual([threw.meta.ok, threw.meta.data.reason], [false, 'code-error']);
+
+  const silent = fakeProvider();
+  assert.equal((await runJs({ code: 'let a = 1' }, silent.provider)).toolMessage.content, [t('res.codeOk'), t('res.codeNoOutput')].join('\n'));
+
+  // 只用 console.warn 输出也算有输出：活动行不能说「没有输出」
+  const warned = fakeProvider({ runCode: { stdout: '', stderr: 'w1\nw2\n', exitCode: 0 } });
+  assert.equal((await runJs({ code: 'console.warn(1)' }, warned.provider)).meta.data.lines, 2);
+});
+
+test('第 39 条：中止信号交给 provider，用户中止时回填「已停止运行」；沙箱崩溃时报出可读原因', async () => {
+  const controller = new AbortController();
+  const { provider, calls } = fakeProvider({ runCode: { aborted: true } });
+  const res = await runJs({ code: 'x' }, provider, { signal: controller.signal });
+  assert.equal(calls[0].arg.signal, controller.signal);
+  assert.equal(res.toolMessage.content, t('res.codeAborted'));
+  assert.equal(res.meta.data.reason, 'aborted');
+
+  const crashed = fakeProvider({ runCode: () => { throw new Error('沙箱崩了'); } });
+  const r = await runJs({ code: 'x' }, crashed.provider);
+  assert.equal(r.toolMessage.content, '沙箱崩了');
+  assert.equal(r.meta.data.reason, 'sandbox-error');
 });

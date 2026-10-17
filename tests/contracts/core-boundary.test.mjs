@@ -22,6 +22,8 @@ const INJECTED = [
   { file: 'actions.js', name: 'performAction' },
   { file: 'highlight.js', name: 'highlightElement' },
   { file: 'settle.js', name: 'waitForSettle' },
+  // 不经 executeScript：外壳 String(fn) 后发给沙箱页，在 Worker 里重新求值，同样不能有闭包
+  { file: 'sandbox-runner.js', name: 'runSandboxedCode' },
 ];
 
 test('core 里没有 chrome.* 调用（注释除外）', () => {

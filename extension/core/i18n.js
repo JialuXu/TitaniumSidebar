@@ -72,6 +72,7 @@ export function injectedStrings() {
     passwordMasked: t('inj.passwordMasked'),
     tableTruncated: t('inj.tableTruncated'),
     htmlTruncated: t('inj.htmlTruncated'),
+    outputOmitted: t('inj.outputOmitted'),
   };
 }
 
@@ -120,6 +121,9 @@ const ZH = {
   'ui.emptyReply': '（模型未返回内容）',
   'ui.shotAlt': '视口截图',
   'ui.shotTitle': '点击放大/还原',
+  'ui.codeDetail': '代码与结果',
+  'ui.codeLabel': '代码',
+  'ui.codeResult': '返回给模型的结果',
   'ui.regenConfirm': '上一轮包含页面操作（点击 / 输入 / 跳转等），重新生成会再次真实执行这些操作。确定继续？',
   'ui.noteToolsDegraded': '当前接口不支持工具调用，已降级为纯文本模式（仍会注入页面文本与结构骨架）。',
   'ui.noteImageDegraded': '当前接口不支持图片输入，已移除截图重试；建议在设置中关闭「模型支持视觉」。',
@@ -272,6 +276,8 @@ const ZH = {
   'sys.readOmitted': '（此处原有的正文片段已省略：正文第 {start}–{end} 字，需要时可重新读取）',
   'sys.readFailed': '无法读取当前页面的正文（页面可能已刷新或受限）。',
   'sys.shotOmittedMeta': '[视口截图已省略：{w}×{h}，标注 {n} 个元素]',
+  'sys.sandboxCrashed': '代码运行环境崩溃了（多半是内存占用过大），已重置。请减少数据量或改用更省内存的写法后重试。',
+  'sys.sandboxFailed': '代码运行环境出错，没有拿到结果。请用 print(...) 输出结果后重试，不要自己调用 postMessage。',
 
   /* ---------- 工具活动行（run / done / fail） ---------- */
   'act.find.run': '正在页面中搜索「{query}」…',
@@ -304,6 +310,14 @@ const ZH = {
   'act.wait.done': '已等待 {s} 秒{settled}',
   'act.wait.settled': '，页面已稳定',
   'act.wait.unsettled': '，页面仍在变动',
+  'act.code.run': '正在运行代码…',
+  'act.code.done': '已运行 JavaScript，输出 {n} 行',
+  'act.code.one': '已运行 JavaScript，输出 1 行',
+  'act.code.silent': '已运行 JavaScript，没有输出',
+  'act.code.threw': '代码运行出错',
+  'act.code.timeout': '代码运行超时（{s} 秒）',
+  'act.code.aborted': '代码运行已中止',
+  'act.code.fail': '运行代码失败',
   'act.click.run': '正在点击元素 [{ref}]…',
   'act.click.fail': '点击元素 [{ref}] 失败',
   'act.click.done': '已点击 [{ref}]{name}{jumped}',
@@ -497,6 +511,23 @@ const ZH = {
   'res.unknownTool': '未知工具 {name}，可用工具以本次请求的 tools 定义为准。',
   'res.notRegistered': '{name} 本次未开放，未执行：页面操作或截图功能未开启。不要再调用它；用户确实需要时，告诉用户可以在设置中开启。',
   'res.toolFailed': '工具执行失败。',
+  // run_javascript 的结果：开头逐表报出传进代码的表格，再报运行状态与输出
+  'res.codeTable': '表格 #{index} → tables[{i}]：{rows} 行 × {cols} 列{cut}{masked}。{head}',
+  'res.codeTableHead': '首行：{cells}',
+  'res.codeTableFailed': '表格 #{index} 没有取到，代码没有运行：{reason}',
+  'res.codeTableCut': '（过长，只传入了前 {kept} 行）',
+  'res.codeTableMasked': '，其中 {n} 个单元格被脱敏打码（含一长串 *，已不是原数字）',
+  'res.codeOk': '代码已运行完毕。',
+  'res.codeThrew': '代码抛出了异常，没有正常结束。',
+  'res.codeTimeout': '代码运行超过 {s} 秒，已被终止，没有拿到输出。',
+  'res.codeStdout': '输出：',
+  'res.codeStderr': '错误输出：',
+  'res.codeNoOutput': '（没有输出：用 print(...) 输出要看的结果。）',
+  'res.codeAborted': '（用户已中止，代码已停止运行）',
+  'res.codeEmpty': 'code 参数为空，没有运行。',
+  'res.codeTooLarge': '代码超过 {max} 字，没有运行。请精简代码；表格数据用 tables 参数传入，不要写进代码。',
+  'res.codeBadTables': 'tables 应是表格序号（整数）组成的数组，没有运行。',
+  'res.codeTooManyTables': 'tables 一次最多 {max} 张，没有运行；请拆成几次计算。',
 
   /* ---------- 动作失败原因 ---------- */
   'fail.stale': '元素编号已过期（页面已刷新或跳转），请先调用 list_elements 获取最新编号。',
@@ -528,6 +559,8 @@ const ZH = {
   'inj.passwordMasked': '（已写入，不回显）',
   'inj.tableTruncated': '\n……（表格过长已截断）',
   'inj.htmlTruncated': '…（已截断）',
+  // 代码输出超长时保留头尾，中间这一句（Worker 引导代码与 core/format.js 的 clipMiddle 共用）
+  'inj.outputOmitted': '\n……（中间省略 {n} 字）……\n',
 
   /* ---------- Prompt ---------- */
   'tag.content': '页面内容',
@@ -562,9 +595,19 @@ const ZH = {
     '并用 highlight_element 在页面上把它标给用户看。' +
     '页面可能还没加载完：看到「加载中」「暂无数据」这类占位文字，或工具结果提示页面内容仍在变动时，' +
     '先用 wait_for_page 等它加载完再读，不要把占位当成页面的真实内容。',
+  // run_javascript 何时值得调用：由模型按问题判断，这里只给分界；运行环境的限制写在工具描述里
+  'prompt.code':
+    'run_javascript 用来做准确计算，调不调由你按问题判断：多步运算、数字多或位数长时' +
+    '（比率、同比环比、合计、均值、排序汇总、格式转换）用它算，不要心算；' +
+    '页面上直接给出的数字照引原文，一两步就能算完的简单算术直接作答。' +
+    '页面表格里的数字用 tables 参数按 <页面结构> 里的 #序号传入，不要手抄进代码；' +
+    '不在表格里的个别数字抄进代码时，与页面逐字核对。' +
+    '表格中含一长串 * 的单元格是脱敏打码，计算前剔除它们，并在回答里说明剔除了哪些。' +
+    '算出来的数字是推算数字，回答里与页面原文的数字区分开。',
+  // 只约束页面：run_javascript 不改页面，「只能观察」不能写成对全部工具的限制
   'prompt.readonly':
-    '你只能观察页面和高亮元素，不能点击、输入或以任何方式修改页面；' +
-    '用户要求你代为操作时，说明当前未开启页面操作能力，并告诉他可在设置中开启。',
+    '对当前页面你只能观察和高亮元素，不能点击、输入或以任何方式修改；' +
+    '用户要求你代为操作时，说明当前未开启页面操作能力，并告知可在设置中开启。',
   'prompt.actions':
     '用户已授权你操作页面：你可以点击、输入、选择下拉项、按键、滚动、跳转网址和管理标签页。使用规范：' +
     '一、先感知再动作——操作前用 list_elements 确认目标编号与语义，不要凭猜测使用编号。' +
@@ -639,7 +682,7 @@ const ZH = {
   'skill.fin-report.toolHint':
     '财务数据多在表格里且正文可能被截断：先用 extract_table 完整取回报表再计算，' +
     '用 find_in_page 定位附注与具体科目、再用 read_page_text 把那一段读完整；' +
-    '绝不要拿截断正文里的数字做计算。',
+    '绝不要拿截断正文里的数字做计算。多步的比率与同比计算交给 run_javascript，报表用 tables 传入。',
   'skill.market-brief.name': '行情解读',
   'skill.market-brief.desc': '只整理与解释页面行情与资金数据，不预测、不荐股',
   'skill.market-brief.body':
@@ -652,7 +695,7 @@ const ZH = {
   'skill.market-brief.toolHint':
     '行情页数字密集且更新快：需要完整数据时用 extract_table 取回行情表格，' +
     '页面正文里找不到的字段用 find_in_page 定位、必要时用 read_page_text 读那一段；' +
-    '不要引用截断正文里可能残缺的数字。',
+    '不要引用截断正文里可能残缺的数字。多只股票的涨跌幅、均值等批量计算交给 run_javascript。',
 
   /* ---------- 工具定义：描述与参数 ---------- */
   'tool.find.d':
@@ -692,6 +735,15 @@ const ZH = {
     '页面上出现「加载中」「暂无数据」这类占位，或动作、读取结果提示页面内容仍在变动时先调用它，' +
     '不要据占位下结论。返回等待期间新出现的元素与页面是否跳转。',
   'tool.wait.seconds': '最多等待几秒，1–15，默认 3；后台接口慢时可以多等几秒',
+  'tool.js.d':
+    '在隔离的沙箱里运行一段 JavaScript 做准确计算：比率、同比环比、合计、均值、排序汇总、格式转换等。' +
+    '代码作为 async 函数体执行，可以 await；用 print(...) 输出要看的结果（console.log 同效，return 的值也会输出）。' +
+    'tables 参数传入的页面表格在代码里是 tables[0]、tables[1]……：二维字符串数组，首行通常是表头，合并单元格已展开成重复值；' +
+    '数字要自己转换，注意千分位逗号、百分号与单位；含一长串 * 的单元格（如 1**********）是脱敏打码，已经不是原数字。' +
+    '结果开头逐表报出行列数与首行，据此核对取到的是不是要算的那张表。' +
+    '沙箱不能联网、不能访问页面与文件，超过 {s} 秒没运行完会被终止。',
+  'tool.js.code': 'JavaScript 代码（async 函数体），最多 {max} 字',
+  'tool.js.tables': '可选，要传入代码的表格序号（<页面结构> 里的 #N），最多 {max} 张；顺序即 tables[0]、tables[1]……',
   'tool.shot.d':
     '截取当前浏览器可见视口的截图，图上自动用编号框标注可交互元素（编号即 ref）。' +
     '用于理解布局、图表、图片等文字无法表达的内容。注意：截图内容不经过脱敏。',
@@ -787,6 +839,9 @@ const EN = {
   'ui.emptyReply': '(the model returned nothing)',
   'ui.shotAlt': 'Viewport screenshot',
   'ui.shotTitle': 'Click to enlarge / restore',
+  'ui.codeDetail': 'Code and result',
+  'ui.codeLabel': 'Code',
+  'ui.codeResult': 'Result returned to the model',
   'ui.regenConfirm': 'The previous turn performed page actions (clicks / typing / navigation). Regenerating will really run them again. Continue?',
   'ui.noteToolsDegraded': 'This endpoint does not support tool calling; degraded to plain-text mode (page text and outline are still injected).',
   'ui.noteImageDegraded': 'This endpoint does not accept image input; the screenshot was removed and the request retried. Consider turning off "Model supports vision" in settings.',
@@ -936,6 +991,8 @@ const EN = {
   'sys.readOmitted': '(The body excerpt that was here has been omitted: chars {start}–{end} of the body; read it again if needed.)',
   'sys.readFailed': 'Cannot read the body text of this page (it may have been reloaded or is restricted).',
   'sys.shotOmittedMeta': '[viewport screenshot omitted: {w}×{h}, {n} elements annotated]',
+  'sys.sandboxCrashed': 'The code sandbox crashed (most likely it ran out of memory) and has been reset. Reduce the amount of data or use a more memory-efficient approach, then try again.',
+  'sys.sandboxFailed': 'The code sandbox failed and returned no result. Output results with print(...) and try again; do not call postMessage yourself.',
 
   /* ---------- Tool activity lines ---------- */
   'act.find.run': 'Searching the page for "{query}"…',
@@ -968,6 +1025,14 @@ const EN = {
   'act.wait.done': 'Waited {s}s{settled}',
   'act.wait.settled': ', page settled',
   'act.wait.unsettled': ', page still changing',
+  'act.code.run': 'Running code…',
+  'act.code.done': 'Ran JavaScript, {n} lines of output',
+  'act.code.one': 'Ran JavaScript, 1 line of output',
+  'act.code.silent': 'Ran JavaScript, no output',
+  'act.code.threw': 'The code threw an error',
+  'act.code.timeout': 'Code timed out ({s}s)',
+  'act.code.aborted': 'Code run stopped',
+  'act.code.fail': 'Could not run the code',
   'act.click.run': 'Clicking element [{ref}]…',
   'act.click.fail': 'Failed to click element [{ref}]',
   'act.click.done': 'Clicked [{ref}]{name}{jumped}',
@@ -1161,6 +1226,22 @@ const EN = {
   'res.unknownTool': 'Unknown tool {name}; the tools defined in this request are the ones available.',
   'res.notRegistered': '{name} is not available in this request and was not executed: page actions or screenshots are turned off. Do not call it again; if the user really needs it, tell them it can be turned on in settings.',
   'res.toolFailed': 'The tool failed to execute.',
+  'res.codeTable': 'Table #{index} → tables[{i}]: {rows} rows × {cols} cols{cut}{masked}.{head}',
+  'res.codeTableHead': ' First row: {cells}',
+  'res.codeTableFailed': 'Could not get table #{index}, so the code was not run: {reason}',
+  'res.codeTableCut': ' (too long; only the first {kept} rows were passed in)',
+  'res.codeTableMasked': '; {n} cells were masked for privacy (they contain a long run of asterisks and are no longer the original numbers)',
+  'res.codeOk': 'The code finished running.',
+  'res.codeThrew': 'The code threw an exception and did not finish normally.',
+  'res.codeTimeout': 'The code ran longer than {s} seconds and was stopped; no output was captured.',
+  'res.codeStdout': 'Output:',
+  'res.codeStderr': 'Error output:',
+  'res.codeNoOutput': '(No output: print(...) what you need to see.)',
+  'res.codeAborted': '(the user stopped the turn; the code was terminated)',
+  'res.codeEmpty': 'The code parameter is empty; nothing was run.',
+  'res.codeTooLarge': 'The code is longer than {max} characters and was not run. Shorten it, and pass table data through the tables parameter instead of writing it into the code.',
+  'res.codeBadTables': 'tables must be an array of table indexes (integers); nothing was run.',
+  'res.codeTooManyTables': 'tables takes at most {max} tables at a time; nothing was run. Split the calculation into several runs.',
 
   /* ---------- Action failure reasons ---------- */
   'fail.stale': 'The element numbers are stale (the page was reloaded or navigated); call list_elements for fresh ones first.',
@@ -1192,6 +1273,7 @@ const EN = {
   'inj.passwordMasked': '(written, not echoed back)',
   'inj.tableTruncated': '\n…(table too long, truncated)',
   'inj.htmlTruncated': '…(truncated)',
+  'inj.outputOmitted': '\n…({n} characters omitted)…\n',
 
   /* ---------- Prompt ---------- */
   'tag.content': 'page_content',
@@ -1226,8 +1308,16 @@ const EN = {
     'and highlight_element to point one out on the page for them. ' +
     'The page may not have finished loading: when you see placeholders such as "Loading" or "No data", or a tool result says the page content is still changing, ' +
     'call wait_for_page and read again afterwards instead of treating the placeholder as the page\'s real content.',
+  'prompt.code':
+    'run_javascript is for exact calculation, and whether to call it is your judgment for each question: use it for multi-step arithmetic ' +
+    'or when there are many or long numbers (ratios, period-over-period changes, sums, averages, sorting and aggregation, format conversion) ' +
+    'instead of doing the math in your head; quote figures the page states directly, and answer one- or two-step arithmetic directly. ' +
+    'Pass page tables through the tables parameter by their #index in <page_outline> rather than copying their numbers into the code; ' +
+    'when you do copy an individual number that is not in a table, check it digit by digit against the page. ' +
+    'Table cells containing a long run of asterisks were masked for privacy: exclude them before calculating and say which ones you excluded. ' +
+    'Computed figures are derived numbers; keep them distinct from figures quoted from the page.',
   'prompt.readonly':
-    'You can only observe the page and highlight elements; you cannot click, type, or modify the page in any way. ' +
+    'On the current page you can only observe and highlight elements; you cannot click, type, or modify it in any way. ' +
     'If the user asks you to operate the page for them, explain that page actions are not currently enabled and tell them they can enable it in settings.',
   'prompt.actions':
     'The user has authorised you to operate the page: you can click, type, pick dropdown options, press keys, scroll, navigate and manage tabs. Rules: ' +
@@ -1307,7 +1397,8 @@ const EN = {
   'skill.fin-report.toolHint':
     'Financial data usually sits in tables and the body text may be truncated: pull statements in full ' +
     'with extract_table before computing, locate notes or line items with find_in_page and read the ' +
-    'surrounding passage in full with read_page_text; never compute from figures in the truncated body text.',
+    'surrounding passage in full with read_page_text; never compute from figures in the truncated body text. ' +
+    'Hand multi-step ratio and year-over-year calculations to run_javascript, passing the statements in through tables.',
   'skill.market-brief.name': 'Market digest',
   'skill.market-brief.desc': 'Organise and explain the market data on the page only — no predictions, no stock tips',
   'skill.market-brief.body':
@@ -1321,7 +1412,8 @@ const EN = {
   'skill.market-brief.toolHint':
     'Quote pages are dense and fast-moving: pull full tables with extract_table when complete data is needed, ' +
     'locate missing fields with find_in_page and read the surrounding passage with read_page_text when required; ' +
-    'do not cite possibly stale or incomplete figures from the truncated body text.',
+    'do not cite possibly stale or incomplete figures from the truncated body text. ' +
+    'Hand batch calculations such as price changes and averages across many stocks to run_javascript.',
 
   /* ---------- Tool definitions ---------- */
   'tool.find.d':
@@ -1363,6 +1455,17 @@ const EN = {
     'Call it first when the page shows placeholders such as "Loading" or "No data", or an action or read result says the content is still changing, ' +
     'and do not draw conclusions from placeholders. Returns the elements that appeared while waiting and whether the page navigated.',
   'tool.wait.seconds': 'Maximum seconds to wait, 1–15, default 3; allow a few more when the backend is slow',
+  'tool.js.d':
+    'Run a piece of JavaScript in an isolated sandbox for exact calculation: ratios, period-over-period changes, sums, averages, ' +
+    'sorting and aggregation, format conversion. The code runs as the body of an async function, so await works; ' +
+    'print(...) what you need to see (console.log does the same, and a returned value is printed too). ' +
+    'Tables passed through the tables parameter arrive as tables[0], tables[1]…: 2D arrays of strings, usually with the header ' +
+    'as the first row and merged cells expanded into repeated values. Convert numbers yourself, minding thousands separators, ' +
+    'percent signs and units; cells containing a long run of asterisks (e.g. 1**********) were masked for privacy and are no longer the original numbers. ' +
+    'The result starts with each table\'s size and first row; use them to check you got the table you meant. ' +
+    'The sandbox has no network access and no access to the page or files; code still running after {s} seconds is stopped.',
+  'tool.js.code': 'JavaScript code (the body of an async function), at most {max} characters',
+  'tool.js.tables': 'Optional: indexes of the tables to pass in (the #N in <page_outline>), at most {max}; their order is tables[0], tables[1]…',
   'tool.shot.d':
     'Capture the visible browser viewport; interactive elements are automatically boxed and numbered (the number is the ref). ' +
     'Use it for layout, charts, images and anything text cannot express. Note: screenshots are not redacted.',

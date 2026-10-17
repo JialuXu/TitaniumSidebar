@@ -13,6 +13,12 @@
   "side_panel": {
     "default_path": "sidepanel.html"
   },
+  "sandbox": {
+    "pages": ["sandbox.html"]
+  },
+  "content_security_policy": {
+    "sandbox": "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-eval'; worker-src blob:; connect-src 'none'"
+  },
   "action": {
     "default_title": "__MSG_actionTitle__",
     "default_icon": {

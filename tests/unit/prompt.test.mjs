@@ -1,4 +1,4 @@
-// core/prompt.js —— 提示词组装（验收标准第 10、17、18、20、24、30 条）
+// core/prompt.js —— 提示词组装（验收标准第 10、17、18、20、24、30、39 条）
 
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -77,4 +77,20 @@ test('第 30 条：没有正文也给页面块并交代一句', () => {
 test('差异块', () => {
   assert.equal(buildPageUpdate('q', '+ 一行'), '<页面更新>\n+ 一行\n</页面更新>\n\nq');
   assert.equal(buildPageUpdate('q', 'd', '仍在加载'), '仍在加载\n\n<页面更新>\nd\n</页面更新>\n\nq');
+});
+
+test('第 39 条：计算指引随 tools 一起拼，紧跟工具指引、位于技能 toolHint 之前；纯文本时不拼', () => {
+  const p = buildSystemPrompt({ tools: true, skill: 'fin-report' });
+  const at = p.indexOf(t('prompt.code'));
+  assert.ok(at > p.indexOf(t('prompt.tools')));
+  assert.ok(at < p.indexOf(t('skill.fin-report.toolHint')));
+  assert.ok(!buildSystemPrompt({ skill: 'fin-report' }).includes('run_javascript'));
+});
+
+test('第 39 条：只读段只约束页面，与随感知组注册的 run_javascript 不冲突', () => {
+  for (const loc of ['zh', 'en']) {
+    setLocale(loc);
+    const readonly = t('prompt.readonly');
+    assert.ok(readonly.includes(loc === 'zh' ? '对当前页面' : 'On the current page'), loc);
+  }
 });

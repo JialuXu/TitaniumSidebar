@@ -1,10 +1,11 @@
-// core/format.js —— 感知数据的序列化与预算（验收标准第 5、12、24、33 条）
+// core/format.js —— 感知数据的序列化与预算（验收标准第 5、12、24、33、39 条）
 
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BUDGETS, clampText, formatOutline, formatElements, formatTextDiff,
   formatReadResult, formatSearchResults, formatPageChange, formatPageStatus, formatTabs, formatStateChanges,
+  clipMiddle, formatCodeResult,
 } from '../../extension/core/format.js';
 import { setLocale, t, q } from '../../extension/core/i18n.js';
 
@@ -279,4 +280,48 @@ test('调试通道看到请求没返回时，提醒说的是请求而不是「�
   assert.ok(out.endsWith(t('fmt.chgNetwork', { s: 5, n: 2 })));
   const dom = formatPageChange({ navigated: false, newElements: [], loading: { waitedMs: 5000, requests: 0 } });
   assert.ok(dom.endsWith(t('fmt.chgUnstable', { s: 5 })));
+});
+
+/* ========== 代码运行结果（run_javascript） ========== */
+
+test('clipMiddle：不超长原样返回；超长保留头尾，注明省略字数', () => {
+  assert.equal(clipMiddle('abc', 3), 'abc');
+  const s = 'a'.repeat(50) + 'b'.repeat(50);
+  const out = clipMiddle(s, 20);
+  assert.equal(out, 'a'.repeat(10) + t('inj.outputOmitted', { n: 80 }) + 'b'.repeat(10));
+});
+
+test('clipMiddle：切点落在数字串中间时往前退，整串数字留在一侧；超过 40 位的照切', () => {
+  // 头部切点（第 10 字）落在 12345678 中间：退到数字串之前；尾部切点同理把整串划进尾部
+  // 填充字符避开 x / X：身份证末位可以是 X，它们与数字算同一串
+  const s = 'a'.repeat(6) + '12345678' + 'b'.repeat(70) + '87654321' + 'c'.repeat(8);
+  assert.equal(clipMiddle(s, 20), 'a'.repeat(6) + t('inj.outputOmitted', { n: 78 }) + '87654321' + 'c'.repeat(8));
+  const long = '9'.repeat(200);
+  assert.ok(clipMiddle(long, 100).startsWith('9'.repeat(50)));
+});
+
+test('clipMiddle：只超出一点、两个切点退到同一串数字开头时原样返回，不出「省略 0 字」', () => {
+  // 8001 字，一串 30 位数字跨过中点：两个切点都退到数字串开头
+  const s = 'a'.repeat(3985) + '1'.repeat(30) + 'b'.repeat(3986);
+  assert.equal(s.length, 8001);
+  assert.equal(clipMiddle(s, 8000), s);
+});
+
+test('formatCodeResult：逐表报出行列、截断与打码格数，再报运行状态与输出', () => {
+  const out = formatCodeResult({
+    tables: [{ index: 3, rows: 900, cols: 4, kept: 200, masked: 2 }, { index: 5, rows: 3, cols: 2, kept: 3, masked: 0 }],
+    result: { stdout: '42\n', stderr: 'warn\n', exitCode: 0 },
+    timeoutMs: 5000,
+  });
+  assert.deepEqual(out.split('\n'), [
+    t('res.codeTable', { index: 3, i: 0, rows: 900, cols: 4, cut: t('res.codeTableCut', { kept: 200 }), masked: t('res.codeTableMasked', { n: 2 }) }),
+    t('res.codeTable', { index: 5, i: 1, rows: 3, cols: 2, cut: '', masked: '' }),
+    t('res.codeOk'), t('res.codeStdout'), '42', t('res.codeStderr'), 'warn',
+  ]);
+});
+
+test('formatCodeResult：没有输出时提示用 print；超时不提示', () => {
+  assert.equal(formatCodeResult({ tables: [], result: { stdout: '', stderr: '', exitCode: 0 }, timeoutMs: 5000 }),
+    [t('res.codeOk'), t('res.codeNoOutput')].join('\n'));
+  assert.equal(formatCodeResult({ tables: [], result: { timedOut: true }, timeoutMs: 5000 }), t('res.codeTimeout', { s: 5 }));
 });
