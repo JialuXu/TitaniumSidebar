@@ -140,10 +140,15 @@ describe('代码沙箱（真实扩展）', { skip: !playwright && '未安装 pla
   });
 
   test('5 张 × 5 万字的表格一秒内送达', async () => {
-    const tables = Array.from({ length: 5 }, () => Array.from({ length: 5000 }, (_, i) => Array.from({ length: 10 }, (_, j) => String((i + j) % 10))));
-    const started = Date.now();
-    const r = await run('print(tables.map((t) => t.length * t[0].length).join())', { tables });
-    assert.equal(r.stdout, '50000,50000,50000,50000,50000\n');
-    assert.ok(Date.now() - started < 1000);
+    // 表格在宿主页里现造，计时只包住 run（宿主 → 沙箱页 → Worker → 回包）：
+    // Playwright 把 25 万个单元格从 Node 传进页面本身就要一两秒，那不是扩展会走的路
+    const { stdout, ms } = await page.evaluate(async () => {
+      const tables = Array.from({ length: 5 }, () => Array.from({ length: 5000 }, (_, i) => Array.from({ length: 10 }, (_, j) => String((i + j) % 10))));
+      const started = performance.now();
+      const r = await window.run('print(tables.map((t) => t.length * t[0].length).join())', { tables });
+      return { stdout: r.stdout, ms: performance.now() - started };
+    });
+    assert.equal(stdout, '50000,50000,50000,50000,50000\n');
+    assert.ok(ms < 1000, `${Math.round(ms)}ms`);
   });
 });
