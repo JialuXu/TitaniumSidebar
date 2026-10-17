@@ -91,6 +91,30 @@ describe('调试通道（真实 DOM）', { skip: !playwright && '未安装 playw
     assert.equal((await act({ action: 'key', key: 'PageDown', ref: await refFor('#long') })).effect.moved, false);
   });
 
+  test('macOS：文本框里的 PageDown / Home / End 随按键带上移动命令，焦点在别处、其他键都不带', async () => {
+    // 只核对发出去的参数：CI 跑在 Linux 上，那里的浏览器自己会翻页，再执行一遍命令就动了两次
+    const sent = [];
+    const spy = {
+      ...api,
+      sendCommand: (target, method, params) => {
+        if (method === 'Input.dispatchKeyEvent' && params.type !== 'keyUp') sent.push([params.key, params.commands]);
+        return api.sendCommand(target, method, params);
+      },
+    };
+    const run = (tabId, fn, args) => inject(page, fn, args);
+    const mac = createCdpDriver({ inject: run, fallback: synthetic, debuggerApi: spy, mac: true });
+    const press = async (key, selector) => mac.act(TAB, {
+      action: 'key', key, session, i18n: injectedStrings(), ...(selector ? { ref: await refFor(selector) } : {}),
+    });
+    await press('PageDown', '#long');
+    await press('End', '#long');
+    await press('ArrowDown', '#long');
+    await page.evaluate(() => document.activeElement.blur());
+    await press('PageDown');
+    await mac.release();
+    assert.deepEqual(sent, [['PageDown', ['MovePageDown']], ['End', ['MoveToEndOfLine']], ['ArrowDown', undefined], ['PageDown', undefined]]);
+  });
+
   test('输入：整体替换原值，input 事件是可信的', async () => {
     const res = await act({ action: 'input', ref: await refFor('#name'), text: '新值' });
     assert.equal(res.ok, true);
