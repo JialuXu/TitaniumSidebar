@@ -87,6 +87,8 @@
 
   <!-- 输入区：白色圆角卡片内含「+」菜单、输入框与发送胶囊 -->
   <footer class="composer">
+    <!-- 临时提示：附图被拒这类一次性反馈，输入区上方浮出，3 秒后淡出 -->
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <!-- 会话级技能 chip：有激活技能时显示，点 ✕ 摘除；名称由 sidepanel.js 按当前语言写入 -->
     <div id="skill-chip" class="skill-chip" hidden>
       <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
@@ -96,6 +98,9 @@
       <button id="skill-chip-remove" class="skill-chip-remove" type="button" data-i18n-title="ui.skillChipRemove" title="摘除技能（本会话不再使用）">✕</button>
     </div>
     <div class="composer-card">
+      <!-- 待发送的附图：缩略图 + ✕，由 sidepanel.js 渲染；粘贴、拖入与「+」菜单「添加图片」都落到这里 -->
+      <div id="attach-tray" class="attach-tray" hidden></div>
+      <input id="image-file" type="file" accept="image/*" multiple hidden>
       <!-- 「+」功能菜单：菜单项由 sidepanel.js 的 COMPOSER_MENU_ITEMS 登记表渲染 -->
       <div class="composer-tools">
         <button id="btn-plus" class="plus-btn" type="button" data-i18n-title="ui.more" title="更多功能" aria-haspopup="menu" aria-expanded="false">
@@ -109,6 +114,9 @@
       <button id="btn-send" class="send-btn" type="button" data-i18n="ui.send">发送</button>
     </div>
   </footer>
+
+  <!-- 附图的大图查看层：点消息里的附图打开，点任意处或 Esc 关闭 -->
+  <div id="image-viewer" class="image-viewer" role="dialog" aria-modal="true" hidden><img alt=""></div>
 
   <!-- 设置抽屉 -->
   <div id="settings-mask" class="settings-mask"></div>

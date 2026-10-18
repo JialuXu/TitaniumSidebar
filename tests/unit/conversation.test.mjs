@@ -108,6 +108,47 @@ test('第 8 条：截图换成占位（含待回填队列），返回是否有�
   assert.equal(stripImagesFromHistory([img]), false);
 });
 
+/* ========== 用户附图 ========== */
+
+const withImages = (text, n = 1) => ({
+  role: 'user', content: text, displayContent: text,
+  images: Array.from({ length: n }, (_, i) => `data:image/png;base64,${i}`),
+});
+const IMG_CAPS = { ...CAPS, imageInput: true };
+const imagePart = (i) => ({ type: 'image_url', image_url: { url: `data:image/png;base64,${i}` } });
+
+test('第 40 条：附图出网时拼成多模态 content，文字在前，images 字段不出网', () => {
+  const [, user] = buildRequestMessages(IMG_CAPS, [withImages('看图', 2)], null);
+  assert.deepEqual(user, { role: 'user', content: [{ type: 'text', text: '看图' }, imagePart(0), imagePart(1)] });
+});
+
+test('第 40 条：只附图、没有文字时不发空文本段', () => {
+  const [, user] = buildRequestMessages(IMG_CAPS, [withImages('')], null);
+  assert.deepEqual(user.content, [imagePart(0)]);
+});
+
+test('第 40 条：接口套没开视觉时附图换成一句交代，content 仍是字符串', () => {
+  const [, one] = buildRequestMessages(CAPS, [withImages('看图')], null);
+  assert.equal(one.content, `看图\n\n${t('sys.userImageOmitted')}`);
+  const [, two] = buildRequestMessages(CAPS, [withImages('', 2)], null);
+  assert.equal(two.content, t('sys.userImagesOmitted', { n: 2 }));
+});
+
+test('第 40 条：附图跨回合保留——截图收尾与新页面全文都不动它', () => {
+  const first = { ...withImages('问'), content: '<页面内容>\n旧\n</页面内容>\n\n问', _page: 'full', _pageTitle: '旧页' };
+  const messages = [first, { role: 'assistant', content: 'a' }, fullPage('新页', '新')];
+  assert.equal(stripImagesFromHistory(messages), false);
+  const out = buildRequestMessages(IMG_CAPS, messages, null);
+  // 旧页面块压成了占位，图还在
+  assert.deepEqual(out[1].content, [{ type: 'text', text: `${t('sys.pageSuperseded', { title: '旧页' })}\n\n问` }, imagePart(0)]);
+});
+
+test('第 40 条：压缩请求在接口套开了视觉时带上附图，摘要才记得住图里的内容', () => {
+  const messages = [withImages('看图'), { role: 'assistant', content: '是张表' }];
+  assert.deepEqual(buildCompactRequest('', messages, null, true)[1].content, [{ type: 'text', text: '看图' }, imagePart(0)]);
+  assert.equal(buildCompactRequest('', messages, null)[1].content, `看图\n\n${t('sys.userImageOmitted')}`);
+});
+
 /* ========== 回合边界与重新生成 ========== */
 
 const ask = (s) => ({ role: 'user', content: s, displayContent: s });

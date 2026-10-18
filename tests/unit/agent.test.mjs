@@ -291,6 +291,44 @@ test('第 34 条：估算下一次请求，窗口取接口套、系数只放大�
   assert.ok(measureNextRequest({ ...opts, profile: PROFILE, toolsBroken: true }).used < measureNextRequest({ ...opts, profile: PROFILE }).used);
 });
 
+/* ========== 用户附图 ========== */
+
+const VISION = { ...PROFILE, visionEnabled: true };
+const askWithImage = () => ({ ...userMsg('看图'), images: ['data:image/png;base64,AAA'] });
+const carriesImage = (body) => body.messages.some((m) => Array.isArray(m.content) && m.content.some((p) => p.type === 'image_url'));
+
+test('第 40 条：附图能否出网只看接口套的视觉开关，与带不带 tools 无关', () => {
+  const base = { actionsEnabled: false, skillId: null, toolsBroken: true, perceivable: true };
+  const shape = requestShape({ ...base, profile: VISION });
+  assert.equal(shape.caps.imageInput, true);
+  assert.equal(shape.caps.vision, false); // 截图工具随 tools 走，降级纯文本后没有它
+  assert.equal(requestShape({ ...base, profile: PROFILE }).caps.imageInput, false);
+});
+
+test('第 40 条：附图随回合里的每轮请求发出，回合收尾后仍在历史里', async (ctx) => {
+  const fetches = scripted(ctx, [toolCalls({ id: 'c1', name: 'find_in_page', args: { query: 'x' } }), text('好')]);
+  const { messages } = await turn({ profile: VISION, messages: [askWithImage()] });
+  assert.equal(fetches.length, 2);
+  assert.ok(fetches.every((f) => carriesImage(f.body)));
+  assert.deepEqual(messages[0].images, ['data:image/png;base64,AAA']);
+});
+
+test('第 40 条：400 降级只拿掉 tools 与截图，附图不拿掉，仍失败就报错', async (ctx) => {
+  const fetches = scripted(ctx, [httpError(400), httpError(400)]);
+  const { messages } = await turn({ profile: VISION, messages: [askWithImage()] });
+  assert.equal(fetches.length, 2);
+  assert.ok(fetches.every((f) => carriesImage(f.body)));
+  assert.ok(messages.at(-1)._error);
+});
+
+test('第 40 条：上下文估算把附图算进去（接口套开了视觉时）', () => {
+  const messages = [{ ...userMsg('看图'), images: ['data:x', 'data:y'] }];
+  const opts = { messages, compact: null, actionsEnabled: false, skillId: null, toolsBroken: true };
+  const seen = measureNextRequest({ ...opts, profile: VISION }).used;
+  const omitted = measureNextRequest({ ...opts, profile: PROFILE }).used;
+  assert.ok(seen - omitted > 1500);
+});
+
 /* ========== 压缩上下文 ========== */
 
 const HISTORY = [userMsg('第一问'), { role: 'assistant', content: '第一答' }];
@@ -326,6 +364,7 @@ test('压缩失败一律放弃：返回工具调用、空摘要、超窗、中�
 test('第 6 条：错误映射成带排查建议的文案', () => {
   assert.equal(describeError(new LlmError('http', { status: 401 })), t('err.http401'));
   assert.equal(describeError(new LlmError('http', { status: 404 })), t('err.http404'));
+  assert.equal(describeError(new LlmError('http', { status: 413 })), t('err.http413'));
   assert.equal(describeError(new LlmError('http', { status: 502 })), t('err.http5xx', { status: 502 }));
   assert.equal(describeError(new LlmError('network')), t('err.network'));
   assert.equal(describeError(new LlmError('http', { status: 400, detail: 'context_length_exceeded' })), t('err.contextOverflow'));

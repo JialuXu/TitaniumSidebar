@@ -272,11 +272,55 @@ body {
   text-align: center;
 }
 
-/* 用户消息：右侧主色气泡（右下角小圆角） */
+/* 用户消息：右侧主色气泡（右下角小圆角）；附图在气泡上方，同样右对齐 */
 .msg-user {
   display: flex;
-  justify-content: flex-end;
+  flex-direction: column;
+  align-items: flex-end;
   margin: 10px 0;
+}
+
+/* 附图：与输入区托盘同款的小方图，只占一行；点开大图走查看层，不在消息流里撑开 */
+.msg-user-images {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  max-width: 85%;
+  margin-bottom: 4px;
+}
+
+.msg-user-images:last-child { margin-bottom: 0; }
+
+.msg-user-image {
+  width: 52px;
+  height: 52px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: zoom-in;
+}
+
+.msg-user-image:hover { border-color: var(--accent); }
+
+/* 大图查看层：铺满面板的暗底，图片居中、按面板大小缩放；点任意处或 Esc 关闭 */
+.image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--gap);
+  background: rgba(26, 26, 26, 0.72);
+  cursor: zoom-out;
+}
+
+.image-viewer img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
 }
 
 .msg-user .bubble {
@@ -781,15 +825,17 @@ body {
 
 /* ========== 输入区 ========== */
 .composer {
+  position: relative;
   flex-shrink: 0;
   padding: 8px var(--gap) var(--gap);
   /* 不铺不透明底色，让 body 的棕色渐晕透上来（.chat 独立滚动，内容不会穿到输入区下方） */
   background: transparent;
 }
 
-/* 输入卡片：白底大圆角 + 轻投影 */
+/* 输入卡片：白底大圆角 + 轻投影；有附图时缩略图独占第一行（wrap），其余控件排在下一行 */
 .composer-card {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   gap: 8px;
   padding: 10px 10px 10px 12px;
@@ -799,7 +845,84 @@ body {
   box-shadow: 0 2px 10px rgba(26, 26, 26, 0.05);
 }
 
-.composer-card:focus-within { border-color: var(--accent); }
+/* 临时提示：输入区上方居中浮出，3 秒后淡出（不进消息流） */
+.toast {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 2px);
+  z-index: 5;
+  width: max-content;
+  max-width: calc(100% - 2 * var(--gap));
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  background: rgba(26, 26, 26, 0.86);
+  color: var(--text-inverse);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  white-space: pre-line;
+  box-shadow: 0 4px 14px rgba(26, 26, 26, 0.12);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translate(-50%, 4px);
+  transition: opacity 0.18s ease, transform 0.18s ease, visibility 0s linear 0.18s;
+}
+
+.toast.show {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.composer-card:focus-within,
+.composer-card.drop-target { border-color: var(--accent); }
+
+/* 待发送的附图：卡片顶部一排小方图，右上角 ✕ 移除 */
+.attach-tray {
+  display: flex;
+  flex: 0 0 100%;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.attach-item {
+  position: relative;
+  width: 52px;
+  height: 52px;
+}
+
+.attach-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.attach-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.attach-remove:hover { color: var(--negative); border-color: var(--negative); }
 
 /* 「+」功能菜单：按钮 + 向上弹出的菜单，锚定在输入卡片左侧 */
 .composer-tools {

@@ -121,6 +121,8 @@ const ZH = {
   'ui.emptyReply': '（模型未返回内容）',
   'ui.shotAlt': '视口截图',
   'ui.shotTitle': '点击放大/还原',
+  'ui.imageAlt': '附图',
+  'ui.imageView': '查看大图',
   'ui.codeDetail': '代码与结果',
   'ui.codeLabel': '代码',
   'ui.codeResult': '返回给模型的结果',
@@ -139,6 +141,7 @@ const ZH = {
   /* ---------- 界面：历史会话 ---------- */
   'ui.history': '历史会话',
   'ui.historyEmpty': '还没有历史会话。发出第一条消息后，会话会自动保存到这里。',
+  'ui.historyImageTitle': '[图片]',
   'ui.historyCurrent': '当前会话',
   'ui.historyTurn': '1 轮对话',
   'ui.historyTurns': '{n} 轮对话',
@@ -163,7 +166,18 @@ const ZH = {
   'ui.compactEmpty': '当前会话还没有可压缩的内容。',
   'ui.compactBadReply': '压缩失败：模型未返回摘要正文，此前对话保持原样，可继续对话。',
 
+  /* ---------- 界面：附图（粘贴 / 拖入 / 「+」菜单选择） ---------- */
+  'ui.imageRemove': '移除这张图片',
+  // 以下几句是临时提示（3 秒淡出），写短、不带句号
+  'ui.imageNoVision': '当前接口未开启「模型支持视觉」，不能发送图片',
+  'ui.imageTooMany': '每条消息最多附 {n} 张图片',
+  'ui.imageBadType': '「{name}」无法识别为图片，未添加',
+  'ui.imageTooLarge': '「{name}」超过 {mb} MB，未添加',
+
   /* ---------- 界面：「+」菜单 ---------- */
+  'ui.menuImage': '添加图片',
+  'ui.menuImageHint': '也可粘贴',
+  'ui.menuImageNoVision': '需开启视觉',
   'ui.menuSkill': '绑定 Skill',
   'ui.menuWebSearch': '联网搜索',
   'ui.menuKnowledge': '知识库',
@@ -206,7 +220,7 @@ const ZH = {
   'ui.cfgMask': '发送前脱敏',
   'ui.cfgMaskHint': '身份证 / 银行卡 / 手机号',
   'ui.cfgVision': '模型支持视觉',
-  'ui.cfgVisionHint': '启用截图工具；截图无法脱敏。',
+  'ui.cfgVisionHint': '启用截图工具与附图；图片无法脱敏。',
   'ui.cfgContextWindow': '上下文窗口（tokens）',
   'ui.cfgActions': '允许页面操作',
   'ui.cfgDebugger': '调试通道（真实点击与按键）',
@@ -239,6 +253,7 @@ const ZH = {
   'err.http401': '鉴权失败（401）：请检查 API Key 是否正确。',
   'err.http403': '无权限（403）：请检查 API Key 权限或网关配置。',
   'err.http404': '接口不存在（404）：请检查接口地址是否完整（通常需要以 /v1 结尾）。',
+  'err.http413': '请求体过大（413）：接口或它前面的反向代理拒收了这么大的请求。附了图片的话，少附几张再试；本地部署可调大反向代理的请求体上限（如 nginx 的 client_max_body_size）。',
   'err.http429': '请求过于频繁（429）：请稍后重试。',
   'err.http5xx': '服务端错误（{status}）：模型服务暂不可用，请稍后重试。',
   'err.httpOther': '请求失败（HTTP {status}）{detail}',
@@ -276,6 +291,9 @@ const ZH = {
   'sys.readOmitted': '（此处原有的正文片段已省略：正文第 {start}–{end} 字，需要时可重新读取）',
   'sys.readFailed': '无法读取当前页面的正文（页面可能已刷新或受限）。',
   'sys.shotOmittedMeta': '[视口截图已省略：{w}×{h}，标注 {n} 个元素]',
+  // 会话中途换成了没开视觉的接口套：附图发不出去，交代一句，免得模型以为用户只说了文字
+  'sys.userImageOmitted': '（用户附了 1 张图片；当前接口不支持图片输入，图片没有随消息发送）',
+  'sys.userImagesOmitted': '（用户附了 {n} 张图片；当前接口不支持图片输入，图片没有随消息发送）',
   'sys.sandboxCrashed': '代码运行环境崩溃了（多半是内存占用过大），已重置。请减少数据量或改用更省内存的写法后重试。',
   'sys.sandboxFailed': '代码运行环境出错，没有拿到结果。请用 print(...) 输出结果后重试，不要自己调用 postMessage。',
 
@@ -642,6 +660,7 @@ const ZH = {
     '二、已经得出的结论与事实：务必区分「页面上写着的数字与原文」和「你推算或推断出的结果」，' +
     '两者都标明来源（如「页面数字」「据此推算」）；数字保持一字不差，' +
     '不确定的宁可写明不确定，不要为了简洁把结论说死。' +
+    '用户附过图片的，把图里与任务相关的文字和数字照录下来——压缩后原图不再随请求发送。' +
     '三、用过的工具及其要点：搜过什么、表格里的关键数据、元素编号是否还有效等；' +
     '只写结论性的要点，不要把搜索结果、整张表格或读取到的正文原文贴回摘要；' +
     '字符位置（@数字）也不必保留，压缩后会重新携带当前页面。' +
@@ -839,6 +858,8 @@ const EN = {
   'ui.emptyReply': '(the model returned nothing)',
   'ui.shotAlt': 'Viewport screenshot',
   'ui.shotTitle': 'Click to enlarge / restore',
+  'ui.imageAlt': 'Attached image',
+  'ui.imageView': 'View full size',
   'ui.codeDetail': 'Code and result',
   'ui.codeLabel': 'Code',
   'ui.codeResult': 'Result returned to the model',
@@ -857,6 +878,7 @@ const EN = {
   /* ---------- UI: history ---------- */
   'ui.history': 'History',
   'ui.historyEmpty': 'No conversations yet. They are saved here automatically once you send a message.',
+  'ui.historyImageTitle': '[Image]',
   'ui.historyCurrent': 'Current',
   'ui.historyTurn': '1 turn',
   'ui.historyTurns': '{n} turns',
@@ -881,7 +903,17 @@ const EN = {
   'ui.compactEmpty': 'There is nothing to compact in this conversation yet.',
   'ui.compactBadReply': 'Compaction failed: the model returned no summary. The conversation is unchanged and you can keep going.',
 
+  /* ---------- UI: attached images (paste / drop / "+" menu) ---------- */
+  'ui.imageRemove': 'Remove this image',
+  'ui.imageNoVision': 'Turn on "Model supports vision" for this endpoint to send images',
+  'ui.imageTooMany': 'Up to {n} images per message',
+  'ui.imageBadType': '"{name}" is not a readable image',
+  'ui.imageTooLarge': '"{name}" is over {mb} MB',
+
   /* ---------- UI: "+" menu ---------- */
+  'ui.menuImage': 'Add image',
+  'ui.menuImageHint': 'or paste',
+  'ui.menuImageNoVision': 'Needs vision',
   'ui.menuSkill': 'Attach a Skill',
   'ui.menuWebSearch': 'Web search',
   'ui.menuKnowledge': 'Knowledge base',
@@ -924,7 +956,7 @@ const EN = {
   'ui.cfgMask': 'Redact before sending',
   'ui.cfgMaskHint': 'ID / bank card / phone numbers',
   'ui.cfgVision': 'Model supports vision',
-  'ui.cfgVisionHint': 'Enables screenshots, which cannot be redacted.',
+  'ui.cfgVisionHint': 'Enables screenshots and attached images; images cannot be redacted.',
   'ui.cfgContextWindow': 'Context window (tokens)',
   'ui.cfgActions': 'Allow page actions',
   'ui.cfgDebugger': 'Debugger channel (real clicks and keys)',
@@ -957,6 +989,7 @@ const EN = {
   'err.http401': 'Authentication failed (401): check that the API key is correct.',
   'err.http403': 'Forbidden (403): check the API key permissions or your gateway configuration.',
   'err.http404': 'Endpoint not found (404): check that the URL is complete (it usually has to end with /v1).',
+  'err.http413': 'Request too large (413): the endpoint, or a reverse proxy in front of it, refused a request this size. If images are attached, try fewer; for a local deployment, raise the proxy\'s body size limit (for example nginx client_max_body_size).',
   'err.http429': 'Too many requests (429): please retry in a moment.',
   'err.http5xx': 'Server error ({status}): the model service is unavailable, please retry later.',
   'err.httpOther': 'Request failed (HTTP {status}){detail}',
@@ -991,6 +1024,8 @@ const EN = {
   'sys.readOmitted': '(The body excerpt that was here has been omitted: chars {start}–{end} of the body; read it again if needed.)',
   'sys.readFailed': 'Cannot read the body text of this page (it may have been reloaded or is restricted).',
   'sys.shotOmittedMeta': '[viewport screenshot omitted: {w}×{h}, {n} elements annotated]',
+  'sys.userImageOmitted': '(The user attached 1 image; the current endpoint does not accept image input, so it was not sent.)',
+  'sys.userImagesOmitted': '(The user attached {n} images; the current endpoint does not accept image input, so they were not sent.)',
   'sys.sandboxCrashed': 'The code sandbox crashed (most likely it ran out of memory) and has been reset. Reduce the amount of data or use a more memory-efficient approach, then try again.',
   'sys.sandboxFailed': 'The code sandbox failed and returned no result. Output results with print(...) and try again; do not call postMessage yourself.',
 
@@ -1353,6 +1388,7 @@ const EN = {
     '2. Conclusions and facts established so far: always separate "numbers and wording taken from the page" from "results you calculated or inferred", ' +
     'and label the source of each (e.g. "from the page", "calculated from that"); reproduce numbers exactly, ' +
     'and state uncertainty where it exists rather than hardening a conclusion for the sake of brevity. ' +
+    'If the user attached images, write down the text and numbers in them that matter to the task, exactly — the images are not sent again after compaction. ' +
     '3. Tools used and what they yielded: what was searched, key figures from tables, whether element numbers are still valid, and so on; ' +
     'record only the conclusions — do not paste search results, whole tables or body text you read back into ' +
     'the summary, and do not keep character positions (@numbers): the current page is re-sent after compaction. ' +

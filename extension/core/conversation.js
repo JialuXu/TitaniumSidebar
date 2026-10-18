@@ -4,6 +4,7 @@
 // 一行占位；截图在回合收尾换成占位文本；read_page_text 读到的正文换页即作废、跨回合只留
 // 最近的那些。三种压缩都只改 content、只摘 `_` 标记，绝不增删消息——tool_calls 与 tool
 // 必须成对紧邻（不变式 7），而且 compact.boundary 是下标，一动数组它就漂了。
+// 用户附图不在此列：它是用户自己说的话，没有更新的一份来取代它，跨回合保留到被压缩收进摘要。
 // 请求链在这之上组装：system prompt 现拼、压缩后只带「摘要 + 压缩点之后的新消息」、
 // 剔除界面辅助字段。另有回合边界的判定（哪条是用户敲入的消息）与重新生成前的回退。
 // 外壳只负责在正确的时机调用，消息数组由它显式传入。
@@ -141,25 +142,51 @@ export function stripImagesFromHistory(...lists) {
 /* ========== 出网形态 ========== */
 
 /**
- * 消息数组 → 出网形态：剔除界面辅助字段，丢掉不该进请求的空回复。
+ * 用户消息的出网内容。附图单放在 images 上、content 始终是字符串：页面块占位、会话标题、
+ * 历史回放这些按字符串处理 content 的地方因此都不用管图片，只在这里拼成多模态形态。
+ * 当前接口套没开视觉（会话中途换了一套纯文本模型）时图片发不出去，换成一句交代，
+ * 免得模型以为用户只说了文字。
+ * @param {object} m 消息
+ * @param {boolean} imageInput 本次请求能否带图片
+ */
+function wireContent(m, imageInput) {
+  const images = m.images || [];
+  if (!images.length) return m.content;
+  if (!imageInput) {
+    const note = images.length === 1
+      ? t('sys.userImageOmitted')
+      : t('sys.userImagesOmitted', { n: images.length });
+    return m.content ? `${m.content}\n\n${note}` : note;
+  }
+  // 只附图、页面也没变的消息没有文字：不发空文本段，有的后端不收
+  return [
+    ...(m.content ? [{ type: 'text', text: m.content }] : []),
+    ...images.map((url) => ({ type: 'image_url', image_url: { url } })),
+  ];
+}
+
+/**
+ * 消息数组 → 出网形态：剔除界面辅助字段，丢掉不该进请求的空回复，用户附图拼进 content。
  * 必须在压缩裁剪之后调用——boundary 是原始数组的下标，先过滤会让下标漂移。
  */
-function sanitizeMessages(messages) {
+function sanitizeMessages(messages, imageInput) {
   return messages
     // 失败的空回复不进入请求；带 tool_calls 而 content 为空的 assistant 必须保留（历史断链会 400）
     .filter((m) => m.role !== 'assistant' || m.content || (m.tool_calls && m.tool_calls.length))
     .map((m) => {
-      const out = { role: m.role, content: m.content };
+      const out = { role: m.role, content: wireContent(m, imageInput) };
       if (m.tool_calls) out.tool_calls = m.tool_calls;
       if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
-      return out; // displayContent 与 `_` 前缀内部字段不出网
+      return out; // displayContent、images 与 `_` 前缀内部字段不出网
     });
 }
 
 /**
  * 普通问答一轮的请求消息。caps 与本轮请求是否带 tools 保持一致，
  * system prompt 才不会指引模型调用不存在的工具（不变式 2）。
- * @param {{ tools?: boolean, vision?: boolean, actions?: boolean, skill?: string|null }} caps
+ * @param {{ tools?: boolean, vision?: boolean, actions?: boolean, skill?: string|null,
+ *   imageInput?: boolean }} caps imageInput 为本次请求能否带用户附图（接口套开了视觉），
+ *   与 vision（注册截图工具，还要看带不带 tools）分开
  * @param {Array<object>} messages 本回合读写的消息数组
  * @param {{ summary: string, boundary: number }|null} compact 压缩状态，null 表示未压缩
  */
@@ -168,7 +195,7 @@ export function buildRequestMessages(caps, messages, compact) {
   return [
     { role: 'system', content: buildSystemPrompt(caps) },
     // 压缩过的会话只带「摘要 + 压缩点之后的新消息」；未压缩时原样带全部历史
-    ...sanitizeMessages(compactRequestTail(messages, compact)),
+    ...sanitizeMessages(compactRequestTail(messages, compact), Boolean(caps.imageInput)),
   ];
 }
 
@@ -176,12 +203,14 @@ export function buildRequestMessages(caps, messages, compact) {
  * 压缩上下文那一轮的请求消息。摘要请求自身也走压缩后的请求链：已压缩过的会话
  * 只重发旧摘要 + 压缩点之后的新消息，否则等于把用户刚要求压掉的原文再发一遍，
  * 二次压缩最容易因此超窗失败。这一轮不注册 tools（不变式 2）。
+ * 用户附图照常带上：压缩点之前的图此后不再随请求发送，图里的要点只能靠这份摘要记下。
  * @param {string} instruction 用户随命令给出的摘要指示，可为空
+ * @param {boolean} [imageInput] 能否带用户附图（接口套开了视觉）
  */
-export function buildCompactRequest(instruction, messages, compact) {
+export function buildCompactRequest(instruction, messages, compact, imageInput = false) {
   collapseSupersededPages(messages);
   return [
     { role: 'system', content: buildCompactPrompt(instruction) },
-    ...sanitizeMessages(compactRequestTail(messages, compact)),
+    ...sanitizeMessages(compactRequestTail(messages, compact), imageInput),
   ];
 }
