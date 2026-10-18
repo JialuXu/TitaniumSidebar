@@ -161,6 +161,14 @@ test('组装记录：标题取首条用户消息，轮数只数用户敲入的�
   assert.equal(rec.messages, messages);
 });
 
+test('第 40 条：首条消息只附图没写字，标题记作「[图片]」；附图随记录原样保存', () => {
+  const messages = [{ role: 'user', content: '', displayContent: '', images: ['data:image/png;base64,AAA'] }];
+  const rec = buildSessionRecord({ id: 'a', createdAt: 1, updatedAt: 2, messages, sentPage: {}, skillId: null, compact: null });
+  assert.equal(rec.title, t('ui.historyImageTitle'));
+  assert.equal(rec.turns, 1);
+  assert.deepEqual(rec.messages[0].images, ['data:image/png;base64,AAA']);
+});
+
 test('列表时间：刚刚 / 分钟 / 今天几小时 / 昨天 / 日期（跨年带年份）', () => {
   setLocale('zh');
   const now = new Date(2026, 8, 27, 15, 0).getTime();

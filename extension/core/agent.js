@@ -37,6 +37,7 @@ export function describeError(err) {
         if (err.status === 401) return t('err.http401');
         if (err.status === 403) return t('err.http403');
         if (err.status === 404) return t('err.http404');
+        if (err.status === 413) return t('err.http413');
         if (err.status === 429) return t('err.http429');
         if (err.status >= 500) return t('err.http5xx', { status: err.status });
         const detail = (err.detail || '').slice(0, 200);
@@ -52,7 +53,8 @@ const isAbort = (err) => err instanceof LlmError && err.kind === 'abort';
 /* ========== 请求形态 ========== */
 
 /**
- * 一次普通请求的形态：带不带 tools、注册哪几组、system prompt 按什么能力拼（不变式 2）。
+ * 一次普通请求的形态：带不带 tools、注册哪几组、system prompt 按什么能力拼（不变式 2），
+ * 以及用户附图能不能随请求发出（只看接口套开没开视觉，与带不带 tools 无关）。
  * 回合里的每轮请求与上下文用量估算共用这一份判定，两处才不会悄悄分叉。
  * @param {object} o
  * @param {object} o.profile 当前接口套（视觉是模型属性，随套保存）
@@ -70,7 +72,10 @@ export function requestShape({ profile, actionsEnabled, skillId, toolsBroken, pe
   const actions = useTools && Boolean(actionsEnabled);
   const tools = useTools ? buildToolDefs({ vision, actions }) : undefined;
   return {
-    caps: { tools: useTools, vision, actions, skill: skillId || null },
+    caps: {
+      tools: useTools, vision, actions, skill: skillId || null,
+      imageInput: Boolean(profile && profile.visionEnabled),
+    },
     tools,
     // 本次请求实际注册的工具名：执行前逐个对照，开关与轮数上限才真正管得住（见 dispatchToolCall）
     registered: new Set((tools || []).map((d) => d.function.name)),
@@ -131,8 +136,9 @@ function countCall(stats, name, isAction, meta) {
 
 /**
  * 一个问答回合（异步生成器），最多 MAX_TOOL_ROUNDS / MAX_ACTION_ROUNDS 轮工具调用。
- * 消息数组就地读写：用户消息由外壳在调用前追加好，回合里的 assistant / tool / 截图跟随消息
- * 都落进同一个数组；回合结束时历史里的截图换成占位、读到的正文收口（不变式 1）。
+ * 消息数组就地读写：用户消息（附图在它的 images 上）由外壳在调用前追加好，回合里的
+ * assistant / tool / 截图跟随消息都落进同一个数组；回合结束时历史里的截图换成占位、
+ * 读到的正文收口（不变式 1）。
  * 接口套、页面操作开关与技能在回合开始时取定，流式中改动只影响下一条消息。
  *
  * @param {object} o
@@ -210,9 +216,9 @@ export async function* runAgentTurn({
       if (ratio) yield { type: 'calibration', ratio };
       yield { type: 'segment', content: acc };
 
-      // 降级路径：400/422 视为「接口不认识请求里的新字段」，先怀疑 tools，再怀疑图片。
+      // 降级路径：400/422 视为「接口不认识请求里的新字段」，先怀疑 tools，再怀疑截图。
       // 各只降一次，5xx/网络错误不吞，照常报错。超窗不是「不认识新字段」，
-      // 去掉 tools 重试只会把本会话永久降级
+      // 去掉 tools 重试只会把本会话永久降级。用户附图不拿掉：去掉它们作答等于答非所问，宁可报错
       if (
         streamError instanceof LlmError && streamError.kind === 'http' &&
         (streamError.status === 400 || streamError.status === 422) && !aborted() &&
@@ -321,7 +327,7 @@ export async function* runAgentTurn({
       yield { type: 'next-round' };
     }
   } finally {
-    stripImagesFromHistory(messages); // 回合收尾：历史不保留任何真图
+    stripImagesFromHistory(messages); // 回合收尾：历史不保留截图的真图（用户附图不受影响）
     trimRetainedReads(messages);      // 同理，读到的正文跨回合只保留最近的那些
   }
 }
@@ -344,7 +350,7 @@ export async function* runAgentTurn({
  *   errorText 为可读失败原因，中止时为空（用户自己停的，不必报错）
  */
 export async function requestCompaction({ instruction = '', messages, compact, profile, signal, onRequest }) {
-  const requestMessages = buildCompactRequest(instruction, messages, compact);
+  const requestMessages = buildCompactRequest(instruction, messages, compact, Boolean(profile && profile.visionEnabled));
   if (onRequest) onRequest(requestMessages);
 
   let summary = '';

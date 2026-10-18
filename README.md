@@ -34,7 +34,7 @@ Click the gear icon, open **Model endpoints**, run **Test connection**, then sav
 
 The endpoint should end with `/v1`. The extension appends `/chat/completions`. A 404 from the connection test usually means `/v1` is missing.
 
-**+** adds another endpoint. The endpoint selected in the dropdown is the one in use. **Model supports vision** (enables screenshots; screenshots are not redacted) and the context window are stored with each endpoint.
+**+** adds another endpoint. The endpoint selected in the dropdown is the one in use. **Model supports vision** (enables screenshots and attached images; images are not redacted) and the context window are stored with each endpoint.
 
 **Export settings** before uninstalling the extension. The file is `titanium-settings.json`, and the API keys in it are plain text. **Import settings** restores it in full. The file does not include the page-actions switch; enable that separately. After a code change, click **Reload** on the extensions page. Saved settings are kept.
 
@@ -44,7 +44,8 @@ The endpoint should end with `/v1`. The extension appends `/chat/completions`. A
 - **If the page is still loading,** the extension waits about 2.5 seconds. If the page is still changing, it reads anyway and tells the model. "Loading" and "No data" are not treated as conclusions.
 - **Content beyond the first 12,000 characters** is reached by search, then by reading at a position. Each step appears as a line and folds into "Ran N steps" when the answer is complete. An endpoint without tool calling falls back to plain text automatically.
 - **"From this page"** appears only when a quotation matches the captured text exactly. Passages read back by position are included in that check.
-- **Phone numbers, national ID numbers, and bank card numbers** are masked before the request is sent. Screenshots are not masked.
+- **Phone numbers, national ID numbers, and bank card numbers** are masked before the request is sent. Screenshots and attached images are not masked.
+- **Attached images:** paste a screenshot into the input box, drag an image onto the sidebar, or choose **Add image** from the **+** menu. The current endpoint needs **Model supports vision** turned on. A message takes up to 4 images; large ones are scaled down automatically. Attached images are sent again with later turns and stop being sent after `/compact`. They are saved with the conversation history and count toward its storage.
 - **When a question needs exact arithmetic** (ratios, year-over-year changes, sums, averages), the model runs a short piece of JavaScript in an isolated sandbox; whether to do so is the model's call for each question. Page tables go into the code by their index, with cells masked first; the model leaves masked cells out of the calculation and says so in its answer. The sandbox has no network access and cannot reach the page or your files; a run longer than 5 seconds is stopped. Each run appears as a line that expands to show the code and the result.
 - **Conversation history is stored on this machine,** up to 50 conversations or 80% of the storage quota. When the limit is exceeded, the oldest records are removed first. If a conversation cannot be saved, the chat shows a notice. Use the history button to restore a conversation and continue.
 - **`/compact`** turns earlier turns into a summary for later requests. The text on screen stays as it is. You may add an instruction, for example `/compact keep the financial figures`. Use it before the context grows too long. If an ordinary request has already failed because of length, the summary request fails as well, and the remaining option is **New chat**. A reminder appears at about 70% of the window and again at about 85%. The **+** menu shows the current share. Set **Context window** on each endpoint (`128k`; blank means 64k). The estimate starts from character counts and adjusts when the endpoint reports token usage.
@@ -84,6 +85,7 @@ Without the debugger channel, actions are synthetic events (`isTrusted` is false
 | 404 | Confirm that the endpoint ends with `/v1` |
 | Network failure | The endpoint is unreachable. Confirm that the local service is running |
 | Degraded: no tool calling or image input | Expected. The current model does not have that capability |
+| 413 | The request is too large. Attach fewer images; for a local deployment, raise the reverse proxy's body size limit (for example nginx `client_max_body_size`) |
 | "Tab switched" | The tab changed during the conversation. Return to the original page, or ask again about the current one |
 | Clicks and typing have no effect | Turn on the debugger channel, or ask the model to list the elements again |
 | The sidebar crashes while running code (Chrome / Edge below 124) | In these versions the code sandbox shares a process with the sidebar, so code that uses too much memory takes both down. Reopen the sidebar: earlier turns are saved, the turn in progress is lost. From version 124 on, only the sandbox is reset |

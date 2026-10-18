@@ -17,7 +17,8 @@ export const DEFAULT_CONTEXT_WINDOW = 64000;
 export const CONTEXT_WARN = 0.7;
 export const CONTEXT_HIGH = 0.85;
 
-// 一张图的粗估：各家按分辨率计费，差异很大；截图在回合收尾就换成占位，这里只求量级
+// 一张图的粗估：各家按分辨率计费，差异很大，这里只求量级。截图在回合收尾就换成占位，
+// 用户附图跨回合保留、每次请求都重发，张数多了是实打实的占用
 const IMAGE_TOKENS = 1000;
 // 每条消息的角色标记等固定开销
 const MESSAGE_OVERHEAD = 4;

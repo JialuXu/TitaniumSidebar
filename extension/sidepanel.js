@@ -9,6 +9,7 @@ import { runSandboxedCode } from './core/sandbox-runner.js';
 import { runAgentTurn, requestCompaction, measureNextRequest, describeError } from './core/agent.js';
 import { describeTrace } from './core/activity.js';
 import { annotateScreenshot } from './core/annotate.js';
+import { prepareImage, MAX_IMAGES, MAX_FILE_BYTES } from './core/images.js';
 import { BUDGETS } from './core/format.js';
 import { maskSensitive } from './core/masker.js';
 import { hasUserInput, lastTurnHasWrites, rewindLastTurn } from './core/conversation.js';
@@ -60,9 +61,15 @@ const state = {
   // 配置的规范形状见 core/settings.js：多套模型接口 + 当前使用的那套 + 全局偏好
   config: normalizeConfig(),
   // 消息历史：content 是真实请求内容（首条 user 含 <页面内容> 块），
-  // displayContent 只存用户敲入的原话用于渲染（不把 12000 字页面文本刷进 UI）。
+  // displayContent 只存用户敲入的原话用于渲染（不把 12000 字页面文本刷进 UI），
+  // images 是用户附图的 data URL（出网时才拼进 content，见 core/conversation.js）。
   // 工具调用轮次会追加 assistant(tool_calls)/tool/截图跟随消息，`_` 前缀字段发请求前剔除。
   messages: [],
+  // 输入区待发送的附图（规整后的 data URL）：与输入框里的文字一样是草稿，
+  // 随下一条消息发出，「新对话」与切换历史会话都不清空它。
+  // attachJob 是规整的排队链：发送前等它走完，刚粘贴就回车也不会把图落下
+  attachments: [],
+  attachJob: Promise.resolve(),
   page: initialPage(),           // 当前页面的最新快照（形状见 core/page-sync.js）
   // 模型「已经看到的页面」：每条消息发送前拿它与最新快照比对，决定是不带、带差异还是带全文。
   // 与 state.page 分开是必需的——AI 操作导致跳转时 state.page 已换成新页，
@@ -101,6 +108,7 @@ const els = {};
   'ctx-detail', 'ctx-detail-title', 'ctx-detail-url', 'ctx-detail-stats',
   'ctx-detail-outline', 'ctx-detail-text',
   'chat', 'welcome', 'config-hint', 'btn-goto-settings', 'input', 'btn-send',
+  'attach-tray', 'image-file', 'toast', 'image-viewer',
   'btn-plus', 'plus-menu',
   'skill-suggest', 'skill-chip', 'skill-chip-name', 'skill-chip-remove',
   'btn-history', 'history-pop', 'history-list', 'btn-clear-history',
@@ -154,6 +162,7 @@ function applyLocale(loc) {
   renderPlusMenu();
   renderSkillChip();
   renderSkillSuggest();
+  renderAttachTray(); // ✕ 的提示文字随语言
   // 历史浮层开着才重渲（列表要读存储，没开就不白读一次）；消息流里的历史内容保持原语言
   if (state.ui.historyOpen) renderHistoryList();
   if (isSettingsOpen()) renderProfileOptions(); // 下拉里「未命名」兜底文案随语言
@@ -758,13 +767,30 @@ function maybeScroll() {
   if (state.ui.autoScroll) els.chat.scrollTop = els.chat.scrollHeight;
 }
 
-function appendUserMessage(text) {
+// 用户消息：附图是气泡上方的一排小方图（点开看大图）；只附图没写字的消息没有气泡
+function appendUserMessage(text, images = []) {
   const wrap = document.createElement('div');
   wrap.className = 'msg msg-user';
-  const bubble = document.createElement('div');
-  bubble.className = 'bubble';
-  bubble.textContent = text;
-  wrap.appendChild(bubble);
+  if (images.length) {
+    const row = document.createElement('div');
+    row.className = 'msg-user-images';
+    for (const src of images) {
+      const img = document.createElement('img');
+      img.className = 'msg-user-image';
+      img.src = src;
+      img.alt = t('ui.imageAlt');
+      img.title = t('ui.imageView');
+      img.addEventListener('click', () => setImageViewer(src));
+      row.appendChild(img);
+    }
+    wrap.appendChild(row);
+  }
+  if (text) {
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.textContent = text;
+    wrap.appendChild(bubble);
+  }
   els.chat.appendChild(wrap);
 }
 
@@ -805,6 +831,25 @@ function appendFlowError(text) {
   div.className = 'msg-error standalone';
   div.textContent = text;
   els.chat.appendChild(div);
+}
+
+// 大图查看层：src 为空即关闭
+function setImageViewer(src) {
+  const img = els.imageViewer.querySelector('img');
+  img.src = src || '';
+  img.alt = src ? t('ui.imageAlt') : '';
+  els.imageViewer.hidden = !src;
+}
+
+// 临时提示：一次性的操作反馈（附图被拒这类）在输入区上方浮出、3 秒后淡出，
+// 不进消息流、不随会话保存。新提示顶掉旧的并重新计时
+const TOAST_MS = 3000;
+let toastTimer = 0;
+function showToast(text) {
+  els.toast.textContent = text;
+  els.toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => els.toast.classList.remove('show'), TOAST_MS);
 }
 
 // 一次性提示条（接口不支持 tools/图片时的降级说明）
@@ -1174,9 +1219,11 @@ async function syncPageForSend() {
 }
 
 async function handleSend() {
+  await state.attachJob; // 刚粘贴的图可能还在规整，等它进了托盘再取
   if (state.ui.phase !== 'idle') return;
   const inputText = els.input.value.trim();
-  if (!inputText) return;
+  const images = state.attachments;
+  if (!inputText && !images.length) return; // 只附图不写字也能发
   if (!isConfigured()) {
     updateConfigHint();
     openSettings();
@@ -1192,10 +1239,18 @@ async function handleSend() {
     return;
   }
 
+  // 附图之后关了视觉或换了一套接口：图发不出去就不发，文字与图都留在输入区
+  if (images.length && !visionOn()) {
+    showToast(t('ui.imageNoVision'));
+    return;
+  }
+
   state.ui.phase = 'streaming';
   updateComposer();
   els.input.value = '';
   autoSizeInput();
+  state.attachments = [];
+  renderAttachTray();
   els.welcome.hidden = true;
   state.ui.autoScroll = true;
 
@@ -1208,13 +1263,14 @@ async function handleSend() {
     role: 'user',
     content,
     displayContent: inputText,
+    ...(images.length ? { images } : {}),
     // 携带页面块的消息打标：下次全量读取后，更早的这些会被压成一行占位
     ...(sync.kind === 'full' || sync.kind === 'diff'
       ? { _page: sync.kind, _pageTitle: state.page.title }
       : {}),
   };
   state.messages.push(userMsg);
-  appendUserMessage(inputText);
+  appendUserMessage(inputText, images);
   const note = describeSyncNote(sync, truncateTitle(state.page.title));
   if (note) {
     userMsg._note = note; // 提示行随消息落库：历史回放时仍能看到「页面已切换」这类交代
@@ -1698,7 +1754,7 @@ function replayConversation(messages, compact) {
     if (i === compactAt) appendFlowNote(t('ui.noteCompacted'));
     if (m.role === 'user' && m.displayContent !== undefined) {
       closeTurn(false);
-      appendUserMessage(m.displayContent);
+      appendUserMessage(m.displayContent, m.images);
       if (m._note) appendFlowNote(m._note);
       return;
     }
@@ -1756,6 +1812,70 @@ function setHistoryOpen(open) {
 function autoSizeInput() {
   els.input.style.height = 'auto';
   els.input.style.height = Math.min(els.input.scrollHeight, 160) + 'px';
+}
+
+/* ========== 附图（粘贴 / 拖入 / 「+」菜单选择） ========== */
+// 附图先进输入区的托盘，随下一条消息发出；缩放与重编码在 core/images.js。
+// 视觉是模型属性：当前接口套没开「模型支持视觉」就不收图，发出去也只会被接口拒收。
+
+function visionOn() {
+  return Boolean(activeProfile(state.config).visionEnabled);
+}
+
+// 托盘：每张一个缩略图 + ✕，全部 DOM 构造
+function renderAttachTray() {
+  els.attachTray.innerHTML = '';
+  els.attachTray.hidden = !state.attachments.length;
+  state.attachments.forEach((url, i) => {
+    const item = document.createElement('div');
+    item.className = 'attach-item';
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = t('ui.imageAlt');
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'attach-remove';
+    del.textContent = '✕';
+    del.title = t('ui.imageRemove');
+    del.setAttribute('aria-label', t('ui.imageRemove'));
+    del.addEventListener('click', () => {
+      state.attachments.splice(i, 1);
+      renderAttachTray();
+    });
+    item.append(img, del);
+    els.attachTray.appendChild(item);
+  });
+}
+
+// 加入托盘：逐张规整，超出张数、太大或解不开的不影响其余几张，原因攒成一条临时提示。
+// 排进 attachJob 链：连着粘贴几次也按顺序进托盘，发送前等链走完
+function addImages(files) {
+  const job = state.attachJob.then(async () => {
+    if (!files.length) return;
+    if (!visionOn()) {
+      showToast(t('ui.imageNoVision'));
+      return;
+    }
+    const notes = [];
+    for (const file of files) {
+      if (state.attachments.length >= MAX_IMAGES) {
+        notes.push(t('ui.imageTooMany', { n: MAX_IMAGES }));
+        break;
+      }
+      const res = await prepareImage(file);
+      if (res.ok) {
+        state.attachments.push(res.url);
+        renderAttachTray();
+      } else if (res.reason === 'size') {
+        notes.push(t('ui.imageTooLarge', { name: file.name || '', mb: MAX_FILE_BYTES / 1024 / 1024 }));
+      } else {
+        notes.push(t('ui.imageBadType', { name: file.name || '' }));
+      }
+    }
+    if (notes.length) showToast(notes.join('\n'));
+  });
+  state.attachJob = job.catch((err) => console.warn('[附图] 规整失败', err));
+  return state.attachJob;
 }
 
 /* ========== 技能（Skill） ========== */
@@ -1829,6 +1949,15 @@ function scheduleSuggestEval() {
 // keepOpen 为真的项点击后菜单不关闭（如「绑定 Skill」进入二级列表）。
 // disabled 为函数时按当前状态置灰（如回合/压缩进行中不能再压一次），菜单每次打开都重渲取新值。
 const COMPOSER_MENU_ITEMS = [
+  {
+    id: 'image',
+    label: () => t('ui.menuImage'),
+    // 当前接口套没开视觉时置灰并交代原因；开着时提醒一句也能直接粘贴
+    hint: () => t(visionOn() ? 'ui.menuImageHint' : 'ui.menuImageNoVision'),
+    disabled: () => !visionOn(),
+    icon: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.2"/><circle cx="5.7" cy="6.3" r="1.2"/><path d="M2.2 12.4l3.6-3.6 2.6 2.6 1.8-1.8 3.8 3.8"/></svg>',
+    onSelect: () => els.imageFile.click(),
+  },
   {
     id: 'skill',
     label: () => t('ui.menuSkill'),
@@ -2030,14 +2159,53 @@ function bindEvents() {
     if (state.ui.ctxExpanded && !e.target.closest('.ctx-detail')) setCtxExpanded(false);
     if (state.ui.historyOpen && !e.target.closest('.history-pop')) setHistoryOpen(false);
   });
+  els.imageViewer.addEventListener('click', () => setImageViewer(''));
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    if (!els.imageViewer.hidden) setImageViewer('');
     if (state.ui.plusMenuOpen) setPlusMenuOpen(false);
     if (state.ui.ctxExpanded) setCtxExpanded(false);
     if (state.ui.historyOpen) setHistoryOpen(false);
   });
 
   els.input.addEventListener('input', autoSizeInput);
+
+  // 粘贴截图：剪贴板里有图片文件就收进托盘。同时带着文字时照常粘贴文字——
+  // 从 Excel、Word 复制单元格或段落，剪贴板里会顺带一张渲染图，那张图不是用户要的
+  els.input.addEventListener('paste', (e) => {
+    const data = e.clipboardData;
+    if (!data || data.getData('text/plain')) return;
+    const files = [...data.files].filter((f) => f.type.startsWith('image/'));
+    if (!files.length) return;
+    e.preventDefault();
+    addImages(files);
+  });
+
+  // 拖入图片：整个面板都能放，输入卡片描边提示落点。不接住的话，
+  // 文件落在侧边栏上会让侧边栏自己跳去打开它
+  const card = els.input.closest('.composer-card');
+  const carriesFiles = (e) => Boolean(e.dataTransfer) && [...e.dataTransfer.types].includes('Files');
+  document.addEventListener('dragover', (e) => {
+    if (!carriesFiles(e)) return;
+    e.preventDefault();
+    card.classList.add('drop-target');
+  });
+  document.addEventListener('dragleave', (e) => {
+    if (!e.relatedTarget) card.classList.remove('drop-target'); // 拖出了面板
+  });
+  document.addEventListener('drop', (e) => {
+    if (!carriesFiles(e)) return;
+    e.preventDefault();
+    card.classList.remove('drop-target');
+    addImages([...e.dataTransfer.files]);
+  });
+
+  // 「+」菜单「添加图片」走隐藏的文件选择框；选完清空 value，同一张图再选一次也能触发 change
+  els.imageFile.addEventListener('change', () => {
+    const files = [...(els.imageFile.files || [])];
+    els.imageFile.value = '';
+    addImages(files);
+  });
   els.input.addEventListener('keydown', (e) => {
     // isComposing：中文输入法候选态的回车不触发发送
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {

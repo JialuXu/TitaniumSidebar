@@ -40,8 +40,10 @@ export function countTurns(messages) {
 }
 
 /**
- * 组装一条会话记录（save 的入参）。调用方保证会话里至少有一条用户消息，标题取第一条。
- * messages 是回合收尾后的形态：截图已换成占位，`_` 前缀字段一并保存供回放（发请求前才剔除）。
+ * 组装一条会话记录（save 的入参）。调用方保证会话里至少有一条用户消息，标题取第一条；
+ * 只附了图、没写字时标题记作「[图片]」，历史列表里不至于是空白一行。
+ * messages 是回合收尾后的形态：截图已换成占位，用户附图原样保存（恢复后接着问图仍在，
+ * 代价是占历史的字节预算），`_` 前缀字段一并保存供回放（发请求前才剔除）。
  * @param {object} s
  * @param {string} s.id 会话 id（首次保存时由调用方 newSessionId 生成）
  * @param {number} s.createdAt
@@ -54,12 +56,13 @@ export function countTurns(messages) {
  */
 export function buildSessionRecord({ id, createdAt, updatedAt, messages, sentPage, skillId, compact }) {
   const first = messages.find(isUserInput);
+  const title = deriveSessionTitle(first ? first.displayContent : '');
   return {
     v: HISTORY_RECORD_VERSION,
     id,
     createdAt,
     updatedAt,
-    title: deriveSessionTitle(first ? first.displayContent : ''),
+    title: title || (first && first.images && first.images.length ? t('ui.historyImageTitle') : ''),
     turns: countTurns(messages),
     messages,
     sentPage,
