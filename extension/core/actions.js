@@ -20,9 +20,11 @@
  * @param {{ action: 'click'|'input'|'select'|'key'|'scroll'|'extract_table'|'get_html'|'locate'|'focus'|'probe',
  *           session: string, ref?: number, text?: string, option?: string, key?: string,
  *           direction?: 'up'|'down'|'top'|'bottom', pages?: number,
- *           tableIndex?: number, maxLen?: number,
+ *           tableIndex?: number, maxLen?: number, format?: 'rows',
  *           i18n?: { passwordMasked, tableTruncated, htmlTruncated } }} payload
  *   i18n 由外壳按当前语言传入（本函数注入页面执行，不能 import core/i18n.js）
+ *   extract_table 缺省返回 Markdown（data）；format:'rows' 返回二维字符串数组
+ *   { rows, rowCount, colCount, keptRows }，供 run_javascript 的 tables 参数使用
  * @returns {{ ok: true, action, urlBefore, urlAfter, urlChanged, focus, ... }
  *          | { ok: false, reason: string, ... }}
  *   失败 reason 全集：no-body | bad-action | stale | bad-ref | gone | hidden |
@@ -457,6 +459,61 @@ export function performAction(payload) {
     return { text: lines.join('\n'), rowCount: rows.length, colCount: header.length };
   }
 
+  // <table> → 二维字符串数组（run_javascript 的 tables 参数）。与转 Markdown 分开处理：
+  // 单元格取原文（| 不转义）；rowspan / colspan 展开成重复值，每行列数一致，列号与页面上看到的对齐。
+  // rowspan 与浏览器一样止于所在区段（thead / tbody / tfoot）的末尾，rowspan="0" 即占满本区段剩下的行。
+  // 行序即文档顺序，表头通常就是首行。超出 maxLen 字时只取前若干行（至少一行），keptRows 报实际交出的行数
+  function tableToRows(table, maxLen) {
+    const trs = Array.prototype.filter.call(
+      table.querySelectorAll('tr'),
+      (tr) => tr.closest('table') === table
+    );
+    const grid = [];
+    let carry = []; // 列号 → { text, left }：上方单元格的 rowspan 还要往下占几行
+    let size = 0;
+    for (let r = 0; r < trs.length; r++) {
+      if (r && trs[r].parentElement !== trs[r - 1].parentElement) carry = []; // 换了区段
+      const cells = Array.prototype.filter.call(trs[r].children, (c) => c.tagName === 'TH' || c.tagName === 'TD');
+      const row = [];
+      let col = 0;
+      const fillCarried = () => {
+        while (carry[col] && carry[col].left > 0) {
+          row[col] = carry[col].text;
+          carry[col].left--;
+          col++;
+        }
+      };
+      for (const cell of cells) {
+        fillCarried();
+        const text = (cell.textContent || '').replace(/\s+/g, ' ').trim();
+        const cs = Math.min(Math.max(cell.colSpan || 1, 1), 1000);
+        // rowspan="0"：先按占到表尾记，换区段时随 carry 一起清掉
+        const rs = cell.rowSpan === 0 ? trs.length - r : Math.max(cell.rowSpan || 1, 1);
+        for (let k = 0; k < cs; k++, col++) {
+          // colspan 盖住了上方 rowspan 占着的格子（不规范的表）：那一格照样算上方单元格占过这一行
+          if (carry[col] && carry[col].left > 0) carry[col].left--;
+          row[col] = text;
+          if (rs > 1) carry[col] = { text, left: rs - 1 };
+        }
+      }
+      // 本行单元格用完之后，右侧仍被上方 rowspan 占着的格子
+      for (let c = col; c < carry.length; c++) {
+        if (carry[c] && carry[c].left > 0) {
+          row[c] = carry[c].text;
+          carry[c].left--;
+        }
+      }
+      for (let c = 0; c < row.length; c++) if (row[c] === undefined) row[c] = '';
+      const cost = row.reduce((n, s) => n + s.length + 1, 0);
+      if (grid.length && size + cost > maxLen) break;
+      size += cost;
+      grid.push(row);
+    }
+    const colCount = grid.reduce((n, row) => Math.max(n, row.length), 0);
+    for (const row of grid) while (row.length < colCount) row.push('');
+    return { rows: grid, rowCount: trs.length, colCount, keptRows: grid.length };
+  }
+
   /* ---------- 动作分派 ---------- */
 
   switch (action) {
@@ -679,6 +736,9 @@ export function performAction(payload) {
         return { ok: false, reason: 'bad-table-index', total: tables.length };
       }
       const maxLen = opts.maxLen || 50000;
+      if (opts.format === 'rows') {
+        return finish({ tableIndex: idx, total: tables.length, ...tableToRows(tables[idx - 1], maxLen) });
+      }
       const { text, rowCount, colCount } = tableToMarkdown(tables[idx - 1]);
       const truncated = text.length > maxLen;
       return finish({

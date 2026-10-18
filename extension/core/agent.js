@@ -155,7 +155,9 @@ function countCall(stats, name, isAction, meta) {
  *   { type: 'degraded', what: 'tools'|'images' }    400/422 后去掉 tools 或图片，重试本轮
  *   { type: 'tool-round', content }                 本段以工具调用结束：它是中途说明，不是最终回答
  *   { type: 'tool-start', name, isAction, text }    一次工具调用开始
- *   { type: 'tool-done', name, isAction, ok, text, image }  调用结束，text 为定稿文案，image 为截图地址
+ *   { type: 'tool-done', name, isAction, ok, text, image, args, content }
+ *                                                   调用结束，text 为定稿文案，image 为截图地址，
+ *                                                   args 为调用参数，content 为回填给模型的工具结果
  *   { type: 'next-round' }                          工具结果已回填，开始下一轮请求
  *   { type: 'final', message, error, aborted, stats }  回合结束。message 为最终回复，报错文案已写在
  *                                                   message._error；中止在工具阶段时它是不入历史的空回复。
@@ -168,8 +170,9 @@ export async function* runAgentTurn({
   // 就要八九轮，5 轮必然半途而废
   const roundLimit = actionsEnabled ? MAX_ACTION_ROUNDS : MAX_TOOL_ROUNDS;
   // 本回合的读取账本 + 「模型手里那份页面」的基准。基准取 sentPage 而不是当前页面：
-  // 位置是否还作数，要看模型上次实际看到的是哪一页、多长（不变式 6）
-  const turn = { readChars: 0, url: sentPage.url, textTotal: sentPage.textTotal || 0 };
+  // 位置是否还作数，要看模型上次实际看到的是哪一页、多长（不变式 6）。
+  // 中止信号一并交给工具：用户点「停止」时正在运行的代码随之终止
+  const turn = { readChars: 0, url: sentPage.url, textTotal: sentPage.textTotal || 0, signal };
   const aborted = () => Boolean(signal && signal.aborted);
   let rounds = 0;             // 已完成的工具轮数
   const stats = turnStats();
@@ -263,20 +266,21 @@ export async function* runAgentTurn({
           messages.push({ role: 'tool', tool_call_id: call.id, content: t('sys.aborted') });
           continue;
         }
+        let argsForUi = null;
+        try { argsForUi = call.arguments ? JSON.parse(call.arguments) : {}; } catch { /* 文案按 null 兜底 */ }
         if (batchBroken) {
           const text = t('ui.skipNavigated', { name: call.name });
+          const content = t('sys.batchBroken');
           messages.push({
-            role: 'tool', tool_call_id: call.id,
-            content: t('sys.batchBroken'),
+            role: 'tool', tool_call_id: call.id, content,
             // 活动行文案随消息落库：历史回放时不必重算当时的界面（_ 前缀字段不出网）
             _ui: { text, ok: false, action: isAction },
           });
+          // 与执行过的调用同一形状：活动行的展开详情（如「代码与结果」）实时与回放才一致
           yield { type: 'tool-start', name: call.name, isAction, text: '' };
-          yield { type: 'tool-done', name: call.name, isAction, ok: false, text, image: '' };
+          yield { type: 'tool-done', name: call.name, isAction, ok: false, text, image: '', args: argsForUi, content };
           continue;
         }
-        let argsForUi = null;
-        try { argsForUi = call.arguments ? JSON.parse(call.arguments) : {}; } catch { /* 文案按 null 兜底 */ }
         yield { type: 'tool-start', name: call.name, isAction, text: describeToolActivity(call.name, argsForUi, 'run') };
         // 同一请求最多一张真图：本批还没回填的那些也算在内，否则一批两次截图会漏网
         if (call.name === 'capture_screenshot') stripImagesFromHistory(messages, pendingFollowUps);
@@ -294,7 +298,10 @@ export async function* runAgentTurn({
         const text = describeToolActivity(call.name, meta.args || argsForUi, meta.ok ? 'done' : 'fail', meta.data);
         // 定稿的活动行文案随 tool 消息落库，历史回放据此重建一模一样的活动行
         toolMessage._ui = { text, ok: meta.ok, action: isAction };
-        yield { type: 'tool-done', name: call.name, isAction, ok: meta.ok, text, image };
+        yield {
+          type: 'tool-done', name: call.name, isAction, ok: meta.ok, text, image,
+          args: meta.args || argsForUi, content: toolMessage.content,
+        };
         if (meta.data && meta.data.navigated) batchBroken = true;
       }
       // tool 链已完整，此时追加截图的多模态消息才不会截断它

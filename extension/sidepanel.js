@@ -4,6 +4,8 @@
 import { snapshotPage } from './core/snapshot.js';
 import { highlightElement } from './core/highlight.js';
 import { createDrivers, debuggerAvailable } from './drivers/index.js';
+import { createSandboxHost } from './sandbox-host.js';
+import { runSandboxedCode } from './core/sandbox-runner.js';
 import { runAgentTurn, requestCompaction, measureNextRequest, describeError } from './core/agent.js';
 import { describeTrace } from './core/activity.js';
 import { annotateScreenshot } from './core/annotate.js';
@@ -555,6 +557,9 @@ async function afterNavigation(tabId) {
 
 let lastCaptureAt = 0; // 上次 captureVisibleTab 的时间戳（配额限流用）
 
+// run_javascript 的执行通道：隐藏的沙箱页 iframe，代码在它的 Worker 里运行（见 sandbox-host.js）
+const sandbox = createSandboxHost({ src: 'sandbox.html', runner: String(runSandboxedCode) });
+
 const provider = {
   // 所有走文本通道的工具结果发给模型前统一脱敏（截图无法脱敏，见设置项说明）
   mask: (t) => (state.config.maskEnabled ? maskSensitive(t).text : t),
@@ -629,6 +634,16 @@ const provider = {
       budget: { quietMs: SETTLE.action.quietMs, maxMs: seconds * 1000 },
     });
     return { ...change, waitedMs: Date.now() - started };
+  },
+
+  /* ---------- 代码执行 ---------- */
+
+  // 不碰页面，因此不走标签页守卫：带 tables 时取表经 act 走一遍守卫，由 core 先取好再交过来
+  async runCode({ code, tables, timeoutMs, signal }) {
+    const res = await sandbox.run({ code, tables, timeoutMs, signal, strings: injectedStrings() });
+    if (res.crashed) throw new Error(t('sys.sandboxCrashed'));
+    if (res.error) throw new Error(t('sys.sandboxFailed'));
+    return res;
   },
 
   /* ---------- 页内动作（经执行驱动，见 drivers/index.js） ---------- */
@@ -812,6 +827,7 @@ const TOOL_ICONS = {
   extract_table: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M10 4v16"/>',
   get_element_html: '<path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/>',
   wait_for_page: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  run_javascript: '<path d="m4 17 6-6-6-6"/><path d="M12 19h8"/>',
   click_element: '<path d="M5 3 19 10.5 13 12.2 10.5 19z"/><path d="m13 12.2 6 6"/>',
   input_text: '<path d="M4 7V4h16v3"/><path d="M12 4v16"/><path d="M9 20h6"/>',
   select_option: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m9 11 3 3 3-3"/>',
@@ -863,6 +879,26 @@ function settleToolActivity(div, text, ok) {
   div.classList.remove('running');
   if (!ok) div.classList.add('failed');
   div.querySelector('.tool-text').textContent = text;
+}
+
+// 代码运行的详情：活动行文字下方一个可展开的「代码与结果」，用户随时看得到模型实际跑了什么、
+// 模型拿到的又是什么。实时回合与历史回放共用；定稿会重写文字节点，要在它之后挂
+function attachCodeDetail(row, args, content) {
+  const details = document.createElement('details');
+  details.className = 'tool-detail';
+  const summary = document.createElement('summary');
+  summary.textContent = t('ui.codeDetail');
+  details.appendChild(summary);
+  for (const [label, text] of [[t('ui.codeLabel'), args && args.code], [t('ui.codeResult'), content]]) {
+    if (!text) continue;
+    const head = document.createElement('div');
+    head.className = 'tool-detail-label';
+    head.textContent = label;
+    const pre = document.createElement('pre');
+    pre.textContent = String(text);
+    details.append(head, pre);
+  }
+  row.querySelector('.tool-text').appendChild(details);
 }
 
 /* ========== 过程时间轴 ========== */
@@ -1068,6 +1104,7 @@ async function runAgentLoop(el) {
       case 'tool-done':
         settleToolActivity(row, ev.text, ev.ok);
         if (ev.image) attachShotThumbnail(row, ev.image); // 定稿会重写文字节点，缩略图要在它之后挂
+        if (ev.name === 'run_javascript') attachCodeDetail(row, ev.args, ev.content);
         maybeScroll();
         break;
       case 'next-round':
@@ -1633,8 +1670,9 @@ function replayConversation(messages, compact) {
   let root = null;     // 当前 AI 回合的根节点
   let lastSeg = null;  // 回合内最后一个正文段（引用校验的对象）
   let lastText = '';   // 回合内最后一段正文（复制按钮用）
-  // tool_call_id → 工具名：活动行图标按工具名取，_ui 里不存图标，旧记录同样能画出来
-  const toolNames = new Map();
+  // tool_call_id → 调用（工具名与参数）：活动行图标按工具名取，_ui 里不存图标，旧记录同样能画出来；
+  // 代码运行的详情也从这里取回代码
+  const toolCalls = new Map();
 
   const closeTurn = (isLast) => {
     if (!root) return;
@@ -1684,13 +1722,19 @@ function replayConversation(messages, compact) {
       if (m.tool_calls && m.tool_calls.length) {
         // 带工具调用的正文是中途说明，与随后的活动行一起进过程时间轴（与实时回合同一结构）
         if (seg) traceBody(root).appendChild(seg);
-        for (const c of m.tool_calls) toolNames.set(c.id, c.function && c.function.name);
+        for (const c of m.tool_calls) toolCalls.set(c.id, c.function || {});
       }
       return;
     }
     if (m.role === 'tool' && root && m._ui) {
-      const row = appendToolActivity(traceBody(root), '', m._ui.action, toolNames.get(m.tool_call_id));
+      const fn = toolCalls.get(m.tool_call_id) || {};
+      const row = appendToolActivity(traceBody(root), '', m._ui.action, fn.name);
       settleToolActivity(row, m._ui.text, m._ui.ok);
+      if (fn.name === 'run_javascript') {
+        let args = null;
+        try { args = JSON.parse(fn.arguments || '{}'); } catch { /* 坏 JSON 时只显示结果 */ }
+        attachCodeDetail(row, args, m.content);
+      }
     }
   });
   // 压缩点落在数组末尾（压缩后还没发过新消息）：提示行补在最后

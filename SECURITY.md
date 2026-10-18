@@ -8,7 +8,7 @@ Titanium ships as an unpacked extension loaded from this repository. Only the ti
 
 | Version | Supported |
 |---|---|
-| `main` (currently 1.6.0) | ✅ |
+| `main` (currently 1.7.0) | ✅ |
 | Anything older | ❌ — pull the latest `main` and reload the unpacked extension |
 
 ## Reporting a vulnerability
@@ -38,6 +38,7 @@ Expect a first response within about a week. This is a personal side project, no
 - Acting on the wrong target: `ref` / session / tab-id confusion that makes an action hit an element or tab the user was not looking at
 - Leaking the API key or captured page content anywhere other than the endpoint the user configured
 - Escapes from the injected functions into the host page's privileged context, or pollution of host page globals beyond `window.__titanium` in the isolated world
+- Escapes from the code sandbox: code run by `run_javascript` reaching the network, the page, extension APIs or unmasked table cells
 
 ### Out of scope — known, documented and accepted by design
 
@@ -70,7 +71,7 @@ Titanium 以「加载已解压的扩展程序」方式从本仓库直接运行�
 
 | 版本 | 是否支持 |
 |---|---|
-| `main`（当前 1.6.0） | ✅ |
+| `main`（当前 1.7.0） | ✅ |
 | 更早的版本 | ❌ —— 请拉取最新 `main` 并重新加载扩展 |
 
 ## 如何报告漏洞
@@ -100,6 +101,7 @@ Titanium 以「加载已解压的扩展程序」方式从本仓库直接运行�
 - 作用对象错乱：`ref` / session / tabId 判定失误，导致动作落到用户并没在看的元素或标签页上
 - API Key 或已读取的页面内容流向用户配置的接口**之外**的任何地方
 - 注入函数逃逸到宿主页面的特权上下文，或在 isolated world 的 `window.__titanium` 之外污染宿主页面全局
+- 代码沙箱逃逸：`run_javascript` 运行的代码够到了网络、页面、扩展 API 或未脱敏的表格单元格
 
 ### 不属于漏洞 —— 设计使然，已知并接受
 

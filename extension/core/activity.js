@@ -66,6 +66,16 @@ export function describeToolActivity(name, args, phase, data = {}) {
       if (phase === 'run') return t('act.wait.run');
       if (phase === 'fail') return t('act.wait.fail');
       return t('act.wait.done', { s: data.seconds, settled: t(data.settled ? 'act.wait.settled' : 'act.wait.unsettled') });
+    case 'run_javascript':
+      if (phase === 'run') return t('act.code.run');
+      if (phase === 'done') {
+        if (!data.lines) return t('act.code.silent');
+        return data.lines === 1 ? t('act.code.one') : t('act.code.done', { n: data.lines });
+      }
+      if (data.reason === 'timeout') return t('act.code.timeout', { s: data.seconds });
+      if (data.reason === 'code-error') return t('act.code.threw');
+      if (data.reason === 'aborted') return t('act.code.aborted');
+      return t('act.code.fail');
 
     /* —— 动作类：文案更醒目，用户要能一眼看清 AI 对页面做了什么 —— */
     case 'click_element':

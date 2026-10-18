@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Titanium",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "__MSG_extDescription__",
   "default_locale": "en",
   "minimum_chrome_version": "114",
@@ -12,6 +12,12 @@
   },
   "side_panel": {
     "default_path": "sidepanel.html"
+  },
+  "sandbox": {
+    "pages": ["sandbox.html"]
+  },
+  "content_security_policy": {
+    "sandbox": "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-eval'; worker-src blob:; connect-src 'none'"
   },
   "action": {
     "default_title": "__MSG_actionTitle__",

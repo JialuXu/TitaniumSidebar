@@ -86,3 +86,14 @@ test('第 27 条：过程摘要行只写有的部分，单复数分开取词', (
   setLocale('en');
   assert.match(describeTrace({ steps: 3, actions: 1 }), /^Ran 3 steps/);
 });
+
+test('第 39 条：代码运行的活动行按输出行数、超时、异常、中止分别取词', () => {
+  assert.equal(describeToolActivity('run_javascript', { code: 'x' }, 'run'), t('act.code.run'));
+  assert.equal(describeToolActivity('run_javascript', {}, 'done', { lines: 12 }), t('act.code.done', { n: 12 }));
+  assert.equal(describeToolActivity('run_javascript', {}, 'done', { lines: 1 }), t('act.code.one'));
+  assert.equal(describeToolActivity('run_javascript', {}, 'done', { lines: 0 }), t('act.code.silent'));
+  assert.equal(describeToolActivity('run_javascript', {}, 'fail', { reason: 'timeout', seconds: 5 }), t('act.code.timeout', { s: 5 }));
+  assert.equal(describeToolActivity('run_javascript', {}, 'fail', { reason: 'code-error' }), t('act.code.threw'));
+  assert.equal(describeToolActivity('run_javascript', {}, 'fail', { reason: 'aborted' }), t('act.code.aborted'));
+  assert.equal(describeToolActivity('run_javascript', {}, 'fail', { reason: 'bad-table-index' }), t('act.code.fail'));
+});

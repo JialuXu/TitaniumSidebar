@@ -46,3 +46,17 @@ test('调试接口只在执行驱动里用：core 与外壳都不直接碰 chrom
   }
   assert.deepEqual(offenders, []);
 });
+
+test('代码沙箱的 CSP 不放行任何对外通道（新增放行项需要在 PR 里说明理由，并同步修改这里）', () => {
+  assert.deepEqual(manifest.sandbox, { pages: ['sandbox.html'] });
+  const policy = Object.fromEntries(manifest.content_security_policy.sandbox.split(';')
+    .map((d) => d.trim().split(/\s+/)).map(([name, ...values]) => [name, values]));
+  // sandbox 指令只放行脚本：不放 allow-same-origin（否则拿回扩展源）、allow-forms、allow-popups、allow-top-navigation
+  assert.deepEqual(policy.sandbox, ['allow-scripts']);
+  assert.deepEqual(policy['default-src'], ["'none'"]);
+  assert.deepEqual(policy['connect-src'], ["'none'"]);
+  assert.deepEqual(policy['script-src'], ["'self'", "'unsafe-eval'"]);
+  assert.deepEqual(policy['worker-src'], ['blob:']);
+  // 扩展页面沿用 MV3 默认 CSP（不允许 eval）
+  assert.equal(manifest.content_security_policy.extension_pages, undefined);
+});

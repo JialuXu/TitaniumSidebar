@@ -32,6 +32,20 @@ const KEYS = {
   End: { code: 'End', keyCode: 35 },
 };
 
+// macOS 上文本框（textarea / input）里的翻页与行首行尾：这四个键在 macOS 由浏览器按系统键位绑定
+// 转成编辑命令，经调试接口发的按键不走这一步，文本框里什么都不做。随按键带上与 Windows / Linux 同义的
+// 移动命令，三个平台在文本框里的效果一致：翻页移光标并滚动，Home / End 到行首行尾。
+// 实测（Chromium 141 / 151，macOS）：方向键、删字、页面与可滚动区域的翻页、富文本里的这几个键都不需要命令；
+// macOS 键位绑定里的 scrollPageDown / scrollToEndOfDocument 在文本框里同样不动
+const MAC_FIELD_COMMANDS = {
+  PageUp: 'MovePageUp', PageDown: 'MovePageDown', Home: 'MoveToBeginningOfLine', End: 'MoveToEndOfLine',
+};
+
+/** 浏览器是否运行在 macOS 上：调试通道与浏览器同在一台机器上，看本页的 navigator 即可 */
+function onMac() {
+  return typeof navigator !== 'undefined' && /^Mac/.test(navigator.platform || '');
+}
+
 // 就位判定只等这几类请求：页面拉数据用的接口与文档本身。图片、字体、样式、长连接不算
 const DATA_REQUESTS = { XHR: 1, Fetch: 1, Document: 1 };
 
@@ -42,8 +56,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * @param {(tabId: number, func: Function, args?: object) => Promise<any>} o.inject 外壳的注入函数
  * @param {object} o.fallback 合成事件通道的驱动（drivers/synthetic.js）
  * @param {object} [o.debuggerApi] chrome.debugger（测试时换成替身）
+ * @param {boolean} [o.mac] 浏览器是否运行在 macOS 上（决定文本框里的翻页与行首行尾带不带编辑命令），缺省按 navigator 判断
  */
-export function createCdpDriver({ inject, fallback, debuggerApi = chrome.debugger }) {
+export function createCdpDriver({ inject, fallback, debuggerApi = chrome.debugger, mac = onMac() }) {
   // tabId → { since: 本次动作开始的时刻, requests: Map<requestId, 发出时刻> }
   const sessions = new Map();
   let canceledByUser = false; // 用户点了横幅上的「取消」：本回合不再附加，回合结束后复位
@@ -108,7 +123,11 @@ export function createCdpDriver({ inject, fallback, debuggerApi = chrome.debugge
     const probe = () => inject(tabId, performAction, { session: payload.session, action: 'probe' });
     const before = await probe();
     const base = { key: payload.key, code: spec.code, windowsVirtualKeyCode: spec.keyCode, nativeVirtualKeyCode: spec.keyCode };
-    await send(tabId, 'Input.dispatchKeyEvent', { ...base, type: spec.text ? 'keyDown' : 'rawKeyDown', ...(spec.text ? { text: spec.text } : {}) });
+    const command = mac && before && before.ok && before.field ? MAC_FIELD_COMMANDS[payload.key] : '';
+    const commands = command ? { commands: [command] } : {};
+    await send(tabId, 'Input.dispatchKeyEvent', {
+      ...base, type: spec.text ? 'keyDown' : 'rawKeyDown', ...(spec.text ? { text: spec.text } : {}), ...commands,
+    });
     await send(tabId, 'Input.dispatchKeyEvent', { ...base, type: 'keyUp' });
     const after = await probe();
     const movedTo = before && after && after.ok && before.active !== after.active ? after.active || null : null;
