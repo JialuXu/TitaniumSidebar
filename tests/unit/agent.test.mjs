@@ -45,7 +45,11 @@ function fakeProvider(overrides = {}) {
     act: () => ({ result: { ok: true, name: '提交' }, change: { navigated: false, newElements: [] } }),
     navigate: () => ({ navigated: true, title: '新页', url: 'https://b.test/', stats: { textTotal: 100 } }),
   };
-  const provider = { mask: (s) => s };
+  // 预检缺省是一个普通按钮，不需要确认（不记进 calls）
+  const provider = {
+    mask: (s) => s,
+    inspect: async () => ({ ok: true, of: 'click', via: 'click', name: '', label: '下一步', command: true, post: false, nearby: [], context: '', print: 'p' }),
+  };
   for (const [k, fn] of Object.entries({ ...base, ...overrides })) {
     provider[k] = async (arg) => {
       calls.push({ name: k, arg });

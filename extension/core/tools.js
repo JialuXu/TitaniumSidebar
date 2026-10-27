@@ -20,6 +20,9 @@
 //   —— 页内动作（注入 performAction）——
 //   act(payload)                         → { result: performAction 返回值, change: 页面变化|null }
 //                                           按 ref 的动作在页面未跳转时，change.target 是该 ref 稳定后的 ElementInfo
+//   inspect(payload)                     → performAction 的 inspect 结果（只读预检，见 core/action-guard.js）
+//   confirm(request, signal)             → Promise<boolean>：请用户批准一次高风险动作；没有这个方法时
+//                                           需要确认的动作一律不执行
 //   —— 浏览器级动作（chrome.tabs）——
 //   navigate({ url }) / goBack() / refresh()        → 页面变化（url 已在这里校验为 http/https）
 //   openTab({ url }) / switchTab({ tabId })         → 页面变化
@@ -37,6 +40,7 @@ import {
   TOGGLE_ROLES, formatCodeResult, clipMiddle,
 } from './format.js';
 import { t, q } from './i18n.js';
+import { guardAction } from './action-guard.js';
 
 /** 纯感知模式下每个用户回合的最大工具轮数，超过后强制模型直接作答 */
 export const MAX_TOOL_ROUNDS = 5;
@@ -164,7 +168,10 @@ export function buildToolDefs({ vision = false, actions = false } = {}) {
   if (actions) {
     defs.push(
       fn('click_element', t('tool.click.d'),
-        { ref: { type: 'integer', description: t('tool.click.ref') } },
+        {
+          ref: { type: 'integer', description: t('tool.click.ref') },
+          irreversible: { type: 'boolean', description: t('tool.click.irreversible') },
+        },
         ['ref']),
 
       fn('input_text', t('tool.input.d'),
@@ -185,6 +192,7 @@ export function buildToolDefs({ vision = false, actions = false } = {}) {
         {
           key: { type: 'string', enum: ALLOWED_KEYS, description: t('tool.key.key') },
           ref: { type: 'integer', description: t('tool.key.ref') },
+          irreversible: { type: 'boolean', description: t('tool.key.irreversible') },
         },
         ['key']),
 
@@ -201,6 +209,7 @@ export function buildToolDefs({ vision = false, actions = false } = {}) {
                 option: { type: 'string', description: t('tool.batch.option') },
                 key: { type: 'string', enum: ALLOWED_KEYS, description: t('tool.batch.key') },
                 direction: { type: 'string', enum: SCROLL_DIRECTIONS, description: t('tool.batch.direction') },
+                irreversible: { type: 'boolean', description: t('tool.batch.irreversible') },
               },
               required: ['action'],
             },
@@ -270,6 +279,15 @@ function describeFailure(result, args) {
       return t('fail.badTableIndex', { total: result.total });
     case 'no-body':
       return t('fail.noBody');
+    // 执行前确认没有通过：动作都没有执行
+    case 'denied':
+      return t('fail.denied');
+    case 'changed':
+      return t('fail.changed');
+    case 'unconfirmed':
+      return t('fail.unconfirmed');
+    case 'aborted':
+      return t('sys.aborted');
     default:
       return t('fail.default');
   }
@@ -474,7 +492,8 @@ function withChange(text, change) {
  * @param {{ readChars?: number, url?: string, textTotal?: number, signal?: AbortSignal }} [turn]
  *   本回合的读取账本与「模型手里那份页面」的基准：外壳在回合开始时按 sentPage 填好，
  *   读取时对不上就给模型一句告警（位置会随页面变化漂移，不变式 9）。
- *   signal 是本回合的中止信号，用户点「停止」时正在运行的代码随之终止。
+ *   signal 是本回合的中止信号，用户点「停止」时正在运行的代码随之终止、等待中的确认随之作废。
+ *   guardDenials（本函数懒创建）记下本回合用户拒绝过的动作，模型再请求同一个就直接拒绝、不再弹窗。
  * @param {Set<string>} [registered] 本次请求实际注册的工具名。不在其中的调用一律不执行：
  *   开关只决定工具组不组进请求，网关照样可能返回未注册的 click_element / capture_screenshot，
  *   不拦就等于绕过「允许页面操作」与视觉开关。缺省视为什么都没注册，而不是不校验。
@@ -516,9 +535,23 @@ export async function dispatchToolCall(call, provider, turn = {}, registered = n
     return withChange(text, change);
   };
 
+  // 页内动作都经门控：点击与回车先预检，高风险的请用户批准后才执行（core/action-guard.js）。
+  // 放在 core 而不是外壳的 provider.act 里：任何外壳只要实现 provider，就带着这道门
+  const denials = turn.guardDenials || (turn.guardDenials = new Set());
+  const guardedAct = (spec, a, step) => guardAction({
+    payload: spec.payload(a),
+    declared: a.irreversible === true || a.irreversible === 'true',
+    inspect: provider.inspect ? (p) => provider.inspect(p) : null,
+    confirm: provider.confirm ? (request, signal) => provider.confirm(request, signal) : null,
+    execute: (p) => provider.act(p),
+    denials,
+    signal: turn.signal,
+    step,
+  });
+
   // 页内单步动作的公共壳：失败映射成可读文案，成功拼「结果描述 + 页面变化摘要」
   const doAct = async (spec) => {
-    const { result, change } = await provider.act(spec.payload(args));
+    const { result, change } = await guardedAct(spec, args);
     meta.data = spec.ui(args);
     if (!result || !result.ok) {
       meta.data.reason = result && result.reason;
@@ -554,7 +587,7 @@ export async function dispatchToolCall(call, provider, turn = {}, registered = n
       if (!spec) { failAt(t('res.batchBadStep', { action: String(a.action || '') }), 'bad-step'); break; }
       let outcome;
       try {
-        outcome = await provider.act(spec.payload(a));
+        outcome = await guardedAct(spec, a, i + 1);
       } catch (err) {
         failAt((err && err.message) || t('res.toolFailed'), 'error');
         break;

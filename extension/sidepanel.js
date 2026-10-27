@@ -402,6 +402,12 @@ async function requireSnapshotTab() {
   return tab;
 }
 
+// 改动页面与浏览器的动作执行前再看一眼总开关：工具在请求发出时就已注册，用户在回合中途
+// （包括等待确认期间）关掉开关后，此后的动作与跳转都不再执行
+function requireActionsOn() {
+  if (!state.config.actionsEnabled) throw new Error(t('sys.actionsOff'));
+}
+
 // 刷新元素快照：老元素保号、新元素续编；session 过期或缺失（页面已导航、
 // 或恢复历史会话后 page 已归零）时自动全量重建，模型据此拿到当前页面的有效编号。
 // 全量重建的结果带 rebuilt：状态基准随之重置，这一次比不出「哪些元素变了」
@@ -657,11 +663,25 @@ const provider = {
 
   /* ---------- 页内动作（经执行驱动，见 drivers/index.js） ---------- */
 
+  // 高风险动作的只读预检（判定与确认在 core/action-guard.js，经 core/tools.js 调用）：
+  // 与 act 同一套守卫；只读，两条通道都一样，走合成事件通道的注入
+  async inspect(payload) {
+    const tab = await requireSnapshotTab();
+    requireActionsOn();
+    if (!state.page.session) throw new Error(t('sys.noRefMapping'));
+    const res = await drivers.synthetic.act(tab.id, {
+      ...payload, action: 'inspect', of: payload.action, session: state.page.session,
+    });
+    if (!res) throw new Error(t('sys.actFailed'));
+    return res;
+  },
+
   // 纯读取的动作不需要同步页面变化；点击与按键可能触发跳转，需等加载完成
   async act(payload) {
     const READ_ONLY = { extract_table: 1, get_html: 1 };
     const MAY_NAVIGATE = { click: 1, key: 1 };
     const tab = await requireSnapshotTab();
+    if (!READ_ONLY[payload.action]) requireActionsOn();
     // 没有 session 就没有有效的 ref 映射，也就没人担保「操作的是不是那一页」：
     // 恢复历史会话后直接「重新生成」时 state.page 已归零（tabId 也是 null，守卫形同虚设），
     // 模型重放的旧编号会落在当前页面某个陌生元素上。按 ref 的动作由 core 的 session
@@ -690,12 +710,14 @@ const provider = {
 
   // url 已由 core/tools.js 校验为 http/https
   async navigate({ url }) {
+    requireActionsOn();
     const tab = await requireSnapshotTab();
     await chrome.tabs.update(tab.id, { url });
     return await afterNavigation(tab.id);
   },
 
   async goBack() {
+    requireActionsOn();
     const tab = await requireSnapshotTab();
     try {
       await chrome.tabs.goBack(tab.id);
@@ -706,6 +728,7 @@ const provider = {
   },
 
   async refresh() {
+    requireActionsOn();
     const tab = await requireSnapshotTab();
     await chrome.tabs.reload(tab.id);
     return await afterNavigation(tab.id);
@@ -714,11 +737,13 @@ const provider = {
   // 新开与切换标签页本身就是在转移工作页，不走 requireSnapshotTab 守卫；
   // 它们把目标页设为激活页并更新 state.page.tabId，维持「激活页 === 工作页」不变式
   async openTab({ url }) {
+    requireActionsOn();
     const tab = await chrome.tabs.create({ url, active: true });
     return await afterNavigation(tab.id);
   },
 
   async switchTab({ tabId }) {
+    requireActionsOn();
     if (!Number.isInteger(tabId)) throw new Error(t('sys.badTabId'));
     let tab;
     try {
@@ -730,6 +755,7 @@ const provider = {
   },
 
   async closeTab({ tabId }) {
+    requireActionsOn();
     const target = tabId == null ? state.page.tabId : tabId;
     if (target == null) throw new Error(t('sys.noWorkTab'));
     const closingWorkTab = target === state.page.tabId;
@@ -946,6 +972,61 @@ function attachCodeDetail(row, args, content) {
   row.querySelector('.tool-text').appendChild(details);
 }
 
+// 高风险动作的执行前确认：活动行下方一个确认块（文案由 core/action-guard.js 拼好），
+// 用户点「批准执行」或「拒绝」后撤掉；停止与「新对话」经 signal 作废它。
+// 不用 window.confirm：模态框挡住面板，「停止」就点不到了。页面文字只经 textContent 写入
+function askApproval(row, request, signal) {
+  return new Promise((resolve) => {
+    if (!row || (signal && signal.aborted)) return resolve(false);
+    const box = document.createElement('div');
+    box.className = 'guard-ask';
+    const head = document.createElement('div');
+    head.className = 'guard-head';
+    head.textContent = t('ui.guardHead');
+    const action = document.createElement('div');
+    action.className = 'guard-action';
+    action.textContent = request.action;
+    box.append(head, action);
+    for (const text of [request.reason, ...(request.details || [])]) {
+      const line = document.createElement('div');
+      line.className = 'guard-line';
+      line.textContent = text;
+      box.appendChild(line);
+    }
+    const buttons = document.createElement('div');
+    buttons.className = 'guard-buttons';
+    const approve = document.createElement('button');
+    approve.type = 'button';
+    approve.className = 'primary-btn';
+    approve.textContent = t('ui.guardApprove');
+    const deny = document.createElement('button');
+    deny.type = 'button';
+    deny.className = 'ghost-btn';
+    deny.textContent = t('ui.guardDeny');
+    buttons.append(approve, deny);
+    box.appendChild(buttons);
+
+    let done = false;
+    const finish = (answer) => {
+      if (done) return;
+      done = true;
+      approve.disabled = true;
+      deny.disabled = true;
+      if (signal) signal.removeEventListener('abort', onAbort);
+      box.remove();
+      row.classList.remove('waiting');
+      resolve(answer);
+    };
+    const onAbort = () => finish(false);
+    approve.addEventListener('click', () => finish(true));
+    deny.addEventListener('click', () => finish(false));
+    if (signal) signal.addEventListener('abort', onAbort);
+    row.classList.add('waiting');
+    row.querySelector('.tool-text').appendChild(box);
+    maybeScroll();
+  });
+}
+
 /* ========== 过程时间轴 ========== */
 // 一条 AI 回复里最终回答之前的全部过程——活动行与中途的说明段——收进 .tool-trace，
 // 左侧一条浅色竖线把各步串成时间轴；回合结束后 settleTrace 配上摘要行并折叠，点击展开。
@@ -1100,9 +1181,12 @@ async function runAgentLoop(el) {
     el.root.appendChild(thinking);
   };
 
+  // 本回合的 provider：确认块挂在正在执行的那一行下面
+  const turnProvider = { ...provider, confirm: (request, sig) => askApproval(row, request, sig) };
+
   const events = runAgentTurn({
     messages,
-    provider,
+    provider: turnProvider,
     profile,
     actionsEnabled: Boolean(state.config.actionsEnabled),
     skillId: state.skillId,

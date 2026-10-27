@@ -8,6 +8,7 @@
 // 这是所有形态都有的通道（未来的 SDK 形态在页内运行，只有这一条路）。扩展外壳另有一条
 // 调试通道（extension/drivers/cdp.js）发真实输入，它借本文件的 locate / focus / probe
 // 三个动作在页面里定位元素、聚焦、读取光标与滚动状态，输入本身不经过这里。
+// 高风险动作执行前先经 inspect 预检（判定在 core/action-guard.js），批准后的载荷带 expect 复验。
 //
 // 与真实用户操作的差异（模型需要知道，已写进工具描述）：
 //   1. 合成事件的 isTrusted 为 false，极少数站点会据此忽略；
@@ -17,8 +18,8 @@
 
 /**
  * 在页面上执行一个动作。
- * @param {{ action: 'click'|'input'|'select'|'key'|'scroll'|'extract_table'|'get_html'|'locate'|'focus'|'probe',
- *           session: string, ref?: number, text?: string, option?: string, key?: string,
+ * @param {{ action: 'click'|'input'|'select'|'key'|'scroll'|'extract_table'|'get_html'|'locate'|'focus'|'probe'|'inspect',
+ *           session: string, ref?: number, text?: string, option?: string, key?: string, expect?: string, of?: 'click'|'key',
  *           direction?: 'up'|'down'|'top'|'bottom', pages?: number,
  *           tableIndex?: number, maxLen?: number, format?: 'rows',
  *           i18n?: { passwordMasked, tableTruncated, htmlTruncated } }} payload
@@ -29,12 +30,18 @@
  *          | { ok: false, reason: string, ... }}
  *   失败 reason 全集：no-body | bad-action | stale | bad-ref | gone | hidden |
  *                     disabled | not-editable | not-select | option-not-found |
- *                     bad-key | bad-table-index
+ *                     bad-key | bad-table-index | changed
  *   调试通道用的三个动作（不改动页面，focus 除外）：
  *     locate  { ref }           滚到可见处，返回点击点在顶层视口里的坐标 x/y；
  *                               safe=false 表示中心点被遮挡或落在内部另一个控件上，真实点击会点错
  *     focus   { ref, select? }  聚焦元素，select 时选中全部内容；返回 editable / password
  *     probe   {}                当前焦点元素与光标、滚动位置的快照，按键前后各取一次比较
+ *   预检（只读，不滚动、不聚焦、不派发事件）：
+ *     inspect { of, ref?, key? } 动作实际会触发什么：via（click | submit | send | none）、触发控件的
+ *                               label 与是否命令类（command）、会否提交 post 表单（post）、
+ *                               回车发送时附近按钮的名称（nearby）、所在对话框或表单的文字（context），
+ *                               以及由这些现算的指纹 print
+ *   click / key / locate / probe 带 expect 时先现算指纹，与 expect 不一致返回 changed、不派发任何事件
  */
 export function performAction(payload) {
   const opts = payload || {};
@@ -514,11 +521,186 @@ export function performAction(payload) {
     return { rows: grid, rowCount: trs.length, colCount, keptRows: grid.length };
   }
 
+  /* ---------- 高风险动作的预检（风险判定在 core/action-guard.js） ---------- */
+
+  // 预检只读页面：不滚动、不聚焦、不派发事件。报出动作实际会触发什么、触发控件叫什么、
+  // 所在对话框或表单写了什么，并把这些现算成指纹 print；批准后的执行载荷带回它（verifyExpect）。
+
+  // 不算「命令」的控件：改的是勾选、选中、草稿这类状态，或是去另一页的链接
+  const NON_COMMAND_ROLES = {
+    link: 1, checkbox: 1, radio: 1, switch: 1, tab: 1, option: 1, treeitem: 1, textbox: 1, searchbox: 1,
+    combobox: 1, listbox: 1, slider: 1, spinbutton: 1, menuitemcheckbox: 1, menuitemradio: 1,
+  };
+  const BUTTON_TYPES = { submit: 1, button: 1, reset: 1, image: 1 };
+  const TEXT_TYPES = { text: 1, search: 1, email: 1, url: 1, tel: 1, number: 1, password: 1 };
+  const COMMANDS = 'button,input[type=submit],input[type=button],input[type=image],a,[role=button],[role=menuitem],[onclick]';
+  const DIALOGS = 'dialog,[role=dialog],[role=alertdialog],[role=tooltip],[aria-modal=true]';
+
+  function inputType(el) {
+    return el.tagName.toUpperCase() === 'INPUT' ? (el.getAttribute('type') || 'text').toLowerCase() : '';
+  }
+
+  // 触发控件的名称：<input type=submit> 的文字在 value 里（那是按钮的名字，不是用户填的值）
+  function labelOf(el) {
+    if (BUTTON_TYPES[inputType(el)]) return clamp(el.value || el.getAttribute('alt') || '', 80) || nameOf(el);
+    return nameOf(el);
+  }
+
+  // 输入区只取标注出来的名字：textContent 是草稿内容，不进预检结果
+  function fieldName(el) {
+    return clamp(el.getAttribute('aria-label') || el.getAttribute('placeholder') ||
+      el.getAttribute('title') || el.getAttribute('name') || '', 80);
+  }
+
+  // Rails / Turbo 的 data-method 链接由脚本改发非 GET 请求
+  function linkMethod(el) {
+    const m = (el.getAttribute('data-method') || el.getAttribute('data-turbo-method') || '').toLowerCase();
+    return m && m !== 'get' ? m : '';
+  }
+
+  // 带真实地址的链接：点它是去另一页。# 与 javascript: 链接实际是脚本里的命令
+  function realLink(el) {
+    if (el.tagName.toUpperCase() !== 'A' || !el.hasAttribute('href') || linkMethod(el)) return false;
+    const href = (el.getAttribute('href') || '').trim().toLowerCase();
+    return href !== '' && href[0] !== '#' && !href.startsWith('javascript:');
+  }
+
+  function isCommand(el) {
+    const tag = el.tagName.toUpperCase();
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    if (role === 'button' || role === 'menuitem') return true;
+    if (NON_COMMAND_ROLES[role]) return false;
+    if (tag === 'INPUT') return Boolean(BUTTON_TYPES[inputType(el)]);
+    if (tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'OPTION' || tag === 'LABEL' || selfEditable(el)) return false;
+    return !realLink(el);
+  }
+
+  function textEntry(el) {
+    const tag = el.tagName.toUpperCase();
+    if (tag === 'TEXTAREA') return true;
+    if (tag === 'INPUT') return Boolean(TEXT_TYPES[inputType(el)]);
+    return selfEditable(el);
+  }
+
+  // 焦点在这些元素上时回车等于点击（与 keyDefault 的补偿、真实回车的默认行为一致）
+  function activatesOnEnter(el) {
+    const tag = el.tagName.toUpperCase();
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    return tag === 'BUTTON' || tag === 'A' || tag === 'SUMMARY' || Boolean(BUTTON_TYPES[inputType(el)]) ||
+      role === 'button' || role === 'menuitem';
+  }
+
+  // 提交是否走 method=post（method=dialog 只关对话框，不发请求）
+  function formPost(form, submitter) {
+    const method = (submitter && submitter.getAttribute('formmethod')) || form.getAttribute('method') || 'get';
+    return method.toLowerCase() === 'post';
+  }
+
+  // 点击这个控件会不会提交 post 表单
+  function submitsPost(el) {
+    if (el.tagName.toUpperCase() === 'A') return Boolean(linkMethod(el));
+    const type = el.tagName.toUpperCase() === 'BUTTON' ? (el.getAttribute('type') || 'submit').toLowerCase() : inputType(el);
+    if (type !== 'submit' && type !== 'image') return false;
+    return Boolean(el.form) && formPost(el.form, el);
+  }
+
+  // 回车提交时的默认按钮：表单里（含 form 属性关联的）第一个提交按钮
+  function defaultSubmitter(form) {
+    for (const el of form.elements) {
+      const tag = el.tagName.toUpperCase();
+      if (tag === 'BUTTON' && (el.getAttribute('type') || 'submit').toLowerCase() === 'submit') return el;
+      if (tag === 'INPUT' && (inputType(el) === 'submit' || inputType(el) === 'image')) return el;
+    }
+    return null;
+  }
+
+  // 所在对话框的正文；不在对话框里时取表单的标题。所在行的文字不算：列表每一行都有「删除」
+  function contextOf(el) {
+    const box = el.closest(DIALOGS);
+    if (box) return clamp(box.textContent || '', 300);
+    const form = el.form || el.closest('form');
+    if (!form) return '';
+    const head = form.querySelector('legend,h1,h2,h3,h4');
+    return clamp(form.getAttribute('aria-label') || form.getAttribute('title') || (head ? head.textContent : ''), 120);
+  }
+
+  // 搜索框里的回车是查询
+  function searchField(el) {
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    if (inputType(el) === 'search' || role === 'searchbox' || role === 'combobox' || el.closest('[role=search]')) return true;
+    const hint = [el.getAttribute('aria-label'), el.getAttribute('placeholder'), el.getAttribute('name'), el.getAttribute('title')].join(' ');
+    return /搜索|查找|检索|search|query/i.test(hint);
+  }
+
+  // 聊天框、评论框的「发送」按钮与输入区同在一个容器里：向上找第一层含有其他命令控件的祖先
+  function nearbyLabels(el) {
+    let p = el.parentElement;
+    for (let depth = 0; p && depth < 5 && p !== p.ownerDocument.body; depth++, p = p.parentElement) {
+      const labels = [];
+      for (const c of p.querySelectorAll(COMMANDS)) {
+        if (c === el || c.contains(el) || !isCommand(c) || isHidden(c)) continue;
+        const name = labelOf(c);
+        if (name) labels.push(name);
+        if (labels.length >= 10) break;
+      }
+      if (labels.length) return labels;
+    }
+    return [];
+  }
+
+  // of 是将要执行的动作（click | key）。via：click 点这个控件；submit 回车提交所在表单；
+  // send 回车落在不提交表单的输入区（聊天框按回车就发出去了）；none 其余情形
+  function inspectTarget(of) {
+    const key = of === 'key' ? String(opts.key || '') : '';
+    let target = null;
+    if (opts.ref != null) {
+      const got = resolveElement(opts.ref, true);
+      if (got.err) return { ok: false, reason: got.err };
+      target = got.el;
+    } else if (of === 'key') {
+      const a = activeElement();
+      const d = a && a.ownerDocument;
+      if (a && !((a === d.body || a === d.documentElement) && !selfEditable(a))) target = a;
+    }
+    const out = { ok: true, of, key, name: '', via: 'none', label: '', command: false, post: false, nearby: [], context: '' };
+    if (target) {
+      const entry = textEntry(target);
+      out.name = entry ? fieldName(target) : labelOf(target);
+      out.context = contextOf(target);
+      const enter = key === 'Enter';
+      if (of === 'click' || (enter && activatesOnEnter(target))) {
+        Object.assign(out, { via: 'click', label: out.name, command: isCommand(target), post: submitsPost(target) });
+      } else if (enter && entry) {
+        // 与 keyDefault 同一判定：textarea 的回车是换行，其余输入区在表单里回车即提交
+        const form = target.tagName.toUpperCase() === 'TEXTAREA' ? null : (target.form || target.closest('form'));
+        if (form) {
+          const submitter = defaultSubmitter(form);
+          Object.assign(out, { via: 'submit', label: submitter ? labelOf(submitter) : '', command: true, post: formPost(form, submitter) });
+        } else if (!searchField(target)) {
+          Object.assign(out, { via: 'send', nearby: nearbyLabels(target) });
+        }
+      }
+    }
+    out.print = [out.of, out.key, out.via, out.name, out.label, out.command ? 1 : 0, out.post ? 1 : 0,
+      out.nearby.join('\u0001'), out.context].join('\u0002');
+    return out;
+  }
+
+  // 批准后的执行载荷带着预检时的指纹：派发任何事件之前现算一遍，对不上（目标或所在对话框变了）就不执行
+  function verifyExpect(of) {
+    if (typeof opts.expect !== 'string') return null;
+    const now = inspectTarget(of);
+    if (!now.ok) return now;
+    return now.print === opts.expect ? null : { ok: false, reason: 'changed' };
+  }
+
   /* ---------- 动作分派 ---------- */
 
   switch (action) {
     /* —— 点击 —— */
     case 'click': {
+      const changed = verifyExpect('click');
+      if (changed) return changed;
       const got = resolveElement(opts.ref, true);
       if (got.err) return { ok: false, reason: got.err };
       const el = got.el;
@@ -652,6 +834,8 @@ export function performAction(payload) {
       };
       const spec = KEYS[opts.key];
       if (!spec) return { ok: false, reason: 'bad-key' };
+      const changed = verifyExpect('key');
+      if (changed) return changed;
 
       let target;
       if (opts.ref != null) {
@@ -800,6 +984,8 @@ export function performAction(payload) {
 
     /* —— 调试通道：定位点击点 —— */
     case 'locate': {
+      const changed = verifyExpect('click');
+      if (changed) return changed;
       const got = resolveElement(opts.ref, true);
       if (got.err) return { ok: false, reason: got.err };
       const el = got.el;
@@ -852,6 +1038,8 @@ export function performAction(payload) {
 
     /* —— 调试通道：焦点、光标与滚动的快照 —— */
     case 'probe': {
+      const changed = verifyExpect('key');
+      if (changed) return changed;
       const a = activeElement();
       const d = a ? a.ownerDocument : doc;
       const view = (a && viewOf(a)) || win;
@@ -867,6 +1055,12 @@ export function performAction(payload) {
         areaTop: area && !area.page ? area.el.scrollTop : null,
         pageTop: scroller.scrollTop,
       });
+    }
+
+    /* —— 高风险动作的预检（只读） —— */
+    case 'inspect': {
+      const info = inspectTarget(opts.of === 'key' ? 'key' : 'click');
+      return info.ok ? finish(info) : info;
     }
 
     default:

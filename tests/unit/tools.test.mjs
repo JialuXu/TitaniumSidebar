@@ -19,7 +19,7 @@ const call = (name, args, id = 'call_1') => ({ id, name, arguments: args === und
 
 /**
  * 假 provider：每个方法记下调用参数；默认返回值可按测试覆写。
- * mask 用真实的脱敏函数，验证工具结果统一过脱敏。
+ * mask 用真实的脱敏函数，验证工具结果统一过脱敏。缺省没有 confirm：需要确认的动作一律不执行。
  */
 function fakeProvider(overrides = {}) {
   const calls = [];
@@ -39,10 +39,13 @@ function fakeProvider(overrides = {}) {
     listTabs: [],
     runCode: { stdout: '', stderr: '', exitCode: 0 },
   };
-  const provider = { mask: (s) => maskSensitive(s).text };
+  const provider = { mask: (s) => maskSensitive(s).text, inspect: async () => ({ ...SAFE_INSPECT }) };
   for (const [k, v] of Object.entries({ ...base, ...overrides })) provider[k] = record(k, v);
   return { provider, calls };
 }
+
+// 预检的缺省结果：一个普通按钮，不需要确认（不记进 calls，各用例照旧只看动作本身；门控的用例单独覆写）
+const SAFE_INSPECT = { ok: true, of: 'click', via: 'click', name: '下一步', label: '下一步', command: true, post: false, nearby: [], context: '', print: 'p' };
 
 /* ========== 工具定义 ========== */
 
@@ -395,6 +398,90 @@ test('batch_actions：勾选态没变的步骤计入 noEffect', async () => {
   assert.equal(res.meta.data.noEffect, 1);
   // 多行的步骤结果缩进续行，仍归在这一步下面
   assert.ok(res.toolMessage.content.includes(`\n   ${t('res.clickNoEffect')}`));
+});
+
+/* ========== 高风险动作的执行前确认（core/action-guard.js 接在分发里） ========== */
+
+// 预检出一个「删除」按钮；confirm 按给定的回答记账
+const RISKY = { ok: true, of: 'click', via: 'click', name: '删除', label: '删除', command: true, post: false, nearby: [], context: '', print: 'p:删除' };
+function guarded(answer, overrides = {}) {
+  const asked = [];
+  const { provider, calls } = fakeProvider({
+    inspect: (p) => (p.ref === 9 ? RISKY : { ...RISKY, label: '下一步', name: '下一步', print: 'p:下一步' }),
+    ...overrides,
+  });
+  provider.confirm = async (request) => { asked.push(request); return answer; };
+  const acts = () => calls.filter((c) => c.name === 'act');
+  return { provider, asked, acts };
+}
+
+test('第 14 条：高风险点击被拒时 provider.act 零调用，结果写明未执行、不要重试', async () => {
+  const { provider, asked, acts } = guarded(false);
+  const res = await dispatchToolCall(call('click_element', { ref: 9 }), provider, {}, ACTIONS());
+  assert.equal(asked.length, 1);
+  assert.equal(acts().length, 0);
+  assert.equal(res.meta.ok, false);
+  assert.equal(res.meta.data.reason, 'denied');
+  assert.equal(res.toolMessage.content, t('fail.denied'));
+});
+
+test('第 14 条：批准后执行一次，载荷带预检指纹', async () => {
+  const { provider, acts } = guarded(true);
+  const res = await dispatchToolCall(call('click_element', { ref: 9 }), provider, {}, ACTIONS());
+  assert.deepEqual(acts().map((c) => c.arg), [{ action: 'click', ref: 9, expect: 'p:删除' }]);
+  assert.equal(res.meta.ok, true);
+});
+
+test('第 14 条：没有确认渠道的外壳里，高风险动作不执行', async () => {
+  const { provider, calls } = fakeProvider({ inspect: () => RISKY });
+  const res = await dispatchToolCall(call('click_element', { ref: 9 }), provider, {}, ACTIONS());
+  assert.equal(calls.filter((c) => c.name === 'act').length, 0);
+  assert.equal(res.toolMessage.content, t('fail.unconfirmed'));
+});
+
+test('第 14 条：同一回合里重复请求被拒过的动作，不再弹窗；新回合重新确认', async () => {
+  const { provider, asked, acts } = guarded(false);
+  const turn = {};
+  await dispatchToolCall(call('click_element', { ref: 9 }, 'c1'), provider, turn, ACTIONS());
+  await dispatchToolCall(call('click_element', { ref: 9 }, 'c2'), provider, turn, ACTIONS());
+  assert.equal(asked.length, 1);
+  await dispatchToolCall(call('click_element', { ref: 9 }, 'c3'), provider, {}, ACTIONS());
+  assert.equal(asked.length, 2);
+  assert.equal(acts().length, 0);
+});
+
+test('第 14 条：批量在风险步骤暂停，被拒后当前及后续步骤不执行，已完成的如实保留', async () => {
+  const { provider, asked, acts } = guarded(false, { act: { result: { ok: true, name: '姓名', value: '张三' }, change: quiet() } });
+  const res = await dispatchToolCall(batch([
+    { action: 'input', ref: 3, text: '张三' },
+    { action: 'click', ref: 9 },
+    { action: 'input', ref: 4, text: '李四' },
+  ]), provider, {}, ACTIONS());
+  assert.deepEqual(acts().map((c) => c.arg), [{ action: 'input', ref: 3, text: '张三' }]);
+  assert.ok(asked[0].action.startsWith(t('guard.step', { n: 2 })));
+  assert.ok(res.toolMessage.content.includes(t('res.batchStep', { n: 2, text: t('fail.denied') })));
+  assert.ok(res.toolMessage.content.includes(t('res.batchFailed', { n: 2, rest: 1 })));
+  assert.equal(res.meta.data.done, 1);
+  assert.equal(res.meta.data.reason, 'denied');
+});
+
+test('第 14 条：模型声明 irreversible 时，规则没命中也要确认；输入类动作不预检', async () => {
+  const { provider, asked, acts } = guarded(true);
+  await dispatchToolCall(call('click_element', { ref: 5, irreversible: true }), provider, {}, ACTIONS());
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].reason, t('guard.reason', { risks: t('guard.risk.declared') }));
+  await dispatchToolCall(call('click_element', { ref: 5 }), provider, {}, ACTIONS());
+  assert.equal(asked.length, 1, '没声明、规则也没命中就不弹');
+  await dispatchToolCall(call('input_text', { ref: 5, text: 'x' }), provider, {}, ACTIONS());
+  assert.equal(acts().length, 3);
+});
+
+test('irreversible 参数出现在点击、按键与批量步骤的定义里', () => {
+  const defs = Object.fromEntries(buildToolDefs({ actions: true }).map((d) => [d.function.name, d.function.parameters]));
+  assert.equal(defs.click_element.properties.irreversible.type, 'boolean');
+  assert.equal(defs.press_key.properties.irreversible.type, 'boolean');
+  assert.equal(defs.batch_actions.properties.steps.items.properties.irreversible.type, 'boolean');
+  assert.ok(!defs.input_text.properties.irreversible);
 });
 
 test('mergePageChanges：新增取并集并剔除已消失的，状态变化取最早 from 与最晚 to', () => {

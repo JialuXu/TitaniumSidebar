@@ -103,6 +103,7 @@ export function createCdpDriver({ inject, fallback, debuggerApi = chrome.debugge
   }
 
   async function click(tabId, payload) {
+    // 批准过的点击带着 expect：locate 先复验，没过就不点（退回合成事件时同样会再复验一次）
     const loc = await inject(tabId, performAction, { ...payload, action: 'locate' });
     if (!loc || !loc.ok) return loc;
     if (!loc.safe) return { ...(await fallback.act(tabId, payload)), fallback: 'unsafe-point' };
@@ -120,8 +121,11 @@ export function createCdpDriver({ inject, fallback, debuggerApi = chrome.debugge
       const focused = await inject(tabId, performAction, { ...payload, action: 'focus' });
       if (!focused || !focused.ok) return focused;
     }
-    const probe = () => inject(tabId, performAction, { session: payload.session, action: 'probe' });
-    const before = await probe();
+    const probe = (extra) => inject(tabId, performAction, { session: payload.session, action: 'probe', ...extra });
+    // 批准过的按键在发真实按键前的最后一次注入里复验（与合成事件通道的 key 分支同一份指纹）；
+    // 复验没过或注入失败都不发按键
+    const before = await probe(payload.expect == null ? {} : { expect: payload.expect, ref: payload.ref, key: payload.key });
+    if (payload.expect != null && !(before && before.ok)) return before;
     const base = { key: payload.key, code: spec.code, windowsVirtualKeyCode: spec.keyCode, nativeVirtualKeyCode: spec.keyCode };
     const command = mac && before && before.ok && before.field ? MAC_FIELD_COMMANDS[payload.key] : '';
     const commands = command ? { commands: [command] } : {};
