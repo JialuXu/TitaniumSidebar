@@ -3,7 +3,7 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  BUDGETS, clampText, formatOutline, formatElements, formatTextDiff,
+  BUDGETS, clampText, cleanTitle, formatOutline, formatElements, formatTextDiff,
   formatReadResult, formatSearchResults, formatPageChange, formatPageStatus, formatTabs, formatStateChanges,
   clipMiddle, formatCodeResult,
 } from '../../extension/core/format.js';
@@ -22,6 +22,24 @@ test('clampText', () => {
   assert.equal(clampText('abcdef', 3), 'abc…');
   assert.equal(clampText('abc', 3), 'abc');
   assert.equal(clampText(null, 3), '');
+});
+
+test('第 42 条：cleanTitle 只剥两端的格式字符与空白，标题中间的组合 emoji 不动', () => {
+  const zw = '\u200b\u200c\u200d\u2060\u2061\u2062\u2063\u2064\ufeff';
+  assert.equal(cleanTitle(zw.repeat(5) + '季度报表 - 在线文档'), '季度报表 - 在线文档');
+  assert.equal(cleanTitle('\u200f\u202bעמוד הבית\u202c\u200e '), 'עמוד הבית', 'RTL 站点的双向控制符');
+  assert.equal(cleanTitle('  标题\ufeff'), '标题');
+  assert.equal(cleanTitle('开发者 👩\u200d💻 手册'), '开发者 👩\u200d💻 手册');
+  assert.equal(cleanTitle(zw), '');
+  assert.equal(cleanTitle(undefined), '');
+});
+
+test('第 42 条：外壳直传的 tab.title 进工具结果前剥掉零宽前缀，剥空了按无标题', () => {
+  const tabs = formatTabs([{ id: 1, title: '\u200b\u200b报表', url: 'https://a' }, { id: 2, title: '\u200b', url: 'https://b' }]);
+  assert.ok(tabs.includes('[tab_id=1] 报表'), tabs);
+  assert.ok(tabs.includes(`[tab_id=2] ${t('ui.untitled')}`), tabs);
+  const switched = formatPageChange({ navigated: false, newElements: [], userSwitched: { title: '\ufeff\u200b别的页', url: 'https://c' } });
+  assert.ok(switched.endsWith(t('fmt.chgUserSwitched', { title: '别的页' })), switched);
 });
 
 test('read_page_text 的三道闸：跨回合保留量 ≥ 单次上限（最近一次读取必留）', () => {
@@ -200,6 +218,16 @@ test('页面状态：单屏与滚动位置', () => {
     formatPageStatus({ h: 1000, scrollY: 1000, docH: 3000 }),
     t('fmt.scrollPos', { percent: 50, above: '1.0', below: '1.0' })
   );
+});
+
+test('第 43 条：页面统计报画布数、最大一块的尺寸与视口占比；没有画布不多一项', () => {
+  const canvasMax = { w: 1058, h: 716, percent: 74 };
+  const line = formatPageStatus(null, { totalElements: 79, canvases: 1, canvasMax });
+  assert.ok(line.includes(t('fmt.statCanvases', { n: 1, ...canvasMax })), line);
+  assert.ok(line.includes('1058×716') && line.includes('74%'), line);
+  assert.ok(!formatPageStatus(null, { totalElements: 79, canvases: 0, canvasMax: null }).includes('画布'));
+  setLocale('en');
+  assert.ok(formatPageStatus(null, { canvases: 2, canvasMax }).includes('canvas areas: 2'));
 });
 
 test('动作后的变化摘要：跳转、没有新增、用户自己切走', () => {

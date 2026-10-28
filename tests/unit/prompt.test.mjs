@@ -70,6 +70,21 @@ test('第 24 条：字数事实在 <页面内容> 标签之外，且不提工具
   assert.ok(!/read_page_text|find_in_page/.test(out));
 });
 
+test('第 43 条：画布与跨域框架的事实各一句，在 <页面内容> 之外、骨架之前，不提工具名', () => {
+  const canvasMax = { w: 1058, h: 716, percent: 74 };
+  const out = buildUserContent('q', '正文', '- main', '', { iframes: 2, canvases: 1, canvasMax });
+  const close = out.indexOf('</页面内容>');
+  const canvasAt = out.indexOf(t('prompt.pageCanvases', { n: 1, ...canvasMax }));
+  const iframeAt = out.indexOf(t('prompt.pageIframes', { n: 2 }));
+  assert.ok(canvasAt > close && iframeAt > close, out);
+  assert.ok(canvasAt < out.indexOf('<页面结构>') && iframeAt < out.indexOf('<页面结构>'), out);
+  assert.ok(!/extract_table|read_page_text|find_in_page|capture_screenshot/.test(out));
+  // 没有这些事实时不多出任何一行
+  assert.equal(buildUserContent('q', '正文', '', '', { iframes: 0, canvases: 0, canvasMax: null }), '<页面内容>\n正文\n</页面内容>\n\nq');
+  setLocale('en');
+  assert.ok(buildUserContent('q', 'body', '', '', { canvases: 1, canvasMax }).includes('Canvas areas on this page: 1'));
+});
+
 test('第 30 条：没有正文也给页面块并交代一句', () => {
   assert.ok(buildUserContent('q', '', '', '').includes(`<页面内容>\n${t('prompt.pageNoText')}\n</页面内容>`));
 });

@@ -59,6 +59,33 @@ export function highlightElement(payload) {
   if (style && (style.display === 'none' || style.visibility === 'hidden')) {
     return { ok: false, reason: 'hidden' };
   }
+  // 落在零尺寸裁剪容器里的元素看不见，框画出来也是一块空白（与 actions.js 的
+  // clippedByAncestor、snapshot.js 的 clipsAway 同一算法，自包含约束下各存一份）
+  function clipsAway(node) {
+    const tag = node.tagName ? node.tagName.toUpperCase() : '';
+    if (tag === 'HTML' || tag === 'BODY' || tag === 'IFRAME' || tag === 'FRAME') return false;
+    const v = node.ownerDocument && node.ownerDocument.defaultView;
+    const st = v ? v.getComputedStyle(node) : null;
+    if (!st) return false;
+    const cx = st.overflowX && st.overflowX !== 'visible';
+    const cy = st.overflowY && st.overflowY !== 'visible';
+    if (!cx && !cy) return false;
+    if (!st.position || st.position === 'static') return false;
+    if (st.display === 'inline' || st.display === 'contents') return false;
+    const r = node.getBoundingClientRect();
+    return (cx && r.width === 0) || (cy && r.height === 0);
+  }
+  for (let node = el; node;) {
+    let parent = node.parentElement;
+    if (!parent) {
+      try {
+        const v = node.ownerDocument && node.ownerDocument.defaultView;
+        parent = v ? v.frameElement : null;
+      } catch { parent = null; }
+    }
+    if (parent && clipsAway(parent)) return { ok: false, reason: 'hidden' };
+    node = parent;
+  }
 
   // behavior:'instant'：平滑滚动与紧随其后的 bbox 测量存在竞态，定位会画偏
   if (doScroll) box.scrollIntoView({ block: 'center', behavior: 'instant' });

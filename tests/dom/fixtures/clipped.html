@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>零尺寸裁剪容器</title>
+<style>
+  body { font: 14px/1.5 sans-serif; margin: 8px; }
+  .field { display: flex; gap: 8px; margin: 8px 0; }
+  /* 预渲染的下拉清单：没有 display:none，靠「高度 0 + overflow:hidden」把选项裁掉。
+     外层定位、高度 0 而 overflow 可见；内层绝对定位、高度 0、overflow:hidden。
+     组件库的单选/多选字段、在线表格的记录详情面板都是这个写法 */
+  .selector { position: relative; width: 300px; height: 33px; }
+  .tag { display: inline-block; padding: 2px 6px; background: #eef; }
+  .dd-wrap { position: relative; height: 0; overflow: visible; }
+  .dd { position: absolute; top: 0; left: 0; width: 168px; height: 0; overflow: hidden; background: #fff; }
+  .dd.open { height: auto; }
+  .opt { display: block; width: 65px; height: 22px; cursor: pointer; }
+  /* sr-only：1×1 + overflow:hidden，是有意留给读屏器的文字 */
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+  /* static 的收起容器裁不住绝对定位的后代，规则不碰它（内容照旧读出） */
+  .static-fold { height: 0; overflow: hidden; }
+  /* 缩成 0 宽的文本输入框：Chromium 默认给它 overflow:clip，自身仍要照常编号 */
+  .hidden-input { position: absolute; width: 0; height: 0; padding: 0; border: 0; opacity: 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>记录详情</h1>
+  <div class="field"><span>细分领域</span>
+    <div class="selector">
+      <span class="tag">投研＋投管</span>
+      <div class="dd-wrap"><div class="dd" id="dd1">
+        <div class="opt">投研＋投管</div><div class="opt">审计</div><div class="opt">风险合规</div><div class="opt">投行与融资</div>
+      </div></div>
+    </div>
+  </div>
+  <div class="field"><span>领题状态</span>
+    <div class="selector">
+      <span class="tag">已领</span>
+      <div class="dd-wrap"><div class="dd" id="dd2"><div class="opt">待领</div><div class="opt">已领</div></div></div>
+    </div>
+  </div>
+  <p>读屏提示：<span class="sr-only">仅供读屏器朗读的说明</span></p>
+  <div class="static-fold">静态收起区里的文字</div>
+  <input class="hidden-input" aria-label="隐藏的取值框">
+  <div class="dd-wrap"><div class="dd"><table><tr><th>收起区里的表</th></tr><tr><td>x</td></tr></table></div></div>
+  <table><tr><th>看得见的表</th></tr><tr><td>1</td></tr></table>
+</main>
+</body>
+</html>
