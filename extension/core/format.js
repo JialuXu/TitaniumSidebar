@@ -39,6 +39,15 @@ export function clampText(s, max, suffix = '…') {
 }
 
 /**
+ * 剥掉标题两端的格式字符（Unicode Cf 类：零宽空格、BOM、双向控制符等）与空白。
+ * 与 snapshot.js 取标题处同一规则；外壳从 chrome.tabs 拿到的 tab.title 不经快照，
+ * 进工具结果前在这里过一遍。只剥两端：U+200D 是组合 emoji 的粘合符，标题中间的不能动
+ */
+export function cleanTitle(title) {
+  return (title || '').replace(/^[\p{Cf}\s]+|[\p{Cf}\s]+$/gu, '');
+}
+
+/**
  * 结构骨架 → 缩进文本。示例：
  *   - header 「站点导航」
  *   - main
@@ -201,7 +210,7 @@ export function formatElements(elements, { budget = BUDGETS.elements, total, col
  * 页面位置与规模概览（列元素/报告页面变化时附在头部）。
  * 让模型知道「还有多少内容在视口外」，据此决定滚动还是搜索。
  * @param {{ h, scrollY, docH }} viewport snapshotPage 返回的 viewport
- * @param {{ totalElements?, tables?, iframes? }} [stats] snapshotPage 返回的 stats
+ * @param {{ totalElements?, tables?, iframes?, canvases?, canvasMax? }} [stats] snapshotPage 返回的 stats
  */
 export function formatPageStatus(viewport, stats) {
   const lines = [];
@@ -224,6 +233,7 @@ export function formatPageStatus(viewport, stats) {
     if (stats.textTotal && stats.textTruncated) parts.push(t('fmt.statText', { n: stats.textTotal, shown: stats.textShown }));
     if (stats.tables) parts.push(t('fmt.statTables', { n: stats.tables }));
     if (stats.iframes) parts.push(t('fmt.statIframes', { n: stats.iframes }));
+    if (stats.canvases && stats.canvasMax) parts.push(t('fmt.statCanvases', { n: stats.canvases, ...stats.canvasMax }));
     if (parts.length) lines.push(t('fmt.statsPrefix') + parts.join(' · '));
     // 编号名额耗尽必须说出来——静默截断会让模型把「没编上号」当成「不存在」
     if (stats.elementsTruncated) {
@@ -304,7 +314,7 @@ export function formatPageChange(change) {
   if (!change) return '';
   // 用户在动作期间自己切走了标签页：工作页不变，但要让模型知道并去问用户
   const switchedNote = change.userSwitched
-    ? t('fmt.chgUserSwitched', { title: change.userSwitched.title || change.userSwitched.url || t('ui.untitled') })
+    ? t('fmt.chgUserSwitched', { title: cleanTitle(change.userSwitched.title) || change.userSwitched.url || t('ui.untitled') })
     : '';
   if (change.restricted) {
     return [t('fmt.chgRestricted'), switchedNote].filter(Boolean).join('\n');
@@ -348,7 +358,7 @@ export function formatTabs(tabs) {
     if (tab.isWork) mark = t('fmt.metaWrap', { s: t('fmt.tabWork') });
     else if (tab.active) mark = t('fmt.metaWrap', { s: t('fmt.tabActive') });
     lines.push(
-      `[tab_id=${tab.id}] ${clampText(tab.title || t('ui.untitled'), 60)}${mark}\n    ${clampText(tab.url || '', 120)}`
+      `[tab_id=${tab.id}] ${clampText(cleanTitle(tab.title) || t('ui.untitled'), 60)}${mark}\n    ${clampText(tab.url || '', 120)}`
     );
   }
   return lines.join('\n');

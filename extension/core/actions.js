@@ -93,6 +93,43 @@ export function performAction(payload) {
     return !style || style.display === 'none' || style.visibility === 'hidden';
   }
 
+  // 零尺寸的裁剪容器：内容全被裁掉，元素自身不算隐藏（与 snapshot.js 的 clipsAway 同一算法，
+  // 条件与理由的推演写在那边）
+  function clipsAway(el) {
+    const tag = el.tagName ? el.tagName.toUpperCase() : '';
+    if (tag === 'HTML' || tag === 'BODY' || tag === 'IFRAME' || tag === 'FRAME') return false;
+    const view = viewOf(el);
+    if (!view) return false;
+    const style = view.getComputedStyle(el);
+    if (!style) return false;
+    const cx = style.overflowX && style.overflowX !== 'visible';
+    const cy = style.overflowY && style.overflowY !== 'visible';
+    if (!cx && !cy) return false;
+    if (!style.position || style.position === 'static') return false;
+    if (style.display === 'inline' || style.display === 'contents') return false;
+    const r = el.getBoundingClientRect();
+    return (cx && r.width === 0) || (cy && r.height === 0);
+  }
+
+  // 元素落在某个零尺寸裁剪容器里（越过同源框架往上查）。收起的下拉里先前编过号的选项
+  // 自身盒子仍非零，只看自己会照常派发事件，框架真的选中一个看不见的值。
+  // 增量刷新已不再列出它们，这里兜住模型凭旧 ref 直接动手的情形
+  function clippedByAncestor(el) {
+    let node = el;
+    while (node) {
+      let parent = node.parentElement;
+      if (!parent) {
+        try {
+          const v = node.ownerDocument && node.ownerDocument.defaultView;
+          parent = v ? v.frameElement : null;
+        } catch { parent = null; }
+      }
+      if (parent && clipsAway(parent)) return true;
+      node = parent;
+    }
+    return false;
+  }
+
   // 视觉代理：组件库常把原生勾选框/单选框缩成 0×0（Element UI 的 el-checkbox__original），
   // 用户点的是关联的 <label>，浏览器把这次点击转发给控件。名称、可用性与勾选态读控件本身，
   // 可见性、坐标与点击落点取自代理（与 snapshot.js 同一算法，自包含约束下各存一份）。
@@ -129,6 +166,7 @@ export function performAction(payload) {
       if (style && (style.display === 'none' || style.visibility === 'hidden')) return { err: 'hidden' };
       const r = box.getBoundingClientRect();
       if (r.width === 0 && r.height === 0) return { err: 'hidden' };
+      if (clippedByAncestor(el)) return { err: 'hidden' };
     }
     return { el, view, box };
   }
@@ -423,6 +461,7 @@ export function performAction(payload) {
         if (body) walk(body);
         return;
       }
+      if (clipsAway(node) || tag === 'CANVAS') return; // 画布的回退内容不渲染，snapshot.js 也不计
       if (tag === 'TABLE') out.push(node);
       for (const child of node.children) walk(child);
     })(doc.body);
