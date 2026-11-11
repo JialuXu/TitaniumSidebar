@@ -267,7 +267,9 @@ function fillConfigForm() {
 // 胶囊很窄，标题上限相应收紧；英文同宽度下字数更多
 function truncateTitle(title, max = document.documentElement.lang === 'en' ? 26 : 16) {
   if (!title) return t('ui.untitled');
-  return title.length > max ? title.slice(0, max) + '…' : title;
+  // 按码点数，emoji 才不会被切成半个代理对
+  const chars = Array.from(title);
+  return chars.length > max ? chars.slice(0, max).join('') + '…' : title;
 }
 
 // 展开/折叠「已读取内容」浮层（仅 status 为 ok 时可展开）
@@ -311,6 +313,8 @@ function updateContextChip(transient) {
   els.ctxDetailStats.textContent = page.textTotal
     ? t('ui.ctxMetaTruncated', { chars: page.textShown, total: page.textTotal, n: page.elementCount })
     : t('ui.ctxMeta', { chars: page.maskedText.length, n: page.elementCount });
+  // 读出来几乎是空页面时，画布数是界面上唯一看得出原因的地方
+  if (page.canvases) els.ctxDetailStats.textContent += ` · ${t('ui.ctxCanvases', { n: page.canvases })}`;
   els.ctxDetailOutline.textContent = page.outlineText;
   els.ctxDetailOutline.hidden = !page.outlineText;
   els.ctxDetailText.textContent = page.maskedText;

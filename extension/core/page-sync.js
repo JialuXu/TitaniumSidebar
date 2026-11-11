@@ -81,6 +81,9 @@ export function initialPage() {
     textTotal: 0,            // 完整正文字数（未截断时为 0）：胶囊展示 + 位置漂移判定
     textShown: 0,            // 其中已注入给模型的前多少字
     textCapped: false,       // 正文超出采集上限，总字数只是「至少这么多」
+    iframes: 0,              // 读取不到的跨域内嵌框架数
+    canvases: 0,             // 够大的画布数（里面画的文字读不到）
+    canvasMax: null,         // 面积最大的一块 { w, h, percent }
     session: '',             // ref 映射的会话标识，页面侧 window.__titanium 持有同名值
     // 工作标签页：快照来源，也是所有感知与动作的作用对象。
     // open_tab/switch_tab 会把它转移到新标签页并同步激活，「激活页 === 工作页」始终成立（不变式 5）
@@ -109,6 +112,9 @@ export function pageFromSnapshot(snap, { tabId, mask }) {
     textTotal: snap.stats.textTruncated ? snap.stats.textTotal : 0,
     textShown: snap.stats.textShown || 0,
     textCapped: Boolean(snap.stats.textCapped),
+    iframes: snap.stats.iframes || 0,
+    canvases: snap.stats.canvases || 0,
+    canvasMax: snap.stats.canvasMax || null,
     session: snap.session,
     tabId,
     hits: textRes.hits
@@ -179,10 +185,10 @@ export function composeSendContent(inputText, page, sentPage, sync) {
     sync.loading ? t('prompt.leadLoading') : '',
   ].filter(Boolean).join('\n');
   if (sync.kind === 'full') {
-    const content = buildUserContent(
-      inputText, page.maskedText, page.outlineText, lead,
-      page.textTotal ? { total: page.textTotal, shown: page.textShown, capped: page.textCapped } : null
-    );
+    const content = buildUserContent(inputText, page.maskedText, page.outlineText, lead, {
+      total: page.textTotal, shown: page.textShown, capped: page.textCapped,
+      iframes: page.iframes, canvases: page.canvases, canvasMax: page.canvasMax,
+    });
     return { content, sentPage: next };
   }
   if (sync.kind === 'diff') return { content: buildPageUpdate(inputText, sync.diff, lead), sentPage: next };

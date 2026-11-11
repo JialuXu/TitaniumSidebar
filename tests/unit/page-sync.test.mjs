@@ -136,6 +136,17 @@ test('未开脱敏原样保留、不计命中；只有截断了才记总字数',
   assert.deepEqual([long.textTotal, long.textShown, long.textCapped], [50000, 12000, true]);
 });
 
+test('第 43 条：跨域框架与画布的统计透传进页面状态，首次页面块带上对应的事实', () => {
+  const canvasMax = { w: 1058, h: 716, percent: 74 };
+  const p = pageFromSnapshot(snap({ stats: { totalElements: 7, textTruncated: false, iframes: 1, canvases: 2, canvasMax } }), { tabId: 1, mask: false });
+  assert.deepEqual([p.iframes, p.canvases, p.canvasMax], [1, 2, canvasMax]);
+  const { content } = send(initialSentPage(), { ...p, textTotal: 0 });
+  assert.ok(content.includes(t('prompt.pageCanvases', { n: 2, ...canvasMax })), content);
+  assert.ok(content.includes(t('prompt.pageIframes', { n: 1 })), content);
+  const none = pageFromSnapshot(snap(), { tabId: 1, mask: false });
+  assert.deepEqual([none.iframes, none.canvases, none.canvasMax], [0, 0, null]);
+});
+
 test('初值是「没读过」', () => {
   assert.deepEqual([initialPage().status, initialPage().tabId, initialPage().hits], ['none', null, null]);
 });

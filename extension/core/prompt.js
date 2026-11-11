@@ -48,26 +48,34 @@ export function buildCompactPrompt(instruction = '') {
  * @param {string|null} pageText 脱敏后的页面文本，null 表示不携带
  * @param {string|null} [outlineText] 脱敏后的结构骨架文本，可缺省
  * @param {string} [lead] 页面块之前的一句说明（如「用户已切换到新页面」），可缺省
- * @param {{ total, shown, capped }|null} [truncation] 正文被截断时的字数事实；
+ * @param {{ total?, shown?, capped?, iframes?, canvases?, canvasMax? }|null} [facts] 页面块读不全的事实，
+ *   各有一句：正文被截断（total/shown/capped）、跨域框架读不到（iframes）、
+ *   画布里画的文字读不到（canvases 与最大一块的 canvasMax { w, h, percent }）。
  *   只陈述事实、不提任何工具名——接口降级为纯文本后这条消息仍在历史里，
  *   提了工具名就成了指引模型调用不存在的工具（不变式 2）。怎么用位置写在 prompt.tools。
- *   它放在 <页面内容> 标签**之外**：标签内是页面来的不可信文本，这句是系统的陈述。
+ *   它们放在 <页面内容> 标签**之外**：标签内是页面来的不可信文本，这几句是系统的陈述。
+ *   画布只报数量、尺寸与占比，不说「主体画在画布上」：粒子背景、WebGL 首屏也是大画布，主次由模型判断。
  */
-export function buildUserContent(userInput, pageText, outlineText, lead, truncation) {
+export function buildUserContent(userInput, pageText, outlineText, lead, facts) {
   const cTag = t('tag.content');
   const oTag = t('tag.outline');
+  const f = facts || {};
   const leadBlock = lead ? `${lead}\n\n` : '';
   const outlineBlock = outlineText ? `<${oTag}>\n${outlineText}\n</${oTag}>\n\n` : '';
-  const totalBlock = truncation && truncation.total
-    ? t('prompt.pageTotal', {
-      total: truncation.capped ? t('res.readAtLeast', { n: truncation.total }) : String(truncation.total),
-      shown: truncation.shown,
-    }) + '\n\n'
-    : '';
+  const factLines = [];
+  if (f.total) {
+    factLines.push(t('prompt.pageTotal', {
+      total: f.capped ? t('res.readAtLeast', { n: f.total }) : String(f.total),
+      shown: f.shown,
+    }));
+  }
+  if (f.iframes) factLines.push(t('prompt.pageIframes', { n: f.iframes }));
+  if (f.canvases && f.canvasMax) factLines.push(t('prompt.pageCanvases', { n: f.canvases, ...f.canvasMax }));
+  const factBlock = factLines.length ? factLines.join('\n') + '\n\n' : '';
   // 纯表单、登录页这类页面只有控件没有正文：照样给一块页面内容并交代一句，
   // 否则模型只见到用户的问题，不知道眼前有个页面（此处不点工具名，降级纯文本时也成立）
   const body = pageText || t('prompt.pageNoText');
-  return `${leadBlock}<${cTag}>\n${body}\n</${cTag}>\n\n${totalBlock}${outlineBlock}${userInput}`;
+  return `${leadBlock}<${cTag}>\n${body}\n</${cTag}>\n\n${factBlock}${outlineBlock}${userInput}`;
 }
 
 /**

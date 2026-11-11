@@ -162,6 +162,32 @@ export function snapshotPage(options) {
     return style;
   }
 
+  // 零尺寸的裁剪容器：里面的内容全被裁掉，调用方不再下钻（文字、骨架、表格、元素都不收）。
+  // 「高度 0 + overflow:hidden」是收起手风琴、组件库预渲染下拉的常见写法，没有 display:none 可剪。
+  // 判的是「内容看不见」而不是「自己看不见」：元素自身照常走 visibleStyle 与元素通道——
+  // Chromium 默认给文本输入框 overflow:clip，缩成 0×0 的原生控件靠视觉代理照常编号（见 visualProxy）。
+  // 条件缺一不剪：
+  //   overflow 不是 visible —— hidden/clip/auto/scroll 在零尺寸下都裁掉内容；
+  //   定位元素 —— 它是 absolute 后代的包含块，裁得住全部后代。static 容器裁不住，
+  //     「body overflow:hidden + 绝对定位的应用根」这类结构剪了就是整页读空；
+  //   不是 inline / contents —— overflow 对它们不生效；
+  //   不是 html / body —— 它们的 overflow 作用于视口；框架的内容由 frameRoot 另管。
+  // 阈值是严格的 0：sr-only 写法（1×1 + overflow:hidden）是留给读屏器的文字，要保留。
+  // 已知漏网：fixed 后代不受任何祖先 overflow 裁剪，会被一起剪掉（挂在收起容器里的弹层少见）。
+  // 与 actions.js / highlight.js 同一算法，自包含约束下各存一份。
+  function clipsAway(el, style) {
+    const cx = style.overflowX && style.overflowX !== 'visible';
+    const cy = style.overflowY && style.overflowY !== 'visible';
+    if (!cx && !cy) return false;
+    if (!style.position || style.position === 'static') return false;
+    if (style.display === 'inline' || style.display === 'contents') return false;
+    const tag = el.tagName ? el.tagName.toUpperCase() : '';
+    if (tag === 'HTML' || tag === 'BODY' || tag === 'IFRAME' || tag === 'FRAME') return false;
+    if (!viewOf(el)) return false; // 离线解析件没有排版，量不出盒子
+    const r = el.getBoundingClientRect();
+    return (cx && r.width === 0) || (cy && r.height === 0);
+  }
+
   // 禁用态：原生 disabled 与 aria-disabled 一并识别（不排除出列表，而是作为标记告知模型）
   function isDisabled(el) {
     return Boolean(el.disabled) || el.getAttribute('aria-disabled') === 'true';
@@ -390,13 +416,15 @@ export function snapshotPage(options) {
 
   // 候选收集：与 full 模式主遍历同一套判定规则，供 mode:'elements' 独立遍历使用。
   // aria-hidden 子树对辅助技术不可见，不作为操作目标（文本通道不受影响）。
-  function collectCandidates(root) {
+  // reached 收下这一趟走到过的元素：映射表里的老元素没被走到，就是落进了被剪掉的子树。
+  function collectCandidates(root, reached) {
     const out = [];
     (function walk(node, parentCursor, ariaHidden) {
       const tag = node.tagName ? node.tagName.toUpperCase() : '';
       if (SKIP_TAGS[tag]) return;
       const style = visibleStyle(node);
       if (!style) return;
+      reached.add(node);
       const ah = ariaHidden || node.getAttribute('aria-hidden') === 'true';
       if (tag === 'IFRAME' || tag === 'FRAME') {
         // 只下钻活文档（与 full 模式同一口径：离线解析件不编号）
@@ -408,6 +436,7 @@ export function snapshotPage(options) {
         const hit = interactiveRole(node, style, parentCursor);
         if (hit) out.push({ el: node, role: hit.role, weak: hit.weak });
       }
+      if (clipsAway(node, style) || tag === 'CANVAS') return; // 画布的回退内容不渲染，与主遍历同一口径
       for (const child of node.children) walk(child, style.cursor, ah);
     })(root, '', false);
     return out;
@@ -514,10 +543,13 @@ export function snapshotPage(options) {
     // 名额算的是「当前存活的元素数」，不是映射表长度：表里的空槽是 ref 稳定的代价，
     // 不该占用新元素的名额——按表长判定的话，同一页面反复重建把表撑过上限后这里恒真，
     // 该标签页的增量刷新从此一个新元素都编不进（动作后新出现的按钮永远拿不到 ref）。
+    // 「存活」与下面产出列表同一口径：这一趟遍历走到过的元素。
+    const reached = new Set();
+    const found = dedupeCandidates(collectCandidates(doc.body, reached));
     let budget = MAX_ELEMENTS;
-    store.elements.forEach((el) => { if (el && el.isConnected && viewOf(el)) budget--; });
+    store.elements.forEach((el) => { if (el && reached.has(el)) budget--; });
     let overflow = false;
-    for (const c of dedupeCandidates(collectCandidates(doc.body))) {
+    for (const c of found) {
       if (known.has(c.el)) continue;
       if (budget <= 0 || store.elements.length >= MAX_REFS) { overflow = true; break; }
       budget--;
@@ -527,14 +559,16 @@ export function snapshotPage(options) {
       known.add(c.el);
     }
 
-    // 产出仍然存活的元素（脱离文档或已无盒子的跳过，但保留槽位保证 ref 稳定）。
+    // 产出仍然存活的元素（脱离文档、已无盒子、或这一趟没走到的跳过，但保留槽位保证 ref 稳定）。
+    // 「没走到」管的是祖先被剪掉的老元素：下拉展开时编过号的选项，收起后自身盒子仍非零，
+    // 只看自己会继续被当成存活元素列出来。
     // 已有元素与上次交付时的状态签名逐项比较，变了的带上 changes（勾选、展开、可用、显示文字）
     if (!Array.isArray(store.states)) store.states = [];
     const elements = [];
     let newCount = 0;
     let changedCount = 0;
     store.elements.forEach((el, i) => {
-      if (!el || !el.isConnected || !viewOf(el) || !visibleStyle(el)) return;
+      if (!el || !reached.has(el)) return;
       const info = elementInfo(el, i + 1);
       if (info.bbox.w === 0 && info.bbox.h === 0) return;
       const now = stateOf(info);
@@ -675,6 +709,12 @@ export function snapshotPage(options) {
   const candidates = []; // { el, role }，遍历结束后统一去重与编号
   let tableCount = 0;
   let iframeCount = 0; // 读不到的内嵌框架数（读得到的已并入正文，不计）
+  // 计数的画布下限：排除图标、按钮底图与迷你图，仪表盘里的单张图表计入。
+  // 只决定提示出不出现，轻重由最大一块的尺寸与视口占比交给模型判断
+  const CANVAS_MIN_W = 200;
+  const CANVAS_MIN_H = 150;
+  let canvasCount = 0;
+  let canvasMax = null; // 面积最大的一块 { w, h }（CSS 像素）
 
   // —— 主遍历 ——
   // textOn：进入 nav/header/footer 或表格内部后置 false（文本不采，元素/骨架继续）；
@@ -716,6 +756,25 @@ export function snapshotPage(options) {
     if (!textMode && !ariaOff) {
       const hit = interactiveRole(node, style, parentCursor);
       if (hit) candidates.push({ el: node, role: hit.role, weak: hit.weak });
+    }
+
+    // 零尺寸的裁剪容器：元素自身已按上面判过，内容一概不收。
+    // 放在骨架与表格计数之前，表格序号才与 extract_table 的遍历对得上
+    if (clipsAway(node, style)) return;
+
+    // 画布：绘制出来的文字与数字读不到，够大的计数告知模型（在线表格、文档、图表都画在这上面）。
+    // 子节点是浏览器不渲染的回退内容（「您的浏览器不支持 canvas」），文本与元素通道都不进。
+    if (tag === 'CANVAS') {
+      if (!textMode) {
+        const r = node.getBoundingClientRect();
+        if (r.width >= CANVAS_MIN_W && r.height >= CANVAS_MIN_H) {
+          canvasCount++;
+          if (!canvasMax || r.width * r.height > canvasMax.w * canvasMax.h) {
+            canvasMax = { w: Math.round(r.width), h: Math.round(r.height) };
+          }
+        }
+      }
+      return;
     }
 
     // 骨架通道
@@ -1008,7 +1067,11 @@ export function snapshotPage(options) {
   const session = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   win.__titanium = { session, elements: liveRefs, fingerprints, misses, seenMax: liveRefs.length, states };
 
-  const title = (doc.title || '').trim();
+  // 标题两端的格式字符（Unicode Cf 类：零宽空格、BOM、双向控制符等）与空白一并剥掉：
+  // 有的站点给标题加几十个零宽字符的前缀，按字数截断的页面胶囊截到的全是它们。
+  // 只剥两端——U+200D 是组合 emoji 的粘合符，标题中间的不能动。
+  // 与 core/format.js 的 cleanTitle 同一规则（自包含约束下各存一份）
+  const title = (doc.title || '').replace(/^[\p{Cf}\s]+|[\p{Cf}\s]+$/gu, '');
   const url = doc.location ? doc.location.href : '';
   if (!text && !elements.length) return { ok: false, reason: 'empty', title, url };
   return {
@@ -1020,6 +1083,11 @@ export function snapshotPage(options) {
       elementsTruncated: totalInteractive > capped.length || refOverflow > 0,
       tables: tableCount,
       iframes: iframeCount,
+      canvases: canvasCount,
+      // 视口占比让模型分清「整页就是一块画布」与「正文旁边一张图」
+      canvasMax: canvasMax
+        ? { ...canvasMax, percent: Math.min(100, Math.round((canvasMax.w * canvasMax.h * 100) / Math.max(1, win.innerWidth * win.innerHeight))) }
+        : null,
       outlineDropped,
       // 只有显式传了 maxScan 的调用方才采到了完整正文，也只有它能如实报总字数。
       // `maxTextLen:1` 那条「只要元素映射」的重建路径采了两个字，报出来就是假数据。
