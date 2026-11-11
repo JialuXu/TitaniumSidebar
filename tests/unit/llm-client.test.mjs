@@ -1,8 +1,10 @@
-// core/llm-client.js —— 请求形状、SSE 解析与错误分类（验收标准第 6、9、29、34 条）
+// core/llm-client.js —— 请求形状、SSE 解析与错误分类（验收标准第 6、9、29、34、44、45 条）
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { streamChat, testConnection, LlmError, isContextOverflow } from '../../extension/core/llm-client.js';
+import {
+  streamChat, testConnection, LlmError, isContextOverflow, createThinkSplitter,
+} from '../../extension/core/llm-client.js';
 import {
   CONFIG, data, deltaChunk, toolChunk, streamResponse, sseResponse, mockFetch, drain,
 } from '../helpers/fake-llm.mjs';
@@ -93,6 +95,71 @@ test('没有结束标记就断流：stream 错误，已收到的增量照常交�
   const { events, error } = await drain(streamChat(CONFIG, MSGS));
   assert.deepEqual(events, [{ type: 'delta', text: '半截' }]);
   assert.equal(error.kind, 'stream');
+});
+
+/* ========== 思考内容与截断 ========== */
+
+const reasoningChunk = (field, text) => ({ choices: [{ index: 0, delta: { [field]: text }, finish_reason: null }] });
+
+test('第 44 条：reasoning_content 字段交出思考内容并标记要带回，reasoning 字段不标记', async (t) => {
+  mockFetch(t, () => sseResponse([
+    data(reasoningChunk('reasoning_content', '先看')), data(reasoningChunk('reasoning_content', '表格')),
+    data(deltaChunk('答', 'stop')), data('[DONE]'),
+  ]));
+  let res = await drain(streamChat(CONFIG, MSGS));
+  assert.deepEqual(res.events, [
+    { type: 'reasoning', text: '先看', echo: true }, { type: 'reasoning', text: '表格', echo: true },
+    { type: 'delta', text: '答' },
+  ]);
+
+  mockFetch(t, () => sseResponse([data(reasoningChunk('reasoning', '想')), data(deltaChunk('答', 'stop'))]));
+  res = await drain(streamChat(CONFIG, MSGS));
+  assert.deepEqual(res.events, [{ type: 'reasoning', text: '想', echo: false }, { type: 'delta', text: '答' }]);
+});
+
+test('第 44 条：正文开头的 <think> 标签拆成思考内容，标签被切在分片之间也认得', async (t) => {
+  mockFetch(t, () => sseResponse([
+    data(deltaChunk('\n<thi')), data(deltaChunk('nk>先算')), data(deltaChunk('合计</th')),
+    data(deltaChunk('ink>\n\n共 3 项')), data(deltaChunk('。', 'stop')), data('[DONE]'),
+  ]));
+  const { events, error } = await drain(streamChat(CONFIG, MSGS));
+  assert.equal(error, null);
+  const join = (type) => events.filter((e) => e.type === type).map((e) => e.text).join('');
+  assert.equal(join('reasoning'), '先算合计');
+  assert.equal(join('delta'), '\n\n共 3 项。');
+});
+
+test('第 44 条：拆分器只认开头那一对标签；没闭合就结束的仍算思考', () => {
+  const run = (chunks) => {
+    const sp = createThinkSplitter();
+    const out = [...chunks.flatMap((c) => sp.push(c)), ...sp.flush()];
+    const join = (type) => out.filter((e) => e.type === type).map((e) => e.text).join('');
+    return { reasoning: join('reasoning'), text: join('delta') };
+  };
+  assert.deepEqual(run(['普通回答，提到 <think> 标签']), { reasoning: '', text: '普通回答，提到 <think> 标签' });
+  assert.deepEqual(run(['<', 'table>']), { reasoning: '', text: '<table>' });
+  assert.deepEqual(run(['<think>想到一半']), { reasoning: '想到一半', text: '' });
+  assert.deepEqual(run(['<think>a</think>b<think>c</think>']), { reasoning: 'a', text: 'b<think>c</think>' });
+  assert.deepEqual(run(['  ', '<']), { reasoning: '', text: '  <' }); // 流结束时没分出来的开头是正文
+  assert.deepEqual(run(['<think>x<', '/b>y</think>z']), { reasoning: 'x</b>y', text: 'z' });
+});
+
+test('第 45 条：finish_reason 为 length 时交出 truncated', async (t) => {
+  mockFetch(t, () => sseResponse([data(deltaChunk('写到一半', 'length')), data('[DONE]')]));
+  const { events, error } = await drain(streamChat(CONFIG, MSGS));
+  assert.equal(error, null);
+  assert.deepEqual(events, [{ type: 'delta', text: '写到一半' }, { type: 'truncated' }]);
+});
+
+test('第 45 条：撞上长度上限时参数停在半截的工具调用不交出，完整的照常交出', async (t) => {
+  mockFetch(t, () => sseResponse([data(toolChunk([{ index: 0, id: 'c1', name: 'input_text', arguments: '{"ref":3,"text":"张' }], 'length'))]));
+  let res = await drain(streamChat(CONFIG, MSGS, { tools: [{}] }));
+  assert.equal(res.error, null);
+  assert.deepEqual(res.events, [{ type: 'truncated' }]);
+
+  mockFetch(t, () => sseResponse([data(toolChunk([{ index: 0, id: 'c1', name: 'find_in_page', arguments: '{"query":"a"}' }], 'length'))]));
+  res = await drain(streamChat(CONFIG, MSGS, { tools: [{}] }));
+  assert.deepEqual(res.events.map((e) => e.type), ['truncated', 'tool_calls']);
 });
 
 test('接口在流里报用量时交出 usage 事件（含 choices 为空的收尾块）', async (t) => {

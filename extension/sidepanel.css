@@ -366,6 +366,8 @@ body {
 }
 
 .ai-content li { margin: 4px 0; }
+.ai-content li > ul, .ai-content li > ol { margin: 4px 0 0; }
+.ai-content del { color: var(--text-3); }
 
 .ai-content a { color: var(--accent); }
 
@@ -814,6 +816,33 @@ body {
 
 /* 空回复的灰色说明 */
 .md-note { color: var(--text-2); }
+
+/* 思考过程：默认折叠的一行浅色小字，展开后是带左侧细线的纯文本 */
+.reasoning {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.reasoning > summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.reasoning > summary:hover { color: var(--accent); }
+.reasoning.live > summary { animation: tool-pulse 1.2s ease-in-out infinite; }
+
+.reasoning-body {
+  margin-top: 4px;
+  padding-left: 10px;
+  max-height: 240px;
+  overflow: auto;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-2);
+  border-left: 2px solid var(--border);
+}
 
 /* AI 消息操作行：悬停显示 */
 .msg-actions {

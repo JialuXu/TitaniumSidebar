@@ -176,6 +176,9 @@ function sanitizeMessages(messages, imageInput) {
     .map((m) => {
       const out = { role: m.role, content: wireContent(m, imageInput) };
       if (m.tool_calls) out.tool_calls = m.tool_calls;
+      // 接口经 reasoning_content 字段给出的思考内容原样带回：DeepSeek 的思考模式在带工具调用的
+      // 会话里缺了它直接 400；不需要它的接口会忽略这个字段
+      if (m.reasoning_content) out.reasoning_content = m.reasoning_content;
       if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
       return out; // displayContent、images 与 `_` 前缀内部字段不出网
     });
