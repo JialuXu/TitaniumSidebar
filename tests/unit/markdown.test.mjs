@@ -88,3 +88,40 @@ test('段落内换行保留为 <br>，遇到块级元素即断开', () => {
 test('行内代码保护其中的星号不被当成加粗', () => {
   assert.equal(renderMarkdown('`**x**` 与 **粗** *斜*'), '<p><code>**x**</code> 与 <strong>粗</strong> <em>斜</em></p>');
 });
+
+test('第 47 条：列表按缩进嵌套，有序与无序可以互相嵌套', () => {
+  assert.equal(
+    renderMarkdown('- 收入\n  - 主营\n  - 其他\n- 成本'),
+    '<ul><li>收入<ul><li>主营</li><li>其他</li></ul></li><li>成本</li></ul>',
+  );
+  assert.equal(
+    renderMarkdown('1. 第一步\n   - 细节 a\n     1. 更细\n   - 细节 b\n2. 第二步'),
+    '<ol><li>第一步<ul><li>细节 a<ol><li>更细</li></ol></li><li>细节 b</li></ul></li><li>第二步</li></ol>',
+  );
+  assert.equal(renderMarkdown('- a\n\t- b'), '<ul><li>a<ul><li>b</li></ul></li></ul>'); // 制表符缩进
+});
+
+test('第 47 条：列表项之间的空行不打断编号，项下缩进的行并进该项', () => {
+  assert.equal(renderMarkdown('1. a\n\n2. b\n\n3. c'), '<ol><li>a</li><li>b</li><li>c</li></ol>');
+  assert.equal(renderMarkdown('- a\n  接着说\n- b'), '<ul><li>a<br>接着说</li><li>b</li></ul>');
+  // 列表之后的段落照常另起
+  assert.equal(renderMarkdown('- a\n\n结论'), '<ul><li>a</li></ul>\n<p>结论</p>');
+});
+
+test('第 47 条：被段落隔开的有序列表接着原编号，同层换类型另起一个列表', () => {
+  assert.equal(renderMarkdown('1. a\n\n说明\n\n2. b'), '<ol><li>a</li></ol>\n<p>说明</p>\n<ol start="2"><li>b</li></ol>');
+  assert.equal(renderMarkdown('- a\n1. b'), '<ul><li>a</li></ul>\n<ol><li>b</li></ol>');
+});
+
+test('第 47 条：列表项下面带缩进的代码块照常成块，其后的编号接着原编号', () => {
+  const html = renderMarkdown('1. 运行\n   ```sh\n   ls\n     -a\n   ```\n2. 查看');
+  assert.match(html, /^<ol><li>运行<\/li><\/ol>\n<div class="md-codeblock">/);
+  assert.match(html, /<pre><code>ls\n  -a<\/code><\/pre>/); // 去掉与开围栏等量的缩进
+  assert.match(html, /<ol start="2"><li>查看<\/li><\/ol>$/);
+  assert.equal(renderMarkdown('- a\n\n---\n\n- b'), '<ul><li>a</li></ul>\n<hr>\n<ul><li>b</li></ul>');
+});
+
+test('第 47 条：删除线', () => {
+  assert.equal(renderMarkdown('原价 ~~100~~ 现价 80'), '<p>原价 <del>100</del> 现价 80</p>');
+  assert.equal(renderMarkdown('`~~不动~~`'), '<p><code>~~不动~~</code></p>');
+});
