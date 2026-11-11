@@ -465,6 +465,36 @@ test('第 14 条：批量在风险步骤暂停，被拒后当前及后续步骤�
   assert.equal(res.meta.data.reason, 'denied');
 });
 
+test('批量中途点停止：后续步骤不执行，已完成的如实保留', async () => {
+  const controller = new AbortController();
+  const { provider, calls } = fakeProvider({
+    act: () => { controller.abort(); return { result: { ok: true, name: '姓名', value: '张三' }, change: quiet() }; },
+  });
+  const res = await dispatchToolCall(batch([
+    { action: 'input', ref: 3, text: '张三' },
+    { action: 'input', ref: 4, text: '李四' },
+    { action: 'click', ref: 5 },
+  ]), provider, { signal: controller.signal }, ACTIONS());
+  assert.equal(calls.filter((c) => c.name === 'act').length, 1);
+  assert.ok(res.toolMessage.content.includes(t('res.batchStep', { n: 2, text: t('sys.aborted') })));
+  assert.ok(res.toolMessage.content.includes(t('res.batchFailed', { n: 2, rest: 1 })));
+  assert.equal(res.meta.data.done, 1);
+  assert.equal(res.meta.data.reason, 'aborted');
+});
+
+test('等待确认期间用户操作过页面：结果写明未执行，可重新发起', async () => {
+  const { provider } = guarded(true, { act: { result: { ok: false, reason: 'touched' }, change: null } });
+  const res = await dispatchToolCall(call('click_element', { ref: 9 }), provider, {}, ACTIONS());
+  assert.equal(res.meta.data.reason, 'touched');
+  assert.equal(res.toolMessage.content, t('fail.touched'));
+});
+
+test('调试通道焦点落不到元素上、改用合成事件时，结果补一句', async () => {
+  const { provider } = fakeProvider({ act: { result: { ok: true, key: 'Enter', target: '取消', fallback: 'unsafe-focus' }, change: quiet() } });
+  const res = await dispatchToolCall(call('press_key', { key: 'Enter', ref: 4 }), provider, {}, ACTIONS());
+  assert.ok(res.toolMessage.content.includes(t('res.fallback.unsafeFocus')));
+});
+
 test('第 14 条：模型声明 irreversible 时，规则没命中也要确认；输入类动作不预检', async () => {
   const { provider, asked, acts } = guarded(true);
   await dispatchToolCall(call('click_element', { ref: 5, irreversible: true }), provider, {}, ACTIONS());

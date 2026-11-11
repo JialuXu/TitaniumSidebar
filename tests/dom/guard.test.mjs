@@ -91,6 +91,21 @@ describe('执行前确认的预检（真实 DOM）', { skip: !playwright && '未
     assert.deepEqual(classifyAction(info).risks, ['send']);
   });
 
+  test('回车提交与浏览器一致：点默认提交按钮，按钮上的 formmethod 与预检同一判定', async () => {
+    const info = await inspectEnter('code');
+    assert.equal(info.via, 'submit');
+    assert.equal(info.label, '提交');
+    assert.equal(info.post, false);
+    await events();
+    const res = await run({ action: 'key', key: 'Enter', ref: await refFor('code') });
+    assert.equal(res.submitted, true);
+    assert.deepEqual((await events()).filter((e) => /^(click|submit):/.test(e)), ['click:lookup-go', 'submit:lookup-go']);
+    // 焦点在另一个提交按钮上：点的是它本身，与预检一致
+    assert.equal((await inspectEnter('lookup-alt')).label, '另存');
+    await run({ action: 'key', key: 'Enter', ref: await refFor('lookup-alt') });
+    assert.deepEqual((await events()).filter((e) => /^(click|submit):/.test(e)), ['click:lookup-alt', 'submit:lookup-alt']);
+  });
+
   test('表单外的搜索框里回车不算发出', async () => {
     const info = await inspectEnter('find');
     assert.equal(info.via, 'none');
@@ -102,6 +117,26 @@ describe('执行前确认的预检（真实 DOM）', { skip: !playwright && '未
     const info = await inspectEnter(null);
     assert.equal(info.via, 'click');
     assert.equal(info.label, '发送');
+  });
+
+  test('不带编号的回车：预检报出焦点元素的编号，名称、语境与指纹相同的两个输入框也能区分', async () => {
+    await page.evaluate(() => {
+      const box = document.getElementById('composer');
+      for (const id of ['extra-a', 'extra-b']) {
+        const input = document.createElement('input');
+        input.id = id;
+        input.placeholder = '消息';
+        box.appendChild(input);
+      }
+    });
+    session = (await inject(page, snapshotPage, { mode: 'full', i18n: injectedStrings() })).session;
+    await page.evaluate("document.getElementById('extra-a').focus()");
+    const first = await inspectEnter(null);
+    await page.evaluate("document.getElementById('extra-b').focus()");
+    const second = await inspectEnter(null);
+    assert.equal(first.print, second.print);
+    assert.equal(first.targetRef, await refFor('extra-a'));
+    assert.equal(second.targetRef, await refFor('extra-b'));
   });
 
   test('带真实地址的链接与勾选框不是命令，# 链接是', async () => {
@@ -129,6 +164,85 @@ describe('执行前确认的预检（真实 DOM）', { skip: !playwright && '未
     const done = await run({ action: 'click', ref, expect: fresh.print });
     assert.equal(done.ok, true);
     assert.ok((await events()).includes('click:ok'));
+  });
+
+  test('等待确认期间用户点过、输入过页面：带 expect 执行时不执行，报 touched；重新预检后从头记起', async () => {
+    const ref = await refFor('ok');
+    const { print } = await inspectClick('ok');
+    await page.click('#amount');
+    await page.keyboard.type('5');
+    await events();
+    assert.deepEqual(await run({ action: 'click', ref, expect: print }), { ok: false, reason: 'touched' });
+    assert.deepEqual(await run({ action: 'locate', ref, expect: print }), { ok: false, reason: 'touched' });
+    assert.deepEqual(await events(), []);
+    const fresh = await inspectClick('ok');
+    assert.equal(fresh.print, print, '指纹本身没变：这些操作只有记录拦得住');
+    assert.equal((await run({ action: 'click', ref, expect: fresh.print })).ok, true);
+  });
+
+  test('页面脚本改值、派发合成事件不算用户操作', async () => {
+    const ref = await refFor('ok');
+    const { print } = await inspectClick('ok');
+    await page.evaluate(() => {
+      const amount = document.getElementById('amount');
+      amount.value = '999';
+      amount.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      amount.dispatchEvent(new KeyboardEvent('keydown', { key: '9', bubbles: true }));
+      amount.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    assert.equal((await run({ action: 'click', ref, expect: print })).ok, true);
+  });
+
+  test('滚动看页面不算操作：滚轮与拖滚动条都照常执行', async () => {
+    // 无头浏览器缺省隐藏滚动条，这里单开一个显示滚动条的
+    const shown = await playwright.chromium.launch({ ignoreDefaultArgs: ['--hide-scrollbars'] });
+    try {
+      const p = await shown.newPage({ viewport: { width: 800, height: 600 } });
+      await p.setContent(fixture('guard.html'));
+      const s = (await inject(p, snapshotPage, { mode: 'full', i18n: injectedStrings() })).session;
+      const ref = await p.evaluate("window.__titanium.elements.indexOf(document.getElementById('ok')) + 1");
+      const { print } = await inject(p, performAction, { action: 'inspect', of: 'click', ref, session: s });
+      await p.mouse.move(400, 300);
+      await p.mouse.wheel(0, 400);
+      const half = await p.evaluate('(window.innerWidth - document.documentElement.clientWidth) / 2');
+      assert.ok(half > 0, '视口有滚动条');
+      await p.mouse.move(800 - half, 300);
+      await p.mouse.down();
+      await p.mouse.move(800 - half, 350);
+      await p.mouse.up();
+      const res = await inject(p, performAction, { action: 'click', ref, session: s, expect: print, i18n: injectedStrings() });
+      assert.equal(res.ok, true, JSON.stringify(res));
+    } finally {
+      await shown.close();
+    }
+  });
+
+  test('同源框架里的用户输入也算', async () => {
+    const ref = await refFor('ok');
+    const { print } = await inspectClick('ok');
+    await page.frameLocator('#frame').locator('#inner').click();
+    assert.deepEqual(await run({ action: 'click', ref, expect: print }), { ok: false, reason: 'touched' });
+  });
+
+  test('等待期间新插入的同源框架：上面没挂监听，复验按变了处理', async () => {
+    const ref = await refFor('ok');
+    const { print } = await inspectClick('ok');
+    await page.evaluate(() => {
+      const frame = document.createElement('iframe');
+      frame.id = 'late-frame';
+      frame.srcdoc = "<input id='late-input' placeholder='备注'>";
+      document.body.appendChild(frame);
+    });
+    await page.frameLocator('#late-frame').locator('#late-input').click();
+    assert.deepEqual(await run({ action: 'click', ref, expect: print }), { ok: false, reason: 'changed' });
+  });
+
+  test('同源框架等待期间重新加载：新文档上没挂监听，复验按变了处理', async () => {
+    const ref = await refFor('ok');
+    const { print } = await inspectClick('ok');
+    await page.evaluate(() => { document.getElementById('frame').srcdoc = "<input id='renewed-input' placeholder='备注'>"; });
+    await page.frameLocator('#frame').locator('#renewed-input').click();
+    assert.deepEqual(await run({ action: 'click', ref, expect: print }), { ok: false, reason: 'changed' });
   });
 
   test('回车：焦点换了一个输入框，带 expect 的按键与按键前的 probe 都不执行', async () => {

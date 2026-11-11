@@ -284,6 +284,8 @@ function describeFailure(result, args) {
       return t('fail.denied');
     case 'changed':
       return t('fail.changed');
+    case 'touched':
+      return t('fail.touched');
     case 'unconfirmed':
       return t('fail.unconfirmed');
     case 'aborted':
@@ -322,7 +324,9 @@ function toggledTarget(change) {
 const named = (name) => (name ? ` "${name}"` : '');
 
 // 调试通道退回合成事件时补一句（见 drivers/index.js 的 fallback）
-const FALLBACK_TEXT = { unavailable: 'res.fallback.unavailable', 'unsafe-point': 'res.fallback.unsafePoint' };
+const FALLBACK_TEXT = {
+  unavailable: 'res.fallback.unavailable', 'unsafe-point': 'res.fallback.unsafePoint', 'unsafe-focus': 'res.fallback.unsafeFocus',
+};
 function fallbackNote(r) {
   return r && FALLBACK_TEXT[r.fallback] ? t(FALLBACK_TEXT[r.fallback]) : '';
 }

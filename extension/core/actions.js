@@ -30,18 +30,21 @@
  *          | { ok: false, reason: string, ... }}
  *   失败 reason 全集：no-body | bad-action | stale | bad-ref | gone | hidden |
  *                     disabled | not-editable | not-select | option-not-found |
- *                     bad-key | bad-table-index | changed
+ *                     bad-key | bad-table-index | changed | touched
  *   调试通道用的三个动作（不改动页面，focus 除外）：
  *     locate  { ref }           滚到可见处，返回点击点在顶层视口里的坐标 x/y；
  *                               safe=false 表示中心点被遮挡或落在内部另一个控件上，真实点击会点错
- *     focus   { ref, select? }  聚焦元素，select 时选中全部内容；返回 editable / password
+ *     focus   { ref, select? }  聚焦元素，select 时选中全部内容；返回 editable / password，
+ *                               以及焦点是否真的落在元素本身（focused）
  *     probe   {}                当前焦点元素与光标、滚动位置的快照，按键前后各取一次比较
  *   预检（只读，不滚动、不聚焦、不派发事件）：
  *     inspect { of, ref?, key? } 动作实际会触发什么：via（click | submit | send | none）、触发控件的
  *                               label 与是否命令类（command）、会否提交 post 表单（post）、
- *                               回车发送时附近按钮的名称（nearby）、所在对话框或表单的文字（context），
- *                               以及由这些现算的指纹 print
- *   click / key / locate / probe 带 expect 时先现算指纹，与 expect 不一致返回 changed、不派发任何事件
+ *                               回车发送时附近按钮的名称（nearby）、所在对话框或表单的文字（context）、
+ *                               焦点元素的编号（targetRef，不带编号的回车按它记拒绝），以及由这些现算的指纹 print；
+ *                               并开始记录此后用户在页面上的操作
+ *   click / key / locate / probe 带 expect 时先现算指纹，与 expect 不一致返回 changed、
+ *                               预检之后用户操作过页面返回 touched，都不派发任何事件
  */
 export function performAction(payload) {
   const opts = payload || {};
@@ -648,6 +651,13 @@ export function performAction(payload) {
     return [];
   }
 
+  // 不带编号的回车，拒绝记录按焦点元素在映射里的编号区分（列表每行的回复框名称、语境都相同）。
+  // 回车会提交或发出内容时焦点在文本输入框上，它们都有编号；取不到时为空，同指纹的共用一条记录，只会多拒
+  function targetRef(el) {
+    const store = win.__titanium;
+    return store && Array.isArray(store.elements) ? store.elements.indexOf(el) + 1 || '' : '';
+  }
+
   // of 是将要执行的动作（click | key）。via：click 点这个控件；submit 回车提交所在表单；
   // send 回车落在不提交表单的输入区（聊天框按回车就发出去了）；none 其余情形
   function inspectTarget(of) {
@@ -664,6 +674,7 @@ export function performAction(payload) {
     }
     const out = { ok: true, of, key, name: '', via: 'none', label: '', command: false, post: false, nearby: [], context: '' };
     if (target) {
+      out.targetRef = targetRef(target);
       const entry = textEntry(target);
       out.name = entry ? fieldName(target) : labelOf(target);
       out.context = contextOf(target);
@@ -686,12 +697,61 @@ export function performAction(payload) {
     return out;
   }
 
-  // 批准后的执行载荷带着预检时的指纹：派发任何事件之前现算一遍，对不上（目标或所在对话框变了）就不执行
+  // 确认块不拦页面：等待期间用户可以接着改输入框、多勾一行、在列表里点开另一条记录，这些多半不改变
+  // 指纹（详情区的「删除」还是同一个元素），批准后执行的就不是预检时那一份。因此预检时开始记录用户在
+  // 页面上的操作，复验时记录到过就不执行。只认可信事件：本扩展的合成事件、页面脚本的改动不算，
+  // 行情刷新、倒计时不会误拦；滚动不算。跨域框架里的操作收不到
+  const USER_INPUT = ['pointerdown', 'keydown', 'input'];
+
+  // 按在滚动条上：拖滚动条也发 pointerdown，目标是带滚动条的元素（视口的滚动条是 <html>），
+  // 落点在它的内容区之外。行内元素没有内容区尺寸（clientWidth 为 0），不按这条算
+  function onScrollbar(e) {
+    const el = e.target;
+    if (e.type !== 'pointerdown' || !el || !el.ownerDocument || !el.clientWidth || !el.clientHeight) return false;
+    if (el === el.ownerDocument.documentElement) return e.clientX >= el.clientWidth || e.clientY >= el.clientHeight;
+    const r = el.getBoundingClientRect();
+    return e.clientX >= r.left + el.clientLeft + el.clientWidth || e.clientY >= r.top + el.clientTop + el.clientHeight;
+  }
+
+  // 顶层与逐层下钻的同源框架文档（跨域框架取不到 contentDocument）
+  function frameDocs() {
+    const docs = [];
+    (function collect(d) {
+      docs.push(d);
+      for (const frame of d.querySelectorAll('iframe,frame')) {
+        let inner = null;
+        try { inner = frame.contentDocument; } catch { inner = null; }
+        if (inner) collect(inner);
+      }
+    })(doc);
+    return docs;
+  }
+
+  function watchUser() {
+    const store = win.__titanium;
+    if (!store) return;
+    if (store.guardWatch) store.guardWatch.stop();
+    const watch = { touched: false, docs: frameDocs() };
+    const mark = (e) => { if (e.isTrusted && !onScrollbar(e)) watch.touched = true; };
+    for (const d of watch.docs) for (const type of USER_INPUT) d.addEventListener(type, mark, true);
+    watch.stop = () => { for (const d of watch.docs) for (const type of USER_INPUT) d.removeEventListener(type, mark, true); };
+    store.guardWatch = watch;
+  }
+
+  // 批准后的执行载荷带着预检时的指纹：派发任何事件之前现算一遍，对不上（目标或所在对话框变了）、
+  // 或等待期间用户操作过页面，就不执行。没有记录就无从担保，按变了处理：预检之后映射被整体重建，
+  // 或出现了预检时没有的同源框架文档（新插入、重新加载过的框架上没挂监听）。
+  // 复验排在滚动与聚焦之前：scroll 事件在注入返回后才派发；聚焦触发的页面处理器在真实点击里同样先于
+  // click 运行，属于这次点击本身。调试通道 locate 返回到鼠标事件之间的几毫秒是所有真实点击共有的空档，
+  // 在注入里挪动复验的位置补不上
   function verifyExpect(of) {
     if (typeof opts.expect !== 'string') return null;
     const now = inspectTarget(of);
     if (!now.ok) return now;
-    return now.print === opts.expect ? null : { ok: false, reason: 'changed' };
+    const watch = win.__titanium && win.__titanium.guardWatch;
+    if (watch && watch.touched) return { ok: false, reason: 'touched' };
+    const watched = watch && frameDocs().every((d) => watch.docs.includes(d));
+    return watched && now.print === opts.expect ? null : { ok: false, reason: 'changed' };
   }
 
   /* ---------- 动作分派 ---------- */
@@ -864,13 +924,19 @@ export function performAction(payload) {
       const effect = prevented ? null : keyDefault(spec.key, target, twin);
       const targetTag = target.tagName ? target.tagName.toUpperCase() : '';
       if (!prevented && spec.key === 'Enter') {
-        if (targetTag === 'BUTTON' || targetTag === 'A' || targetTag === 'SUMMARY') {
+        // 按钮上的回车 = 点它本身（<input type=submit> 等同 <button>，不换成表单的默认提交按钮）
+        if (targetTag === 'BUTTON' || targetTag === 'A' || targetTag === 'SUMMARY' || (targetTag === 'INPUT' && BUTTON_TYPES[inputType(target)])) {
           target.click();
         } else if (targetTag !== 'TEXTAREA') {
-          // 单行输入框里的回车 = 提交所属表单（textarea 的回车是换行，不提交）
+          // 单行输入框里的回车 = 提交所属表单（textarea 的回车是换行，不提交）。与浏览器的隐式提交一致：
+          // 有默认提交按钮就点它，按钮上的 formmethod / formaction 随之生效，与预检报的是同一个提交；
+          // 按钮禁用时浏览器什么都不做。没有提交按钮才由表单自己提交
           const form = target.form || (target.closest ? target.closest('form') : null);
-          if (form) {
-            try { form.requestSubmit(); submitted = true; } catch { /* 无提交按钮等情况忽略 */ }
+          const submitter = form ? defaultSubmitter(form) : null;
+          if (submitter) {
+            if (!submitter.disabled) { submitter.click(); submitted = true; }
+          } else if (form) {
+            try { form.requestSubmit(); submitted = true; } catch { /* 忽略 */ }
           }
         }
       }
@@ -1033,7 +1099,10 @@ export function performAction(payload) {
         }
       }
       const password = el.tagName.toUpperCase() === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'password';
-      return finish({ ref: opts.ref, name, editable, password });
+      // 元素不可聚焦、或聚焦处理器把焦点转给了别处时，真实按键与输入会落在实际焦点上，
+      // 而不是预检与编号指向的这个元素
+      const focused = activeElement() === el;
+      return finish({ ref: opts.ref, name, editable, password, focused });
     }
 
     /* —— 调试通道：焦点、光标与滚动的快照 —— */
@@ -1060,7 +1129,9 @@ export function performAction(payload) {
     /* —— 高风险动作的预检（只读） —— */
     case 'inspect': {
       const info = inspectTarget(opts.of === 'key' ? 'key' : 'click');
-      return info.ok ? finish(info) : info;
+      if (!info.ok) return info;
+      watchUser();
+      return finish(info);
     }
 
     default:

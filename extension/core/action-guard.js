@@ -2,7 +2,8 @@
 //
 // 页内动作都经 guardAction：点击与回车先预检（core/actions.js 的 inspect 只报事实：动作触发什么、
 // 触发控件叫什么、所在对话框或表单写了什么），这里按名称与语境判定风险；命中规则或模型声明了
-// irreversible 就请用户确认。批准后的执行载荷带上预检指纹（expect），页面在等待期间变了就不执行。
+// irreversible 就请用户确认。批准后的执行载荷带上预检指纹（expect），等待期间目标或所在对话框变了、
+// 或用户在页面上操作过，就不执行。
 //
 // 硬保证只覆盖「命中规则或模型声明」的动作：无名图标且模型没有声明、脚本里的任意副作用，规则看不见，
 // 边界写在 SECURITY.md。词表只在本文件一份。
@@ -104,7 +105,7 @@ export function describeRequest(payload, info, risks, step) {
 }
 
 /**
- * 门控：需要确认的动作，用户批准后才执行，且执行时页面必须与批准时一致。
+ * 门控：需要确认的动作，用户批准后才执行，且执行时复验通过（见 core/actions.js 的 verifyExpect）。
  * 拒绝、中止、没有确认渠道都不调用 execute。批准只放行这一次 await，不留可重放的凭证。
  * @param {object} o
  * @param {object} o.payload                provider.act 的载荷
@@ -112,26 +113,30 @@ export function describeRequest(payload, info, risks, step) {
  * @param {((payload: object) => Promise<object>)|null} o.inspect   预检（performAction 的 inspect）
  * @param {((request: object, signal?: AbortSignal) => Promise<boolean>)|null} [o.confirm]  请用户确认
  * @param {(payload: object) => Promise<{ result: object, change: object|null }>} o.execute
- * @param {Set<string>} [o.denials]         本回合被拒过的动作（同一指纹不再弹窗）
+ * @param {Set<string>} [o.denials]         本回合被拒过的动作（同一目标、同一指纹不再弹窗）
  * @param {AbortSignal} [o.signal]
  * @param {number} [o.step]                 批量动作里的第几步（从 1 起）
  * @returns {Promise<{ result: object|null, change: object|null }>}
- *   未执行时 result 为 { ok: false, reason: denied | changed（执行时复验）| unconfirmed | aborted | 预检的失败原因 }
+ *   未执行时 result 为 { ok: false, reason: denied | changed / touched（执行时复验）| unconfirmed | aborted | 预检的失败原因 }
  */
 export async function guardAction({ payload, declared = false, inspect, confirm, execute, denials, signal, step }) {
-  if (!needsInspect(payload, declared)) return execute(payload);
   const refuse = (reason) => ({ result: { ok: false, reason }, change: null });
+  // 停止之后一步也不再开始：批量动作的每一步都经过这里，回合循环只在两次工具调用之间查中止
+  if (signal && signal.aborted) return refuse('aborted');
+  if (!needsInspect(payload, declared)) return execute(payload);
   if (typeof inspect !== 'function') return refuse('unconfirmed');
   const info = await inspect(payload);
+  // 预检期间点了停止：无论要不要确认都不执行
+  if (signal && signal.aborted) return refuse('aborted');
   // 预检失败（编号过期、元素消失或不可见）：执行也会以同样的原因失败
   if (!info || !info.ok) return { result: info || null, change: null };
   const { required, risks } = classifyAction(info, { declared });
   if (!required) return execute(payload);
 
-  const key = `${payload.action}\u0002${info.print}`;
+  // 拒绝记录按目标记：列表每行的「删除」名称与语境都相同，指纹一样，靠编号区分；不带编号的回车取焦点元素的编号
+  const key = [payload.action, payload.ref ?? info.targetRef ?? '', info.print].join('\u0002');
   if (denials && denials.has(key)) return refuse('denied');
   if (typeof confirm !== 'function') return refuse('unconfirmed');
-  if (signal && signal.aborted) return refuse('aborted');
   let approved;
   try {
     approved = await confirm(describeRequest(payload, info, risks, step), signal);

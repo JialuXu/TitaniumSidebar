@@ -2,7 +2,7 @@
 //
 // 驱动接口：
 //   act(tabId, payload)     执行一个页内动作，返回 performAction 同一形状的结果；
-//                           调试通道退回合成事件时结果带 fallback（'unavailable' | 'unsafe-point'）
+//                           调试通道退回合成事件时结果带 fallback（'unavailable' | 'unsafe-point' | 'unsafe-focus'）
 //   settle(tabId, budget)   等页面就位，返回 waitForSettle 同一形状，调试通道另带 requests（未返回的请求数）
 //   release()               回合结束时调用，释放通道占用的资源（调试通道在此断开附加）
 

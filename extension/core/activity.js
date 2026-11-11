@@ -11,7 +11,8 @@ import { t } from './i18n.js';
 // 经执行前确认的工具，与确认没有通过时的定稿文案
 const GUARDED_TOOLS = { click_element: 1, press_key: 1, batch_actions: 1 };
 const GUARD_TEXT = {
-  denied: 'act.guard.denied', changed: 'act.guard.changed', unconfirmed: 'act.guard.unconfirmed', aborted: 'act.guard.aborted',
+  denied: 'act.guard.denied', changed: 'act.guard.changed', touched: 'act.guard.touched',
+  unconfirmed: 'act.guard.unconfirmed', aborted: 'act.guard.aborted',
 };
 
 /**
@@ -27,7 +28,7 @@ export function describeToolActivity(name, args, phase, data = {}) {
   const jumped = data.navigated ? t('act.jumped') : '';
   // 未注册的调用根本没执行，按工具名套「点击失败」之类的文案会让人以为页面被动过
   if (phase === 'fail' && data.reason === 'not-registered') return t('act.notRegistered', { name });
-  // 执行前确认没有通过（core/action-guard.js）：同样什么都没做，说清是拒绝、页面变了还是停止
+  // 执行前确认没有通过（core/action-guard.js）：同样什么都没做，说清是拒绝、页面变了、用户动过页面还是停止
   if (phase === 'fail' && GUARD_TEXT[data.reason] && GUARDED_TOOLS[name]) {
     const what = name === 'batch_actions' ? t('act.what.step', { n: (data.done ?? 0) + 1 })
       : name === 'press_key' ? t('act.what.key', { key: a.key || '' })

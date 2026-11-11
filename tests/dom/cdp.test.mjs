@@ -124,6 +124,23 @@ describe('调试通道（真实 DOM）', { skip: !playwright && '未安装 playw
     assert.ok((await log()).includes('input:新值:true'));
   });
 
+  test('按键：元素不可聚焦时不发真实按键（会落在原焦点上），退回合成事件直接发给它', async () => {
+    await page.evaluate(() => document.getElementById('long').focus());
+    const res = await act({ action: 'key', key: 'Enter', ref: await refFor('#plain') });
+    assert.equal(res.ok, true);
+    assert.equal(res.fallback, 'unsafe-focus');
+    assert.deepEqual(await log(), ['plain:Enter:false']);
+  });
+
+  test('输入：聚焦处理器把焦点转走时不发真实输入，退回合成事件写进目标本身', async () => {
+    const res = await act({ action: 'input', ref: await refFor('#bounce'), text: '新值' });
+    assert.equal(res.ok, true);
+    assert.equal(res.fallback, 'unsafe-focus');
+    assert.equal(await page.evaluate(() => document.getElementById('bounce').value), '新值');
+    assert.equal(await page.evaluate(() => document.getElementById('name').value), '旧值');
+    assert.deepEqual(await log(), []);
+  });
+
   test('点「查询」后等到接口返回、结果行画出来才算就位', async () => {
     await act({ action: 'click', ref: await refFor('#query') });
     const settled = await driver.settle(TAB, { quietMs: 300, maxMs: 5000 });

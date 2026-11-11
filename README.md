@@ -68,7 +68,7 @@ This is off by default. Turn on **Allow page actions** in settings, or **Page ac
 
 Once enabled, the model can click, type, select, press keys, scroll, navigate, and open or close tabs. Each action appears as a line in the conversation. **Stop** skips actions that have not yet run. While the switch is off, the model cannot call these tools.
 
-Transfers, payments, orders, approval submissions, deletions, and outbound sends ask for your approval below that line before they run, and run only after you click **Approve**. After **Decline**, the model does not try the same action again. The check looks at the button's name and the text of the dialog it sits in (for example "Delete", or "OK" in a dialog asking "Delete this record?"), plus the model's own judgement. If the page has changed by the time you approve, the step does not run. Unnamed icon buttons and side effects hidden in page scripts may go unrecognised; see the security policy.
+Transfers, payments, orders, approval submissions, deletions, and outbound sends ask for your approval below that line before they run, and run only after you click **Approve**. After **Decline**, the model does not try the same action again. The check looks at the button's name and the text of the dialog it sits in (for example "Delete", or "OK" in a dialog asking "Delete this record?"), plus the model's own judgement. If the button or its dialog changed, or you clicked, pressed keys or typed on the page while the approval was pending, the step does not run; scrolling to look around is fine. Unnamed icon buttons and side effects hidden in page scripts may go unrecognised; see the security policy.
 
 After each action, the extension waits for the page to settle, for up to 5 seconds.
 

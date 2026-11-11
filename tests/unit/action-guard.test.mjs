@@ -171,6 +171,26 @@ test('拒绝时 execute 零调用，同一回合再请求同一个动作直接�
   assert.equal(again.log.executed.length, 0);
 });
 
+test('拒绝按目标记：列表另一行同名同语境的「删除」仍要确认', async () => {
+  const denials = new Set();
+  await gate({ answer: false, denials, payload: { action: 'click', ref: 7 } }).run();
+  const otherRow = gate({ answer: true, denials, payload: { action: 'click', ref: 8 } });
+  await otherRow.run();
+  assert.equal(otherRow.log.asked.length, 1);
+  assert.equal(otherRow.log.executed.length, 1);
+});
+
+test('不带编号的回车：拒绝记录按焦点元素的编号区分', async () => {
+  const denials = new Set();
+  const payload = { action: 'key', key: 'Enter' };
+  const info = (targetRef) => ({ ...click('消息'), of: 'key', key: 'Enter', via: 'send', nearby: ['发送'], print: 'same', targetRef });
+  await gate({ info: info(11), answer: false, denials, payload }).run();
+  const otherField = gate({ info: info(12), answer: true, denials, payload });
+  await otherField.run();
+  assert.equal(otherField.log.asked.length, 1);
+  assert.equal(otherField.log.executed.length, 1);
+});
+
 test('拒绝只记那一个动作：别的目标仍要单独确认；批准不缓存', async () => {
   const denials = new Set();
   await gate({ answer: false, denials }).run();
@@ -218,6 +238,26 @@ test('已中止时不再发起确认', async () => {
   assert.equal((await run()).result.reason, 'aborted');
   assert.equal(log.asked.length, 0);
   assert.equal(log.executed.length, 0);
+});
+
+test('预检期间停止：不需要确认的动作也不执行', async () => {
+  const controller = new AbortController();
+  const { run, log } = gate({
+    signal: controller.signal,
+    inspect: async () => { controller.abort(); return click('下一步'); },
+  });
+  assert.equal((await run()).result.reason, 'aborted');
+  assert.equal(log.executed.length, 0);
+});
+
+test('已停止时一步也不开始：输入、选择、滚动同样不执行', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  for (const payload of [{ action: 'input', ref: 1, text: 'x' }, { action: 'select', ref: 1, option: 'a' }, { action: 'scroll', direction: 'down', pages: 1 }]) {
+    const { run, log } = gate({ payload, signal: controller.signal });
+    assert.equal((await run()).result.reason, 'aborted', payload.action);
+    assert.equal(log.executed.length, 0, payload.action);
+  }
 });
 
 test('预检失败按该失败返回（编号过期、元素不可见），不执行', async () => {
