@@ -35,8 +35,69 @@ function buildHeaders(config) {
 }
 
 /**
+ * 正文开头的 <think>…</think> 拆成思考内容（流式，标签可能被切在两个分片里）。
+ * 本地部署的推理模型没配推理解析器时，思考过程就这样混在 content 里；只认开头那一对：
+ * 回答中途出现的 <think> 多半是模型在谈论这个标签本身。
+ * @returns {{ push(text: string): Array<{type: 'reasoning'|'delta', text: string}>, flush(): Array<object> }}
+ *   flush 在流结束时调用，交出还攒着没判定完的尾巴
+ */
+export function createThinkSplitter() {
+  const OPEN = '<think>';
+  const CLOSE = '</think>';
+  let mode = 'probe'; // probe 还没分出开头是不是 <think> → think 标签内 → text 正文
+  let held = '';
+  return {
+    push(text) {
+      const out = [];
+      held += text;
+      if (mode === 'probe') {
+        const lead = held.replace(/^\s+/, '');
+        if (lead.startsWith(OPEN)) {
+          mode = 'think';
+          held = lead.slice(OPEN.length);
+        } else if (OPEN.startsWith(lead)) {
+          return out; // 只有空白或半个开标签，等下一个分片
+        } else {
+          mode = 'text';
+        }
+      }
+      if (mode === 'think') {
+        const end = held.indexOf(CLOSE);
+        if (end < 0) {
+          // 尾巴可能是半个闭标签，留到下一个分片再判
+          let keep = Math.min(CLOSE.length - 1, held.length);
+          while (keep > 0 && !CLOSE.startsWith(held.slice(-keep))) keep--;
+          const ready = held.slice(0, held.length - keep);
+          if (ready) out.push({ type: 'reasoning', text: ready });
+          held = held.slice(held.length - keep);
+          return out;
+        }
+        if (end > 0) out.push({ type: 'reasoning', text: held.slice(0, end) });
+        held = held.slice(end + CLOSE.length);
+        mode = 'text';
+      }
+      if (held) {
+        out.push({ type: 'delta', text: held });
+        held = '';
+      }
+      return out;
+    },
+    flush() {
+      const rest = held;
+      held = '';
+      // 没闭合就结束的思考仍是思考；没分出来的开头是正文
+      return rest ? [{ type: mode === 'think' ? 'reasoning' : 'delta', text: rest }] : [];
+    },
+  };
+}
+
+/**
  * 流式对话（异步生成器），yield 结构化事件：
  *   { type: 'delta', text }                          —— 正文增量（choices[0].delta.content）
+ *   { type: 'reasoning', text, echo? }               —— 思考内容增量。三个来源：delta.reasoning_content
+ *     （DeepSeek 等；echo 为 true，带工具调用的会话里后续请求必须原样带回，否则 400）、
+ *     delta.reasoning（vLLM、Ollama 等）、正文开头的 <think> 标签
+ *   { type: 'truncated' }                            —— finish_reason 为 length：输出撞上长度上限被截断
  *   { type: 'tool_calls', calls: [{ id, name, arguments }] }
  *     —— 模型请求调用工具；流式分片已拼装完整，arguments 为 JSON 字符串，
  *        该事件最多出现一次且出现后流即结束
@@ -81,6 +142,7 @@ export async function* streamChat(config, messages, { signal, tools } = {}) {
   // 不能假设一个 chunk 到齐——不同实现（DeepSeek/各网关）的分片粒度不一。
   const pending = [];
   const readyCalls = () => pending.filter(Boolean);
+  const splitter = createThinkSplitter();
   // 没有结束标记就断流时，只有每个调用的参数都是完整 JSON 才敢当作正常结束：
   // 截在半截的参数交出去，就是拿残缺指令去改页面
   const argsComplete = () => readyCalls().every((c) => {
@@ -99,6 +161,7 @@ export async function* streamChat(config, messages, { signal, tools } = {}) {
         if (!line.startsWith('data:')) continue; // 空行与注释行（keep-alive）跳过
         const payload = line.slice(5).trim();
         if (payload === '[DONE]') {
+          yield* splitter.flush();
           // 部分网关不发 finish_reason，拼好的调用只能在这里交出去
           if (readyCalls().length) yield { type: 'tool_calls', calls: readyCalls() };
           cleanEnd = true;
@@ -127,9 +190,22 @@ export async function* streamChat(config, messages, { signal, tools } = {}) {
             if (frag.function && frag.function.arguments) slot.arguments += frag.function.arguments;
           }
         }
-        if (delta.content) yield { type: 'delta', text: delta.content };
+        if (delta.reasoning_content) {
+          yield { type: 'reasoning', text: delta.reasoning_content, echo: true };
+        } else if (typeof delta.reasoning === 'string' && delta.reasoning) {
+          yield { type: 'reasoning', text: delta.reasoning, echo: false };
+        }
+        if (delta.content) {
+          yield* splitter.push(delta.content);
+        }
         if (choice.finish_reason) {
           cleanEnd = true; // 兼容不发 [DONE] 的网关
+          yield* splitter.flush();
+          if (choice.finish_reason === 'length') {
+            yield { type: 'truncated' };
+            // 撞上长度上限时工具参数可能停在半截，残缺指令不交出去
+            if (!argsComplete()) return;
+          }
           // 宽容处理：只要攒到了分片就交给调用方，不苛求 finish_reason === 'tool_calls'
           //（部分网关对工具调用也报 'stop'）。交付后流即视为结束。
           if (readyCalls().length) {
@@ -141,6 +217,7 @@ export async function* streamChat(config, messages, { signal, tools } = {}) {
       if (done) break;
     }
     if (!cleanEnd) {
+      yield* splitter.flush();
       // 连接正常读完却没有结束标记：拼好且完整的调用照样交出，否则按断流处理
       if (readyCalls().length && argsComplete()) {
         yield { type: 'tool_calls', calls: readyCalls() };

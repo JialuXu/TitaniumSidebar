@@ -51,7 +51,7 @@ function contentTokens(content) {
 export function estimateTokens(messages, tools) {
   let n = 0;
   for (const m of messages || []) {
-    n += MESSAGE_OVERHEAD + contentTokens(m.content);
+    n += MESSAGE_OVERHEAD + contentTokens(m.content) + textTokens(m.reasoning_content);
     for (const c of m.tool_calls || []) {
       n += textTokens(c.function && c.function.name) + textTokens(c.function && c.function.arguments);
     }

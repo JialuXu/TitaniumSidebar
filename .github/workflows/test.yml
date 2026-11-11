@@ -21,7 +21,8 @@ jobs:
       - run: node --test "tests/**/*.test.mjs"
 
   dom:
-    runs-on: ubuntu-latest
+    # 固定系统版本：ubuntu-latest 换代后，锁定的 Playwright 版本装不上新系统的浏览器依赖
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

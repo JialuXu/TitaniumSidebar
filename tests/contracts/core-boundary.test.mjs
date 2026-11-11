@@ -21,6 +21,7 @@ const INJECTED = [
   { file: 'snapshot.js', name: 'snapshotPage' },
   { file: 'actions.js', name: 'performAction' },
   { file: 'highlight.js', name: 'highlightElement' },
+  { file: 'text-highlight.js', name: 'highlightText' },
   { file: 'settle.js', name: 'waitForSettle' },
   // 不经 executeScript：外壳 String(fn) 后发给沙箱页，在 Worker 里重新求值，同样不能有闭包
   { file: 'sandbox-runner.js', name: 'runSandboxedCode' },

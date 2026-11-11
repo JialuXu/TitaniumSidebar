@@ -3,6 +3,7 @@
 
 import { snapshotPage } from './core/snapshot.js';
 import { highlightElement } from './core/highlight.js';
+import { highlightText } from './core/text-highlight.js';
 import { createDrivers, debuggerAvailable } from './drivers/index.js';
 import { createSandboxHost } from './sandbox-host.js';
 import { runSandboxedCode } from './core/sandbox-runner.js';
@@ -87,7 +88,6 @@ const state = {
   },
   abortController: null,
   toolsBroken: false, // 接口不支持 tools（收到过 400/422），本会话降级纯文本；保存配置时重置
-  lastCitation: '', // 点击引用徽标暂存的原文（生产版可扩展为定位高亮）
   skillId: null, // 会话级激活技能 id：不入 config、不持久化，「新对话」清空
   // 历史会话身份：sessionId 为 null 表示当前会话还没落过库（首次保存时生成）。
   // 每个回合收尾自动保存一次；「新对话」把身份清空，下一段会话另起一条记录。
@@ -890,6 +890,32 @@ function appendNote(root, text) {
   root.appendChild(div);
 }
 
+// 思考过程：模型的推理内容收在一个默认折叠的块里，放在它所属的正文段之前。
+// 页面与模型的文字只经 textContent 写入。live 为 true 时摘要行显示「思考中…」并呼吸
+function createReasoning(text, live) {
+  const details = document.createElement('details');
+  details.className = 'reasoning';
+  const summary = document.createElement('summary');
+  const body = document.createElement('div');
+  body.className = 'reasoning-body';
+  body.textContent = text;
+  details.append(summary, body);
+  settleReasoning(details, live);
+  return details;
+}
+
+function settleReasoning(details, live) {
+  details.classList.toggle('live', live);
+  details.firstElementChild.textContent = t(live ? 'ui.reasoningLive' : 'ui.reasoning');
+}
+
+// 带工具调用的那一段是中途说明：思考过程并进说明段，一起收进过程时间轴（时间轴的节点与竖线
+// 按「活动行 / 说明段」两种子元素排，不另加第三种）。只有思考、没有说明文字时说明段只装思考
+function moveSegmentToTrace(root, seg, reasoning) {
+  if (reasoning) seg.prepend(reasoning);
+  if (seg.childNodes.length) traceBody(root).appendChild(seg); else seg.remove();
+}
+
 /* ========== 工具调用活动行 ========== */
 // 活动行行首的线性图标：按工具名取，24 视口、描边随字色。不用 emoji——各系统字形不一、
 // 无法着色、也无法随进行中/失败态统一变色。路径全是本地常量，不依赖任何外部资源。
@@ -1088,13 +1114,20 @@ function applyQuoteBadges(target, pageText) {
     badge.className = 'quote-badge';
     badge.textContent = t('ui.quoteBadge');
     badge.title = t('ui.quoteBadgeTitle');
-    badge.addEventListener('click', () => {
-      state.lastCitation = quoteText;
-      badge.textContent = t('ui.quoteStashed');
-      setTimeout(() => { badge.textContent = t('ui.quoteBadge'); }, 1200);
-    });
+    badge.addEventListener('click', () => locateQuote(quoteText));
     bq.prepend(badge);
   });
+}
+
+// 点引用徽标：在工作页上找到这段原文、滚动到位并高亮几秒。找不到时给一条临时提示——
+// 表格里的引用（正文里是 Markdown 表格行）、页面已变、已切到别的标签页都属于这种
+async function locateQuote(quoteText) {
+  let res = null;
+  try {
+    const tab = await requireSnapshotTab();
+    res = await injectFunc(tab.id, highlightText, { text: quoteText });
+  } catch { /* 标签页对不上，按找不到处理 */ }
+  if (!res || !res.ok) showToast(t('ui.quoteNotFound'));
 }
 
 // 操作行：复制全文（有正文才有）+ 重新生成（只挂在最后一条 AI 回复上，先清掉旧的）
@@ -1164,6 +1197,7 @@ async function runAgentLoop(el) {
   let seg = el.content;       // 当前正文段（工具轮次间会新开段，段间夹活动行）
   let thinking = el.thinking; // 当前「思考中」指示
   let row = null;             // 正在执行的那次工具调用的活动行
+  let reasoning = null;       // 当前段的思考过程块（模型给了思考内容才建）
   let turnError = null;       // 最终那次请求的错误（收尾时判断是否已超窗）
 
   // 流式重渲按帧合并：每帧最多重渲一次当前段
@@ -1206,8 +1240,18 @@ async function runAgentLoop(el) {
       case 'request':
         console.log('[发送内容]', ev.messages); // 验收依据：控制台可核对脱敏后的实际发送内容
         break;
+      case 'reasoning':
+        thinking.remove(); // 思考过程块的摘要行接替「思考中」指示
+        if (!reasoning) {
+          reasoning = createReasoning('', true);
+          seg.before(reasoning);
+        }
+        reasoning.lastElementChild.textContent = ev.content;
+        maybeScroll();
+        break;
       case 'delta':
         thinking.remove(); // 首字到达即撤掉「思考中」指示
+        if (reasoning) settleReasoning(reasoning, false);
         pending = ev.content;
         if (!rafId) rafId = requestAnimationFrame(render);
         break;
@@ -1215,6 +1259,7 @@ async function runAgentLoop(el) {
         if (rafId) cancelAnimationFrame(rafId);
         rafId = 0;
         thinking.remove();
+        if (reasoning) settleReasoning(reasoning, false);
         seg.innerHTML = ev.content ? renderMarkdown(ev.content) : '';
         break;
       case 'calibration':
@@ -1224,12 +1269,10 @@ async function runAgentLoop(el) {
         if (ev.what === 'tools') state.toolsBroken = true; // 本会话此后不再带 tools
         appendNote(el.root, t(ev.what === 'tools' ? 'ui.noteToolsDegraded' : 'ui.noteImageDegraded'));
         break;
-      case 'tool-round': {
+      case 'tool-round':
         // 本段正文只是中途说明，与随后的活动行一起收进过程时间轴；空段不留
-        const body = traceBody(el.root);
-        if (ev.content) body.appendChild(seg); else seg.remove();
+        moveSegmentToTrace(el.root, seg, reasoning);
         break;
-      }
       case 'tool-start':
         row = appendToolActivity(traceBody(el.root), ev.text, ev.isAction, ev.name);
         maybeScroll();
@@ -1241,12 +1284,14 @@ async function runAgentLoop(el) {
         maybeScroll();
         break;
       case 'next-round':
+        reasoning = null;
         newSegment();
         maybeScroll();
         break;
       case 'final':
         turnError = ev.error;
         console.info('[回合统计]', ev.stats); // 工具轮数、失败原因与点击无效的分布，前后对比用
+        if (ev.message._truncated) appendNote(el.root, t('ui.noteTruncated'));
         if (ev.message._error) {
           showErrorIn(el.root, ev.message._error);
         } else if (!ev.message.content && !ev.aborted) {
@@ -1853,21 +1898,25 @@ function replayConversation(messages, compact) {
         root.className = 'msg msg-ai';
         els.chat.appendChild(root);
       }
-      let seg = null;
-      if (m.content) {
-        seg = document.createElement('div');
-        seg.className = 'ai-content';
-        seg.innerHTML = renderMarkdown(m.content);
-        root.appendChild(seg);
-        lastSeg = seg;
-        lastText = m.content;
-      }
-      if (m._error) showErrorIn(root, m._error);
+      const thought = m.reasoning_content || m._reasoning;
+      const reasoning = thought ? createReasoning(thought, false) : null;
+      const seg = document.createElement('div');
+      seg.className = 'ai-content';
+      if (m.content) seg.innerHTML = renderMarkdown(m.content);
       if (m.tool_calls && m.tool_calls.length) {
         // 带工具调用的正文是中途说明，与随后的活动行一起进过程时间轴（与实时回合同一结构）
-        if (seg) traceBody(root).appendChild(seg);
+        moveSegmentToTrace(root, seg, reasoning);
         for (const c of m.tool_calls) toolCalls.set(c.id, c.function || {});
+      } else {
+        if (reasoning) root.appendChild(reasoning);
+        if (m.content) {
+          root.appendChild(seg);
+          lastSeg = seg;
+          lastText = m.content;
+        }
       }
+      if (m._truncated) appendNote(root, t('ui.noteTruncated'));
+      if (m._error) showErrorIn(root, m._error);
       return;
     }
     if (m.role === 'tool' && root && m._ui) {

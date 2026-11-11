@@ -6,7 +6,7 @@
 //   3. 链接 href 中的 & 和 " 已成 &amp;/&quot;，属性无法被逃逸，
 //      唯一剩余注入面是 URL scheme——只放行 http(s):// 与 #，其余按纯文本输出。
 //
-// 支持子集：标题 h1–h4、加粗/斜体、有序/无序列表（单层）、行内代码、
+// 支持子集：标题 h1–h4、加粗/斜体/删除线、有序/无序列表（按缩进嵌套）、行内代码、
 // 围栏代码块（带复制按钮，csv 块另有下载按钮，按钮事件均由外壳委托绑定）、表格、分隔线、链接、引用块。
 // 流式渲染由外壳负责：每次收到 delta 后用累计全文全量重渲当前消息即可，
 // 未闭合的围栏代码块会被自然渲染到文末。
@@ -24,7 +24,7 @@ export function escapeHtml(s) {
 }
 
 // 行内解析：先抽出行内代码保护其内容不被加粗/斜体规则命中，
-// 再依次处理粗体、斜体、链接，最后回填代码占位符。
+// 再依次处理粗体、斜体、删除线、链接，最后回填代码占位符。
 function renderInline(text) {
   const codeSpans = [];
   let out = text.replace(/`([^`\n]+)`/g, (_, code) => {
@@ -33,6 +33,7 @@ function renderInline(text) {
   });
   out = out.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
   out = out.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+  out = out.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
   out = out.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (m, label, href) => {
     if (!/^(https?:\/\/|#)/i.test(href)) return m; // 可疑 scheme 按纯文本输出
     return `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`;
@@ -65,6 +66,64 @@ function isTableStart(lines, i) {
 
 const HR_RE = /^\s*(-{3,}|\*{3,}|_{3,})\s*$/;
 
+// 列表项：缩进 + 标记（- * + 或「1.」「1)」）+ 内容
+const LIST_RE = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
+
+/**
+ * 从第 i 行起收一整个列表（含嵌套）。列表项之间的空行不打断列表：模型常在编号项之间空一行，
+ * 打断的话每一项都成了从 1 起编的独立列表。项下面缩进的普通行并进该项。
+ * @returns {{ items: Array<{ indent: number, ordered: boolean, num: number, parts: string[] }>, next: number }}
+ */
+function collectList(lines, i) {
+  const items = [];
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) {
+      let j = i + 1;
+      while (j < lines.length && !lines[j].trim()) j++;
+      if (j < lines.length && LIST_RE.test(lines[j])) { i = j; continue; }
+      break;
+    }
+    const m = line.match(LIST_RE);
+    if (m) {
+      items.push({
+        indent: m[1].replace(/\t/g, '    ').length,
+        ordered: /\d/.test(m[2]),
+        num: parseInt(m[2], 10),
+        parts: [m[3]],
+      });
+    } else if (/^\s{2,}\S/.test(line) && !/^\s*(```|#{1,4}\s|&gt;)/.test(line) && !isTableStart(lines, i)) {
+      items[items.length - 1].parts.push(line.trim());
+    } else {
+      break;
+    }
+    i++;
+  }
+  return { items, next: i };
+}
+
+/**
+ * 把 items[from] 起、同一层的连续列表项渲染成一个 <ul>/<ol>；比本层多缩进两格以上的项
+ * 递归成上一项里的子列表。遇到缩进更浅的项、或同层换了有序 / 无序就收尾，由调用方接着建下一个。
+ * 有序列表不从 1 起编时带 start（被段落隔开的「3. 4. 5.」接着编号）。
+ */
+function buildList(items, from) {
+  const { indent, ordered, num } = items[from];
+  let out = ordered ? (num === 1 ? '<ol>' : `<ol start="${num}">`) : '<ul>';
+  let k = from;
+  while (k < items.length && items[k].indent >= indent && items[k].ordered === ordered) {
+    out += `<li>${items[k].parts.map((p) => renderInline(p)).join('<br>')}`;
+    k++;
+    while (k < items.length && items[k].indent >= indent + 2) {
+      const child = buildList(items, k);
+      out += child.html;
+      k = child.next;
+    }
+    out += '</li>';
+  }
+  return { html: out + (ordered ? '</ol>' : '</ul>'), next: k };
+}
+
 /**
  * 渲染 Markdown 为安全 HTML 字符串。
  * @param {string} mdText 原始 Markdown 文本
@@ -85,13 +144,15 @@ export function renderMarkdown(mdText) {
     }
 
     // 围栏代码块（宽松匹配 info string；未闭合时渲染到文末——流式中途状态）
-    const fence = line.match(/^```(.*)$/);
+    // 围栏可以带缩进（列表项下面的代码块），代码行去掉与开围栏等量的缩进
+    const fence = line.match(/^(\s*)```(.*)$/);
     if (fence) {
-      const lang = fence[1].trim().split(/\s+/)[0];
+      const lang = fence[2].trim().split(/\s+/)[0];
+      const dedent = new RegExp(`^\\s{0,${fence[1].length}}`);
       const code = [];
       i++;
-      while (i < lines.length && !/^```\s*$/.test(lines[i])) {
-        code.push(lines[i]);
+      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) {
+        code.push(lines[i].replace(dedent, ''));
         i++;
       }
       i++; // 跳过闭合行（无闭合行时已到文末）
@@ -162,25 +223,16 @@ export function renderMarkdown(mdText) {
       continue;
     }
 
-    // 无序列表（单层）
-    if (/^\s*[-*+]\s+/.test(line)) {
-      const items = [];
-      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\s*[-*+]\s+/, ''));
-        i++;
+    // 列表（有序 / 无序，按缩进嵌套）
+    if (LIST_RE.test(line)) {
+      const list = collectList(lines, i);
+      i = list.next;
+      let k = 0;
+      while (k < list.items.length) {
+        const built = buildList(list.items, k);
+        html.push(built.html);
+        k = built.next;
       }
-      html.push('<ul>' + items.map((it) => `<li>${renderInline(it)}</li>`).join('') + '</ul>');
-      continue;
-    }
-
-    // 有序列表（单层）
-    if (/^\s*\d+[.)]\s+/.test(line)) {
-      const items = [];
-      while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\s*\d+[.)]\s+/, ''));
-        i++;
-      }
-      html.push('<ol>' + items.map((it) => `<li>${renderInline(it)}</li>`).join('') + '</ol>');
       continue;
     }
 
@@ -190,7 +242,7 @@ export function renderMarkdown(mdText) {
     while (
       i < lines.length &&
       lines[i].trim() &&
-      !/^(#{1,4}\s|```|\s*[-*+]\s+|\s*\d+[.)]\s+)/.test(lines[i]) &&
+      !/^(#{1,4}\s|\s*```|\s*[-*+]\s+|\s*\d+[.)]\s+)/.test(lines[i]) &&
       !/^&gt;/.test(lines[i].trim()) &&
       !HR_RE.test(lines[i]) &&
       !isTableStart(lines, i)

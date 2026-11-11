@@ -50,6 +50,27 @@ export function describeError(err) {
 
 const isAbort = (err) => err instanceof LlmError && err.kind === 'abort';
 
+/**
+ * 请求失败后自动重试前各等多久（毫秒），数组长度即重试次数。
+ * 只重试「模型一个字都还没吐」的失败：工具要等整段流读完才执行，此刻重发不会让任何动作跑第二遍。
+ */
+export const RETRY_DELAYS = [1000, 3000];
+
+// 值得再试一次的失败：断网抖动、限流、服务端临时故障、流刚开就断
+const isTransient = (err) => err instanceof LlmError && (
+  err.kind === 'network' || err.kind === 'stream' ||
+  (err.kind === 'http' && (err.status === 429 || err.status >= 500))
+);
+
+// 可被中止信号打断的等待
+function sleep(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal && signal.aborted) return resolve();
+    const timer = setTimeout(resolve, ms);
+    if (signal) signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+  });
+}
+
 /* ========== 请求形态 ========== */
 
 /**
@@ -152,9 +173,11 @@ function countCall(stats, name, isAction, meta) {
  * @param {{ summary: string, boundary: number }|null} o.compact 压缩状态
  * @param {{ url: string, textTotal?: number }} o.sentPage 模型手里那份页面（不变式 6）
  * @param {AbortSignal} [o.signal]
+ * @param {number[]} [o.retryDelays] 自动重试前的等待，缺省 RETRY_DELAYS（测试传 0 免等）
  *
  * 产出事件：
  *   { type: 'request', messages, tools }            每次请求发出前（出网形态，外壳可打印核对）
+ *   { type: 'reasoning', content }                  思考内容增量，content 为本段累计全文
  *   { type: 'delta', content }                      正文增量，content 为本段累计全文
  *   { type: 'segment', content }                    本段的流结束了（正常、出错或中止）
  *   { type: 'calibration', ratio }                  接口报了用量，得出新的校准系数
@@ -166,11 +189,12 @@ function countCall(stats, name, isAction, meta) {
  *                                                   args 为调用参数，content 为回填给模型的工具结果
  *   { type: 'next-round' }                          工具结果已回填，开始下一轮请求
  *   { type: 'final', message, error, aborted, stats }  回合结束。message 为最终回复，报错文案已写在
- *                                                   message._error；中止在工具阶段时它是不入历史的空回复。
+ *                                                   message._error，输出被长度上限截断时 message._truncated 为 true；中止在工具阶段时它是不入历史的空回复。
  *                                                   stats 为本回合的工具统计（见 turnStats）
  */
 export async function* runAgentTurn({
   messages, provider, profile, actionsEnabled, skillId, toolsBroken, perceivable, compact, sentPage, signal,
+  retryDelays = RETRY_DELAYS,
 }) {
   // 开了页面操作的回合允许更多轮：一次表单填写光是「列元素 + 逐个输入 + 提交 + 验证」
   // 就要八九轮，5 轮必然半途而废
@@ -195,23 +219,46 @@ export async function* runAgentTurn({
       yield { type: 'request', messages: requestMessages, tools };
 
       let acc = '';
+      let reasoning = '';
+      let echoReasoning = false; // 思考内容来自 reasoning_content 字段：后续请求要原样带回
+      let truncated = false;
       let calls = null;
       let usage = null;
       let streamError = null;
-      try {
-        for await (const ev of streamChat(profile, requestMessages, { signal, tools })) {
-          if (ev.type === 'delta') {
-            acc += ev.text;
-            yield { type: 'delta', content: acc };
-          } else if (ev.type === 'tool_calls') {
-            calls = ev.calls;
-          } else if (ev.type === 'usage') {
-            usage = ev;
+      for (let attempt = 0; ; attempt++) {
+        streamError = null;
+        try {
+          for await (const ev of streamChat(profile, requestMessages, { signal, tools })) {
+            if (ev.type === 'delta') {
+              acc += ev.text;
+              yield { type: 'delta', content: acc };
+            } else if (ev.type === 'reasoning') {
+              reasoning += ev.text;
+              if (ev.echo) echoReasoning = true;
+              yield { type: 'reasoning', content: reasoning };
+            } else if (ev.type === 'tool_calls') {
+              calls = ev.calls;
+            } else if (ev.type === 'usage') {
+              usage = ev;
+            } else if (ev.type === 'truncated') {
+              truncated = true;
+            }
           }
+        } catch (err) {
+          streamError = err;
         }
-      } catch (err) {
-        streamError = err;
+        if (!isTransient(streamError) || acc || reasoning || attempt >= retryDelays.length) break;
+        await sleep(retryDelays[attempt], signal);
+        if (aborted()) {
+          streamError = new LlmError('abort');
+          break;
+        }
       }
+      // 思考内容随消息保存。reasoning_content 是出网字段；其余来源只供界面回放（_ 前缀不出网）
+      const withReasoning = (message) => {
+        if (reasoning) message[echoReasoning ? 'reasoning_content' : '_reasoning'] = reasoning;
+        return message;
+      };
       const ratio = calibrationOf(usage, requestMessages, tools);
       if (ratio) yield { type: 'calibration', ratio };
       yield { type: 'segment', content: acc };
@@ -240,7 +287,8 @@ export async function* runAgentTurn({
       // 本次请求没带 tools（到了轮数上限、已降级纯文本、页面不可读且没开动作）时，
       // 网关仍返回的 tool_calls 整批丢弃：不落历史就不必补占位，也不会再请求一轮
       if (streamError || !calls || !calls.length || !tools) {
-        const message = { role: 'assistant', content: acc };
+        const message = withReasoning({ role: 'assistant', content: acc });
+        if (truncated && !streamError) message._truncated = true;
         // 中止不算错误，保留已生成部分；错误文案落在消息上，历史回放时原样重现
         if (streamError && !isAbort(streamError)) message._error = describeError(streamError);
         messages.push(message);
@@ -250,13 +298,13 @@ export async function* runAgentTurn({
 
       // 模型请求调用工具：assistant(tool_calls) 落历史，每个调用逐一执行并成对回填 tool 消息
       yield { type: 'tool-round', content: acc };
-      messages.push({
+      messages.push(withReasoning({
         role: 'assistant',
         content: acc,
         tool_calls: calls.map((c) => ({
           id: c.id, type: 'function', function: { name: c.name, arguments: c.arguments },
         })),
-      });
+      }));
 
       // 同一批调用里一旦发生跳转，后续动作的元素编号已全部失效，不能再盲目执行
       let batchBroken = false;

@@ -1,4 +1,4 @@
-// core/agent.js —— 回合编排与压缩请求（验收标准第 6、8、9、10、15、21、28、34、39 条）
+// core/agent.js —— 回合编排与压缩请求（验收标准第 6、8、9、10、15、21、28、34、39、44、45 条）
 
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -75,6 +75,7 @@ async function turn(opts = {}) {
     compact: null,
     sentPage: initialSentPage(),
     signal: opts.signal,
+    retryDelays: opts.retryDelays || [0, 0], // 自动重试免等
   }));
   assert.equal(error, null);
   return { events, messages, types: events.map((e) => e.type) };
@@ -397,6 +398,96 @@ test('第 39 条：代码运行中点停止，回填「已停止运行」，tool
   const { events, messages } = await turn({ provider, signal: controller.signal });
   assertToolChain(messages);
   assert.deepEqual(messages.slice(-2).map((m) => m.content), [t('res.codeAborted'), t('sys.aborted')]);
+  assert.equal(fetches.length, 1);
+  assert.equal(events.at(-1).aborted, true);
+});
+
+/* ========== 思考内容、截断与自动重试 ========== */
+
+const reasoned = (field, thought, ...rest) => sseResponse([
+  data({ choices: [{ index: 0, delta: { [field]: thought }, finish_reason: null }] }), ...rest, data('[DONE]'),
+]);
+
+test('第 44 条：reasoning_content 随消息保存，后续请求原样带回', async (ctx) => {
+  const call = toolChunk([{ index: 0, id: 'c1', name: 'find_in_page', arguments: '{"query":"利润"}' }], 'tool_calls');
+  const fetches = scripted(ctx, [
+    reasoned('reasoning_content', '先搜一下', data(call)),
+    reasoned('reasoning_content', '够了', data(deltaChunk('答', 'stop'))),
+  ]);
+  const { types, events, messages } = await turn();
+  assert.deepEqual(types.slice(0, 3), ['request', 'reasoning', 'segment']);
+  assert.equal(events[1].content, '先搜一下');
+  assert.equal(messages[1].reasoning_content, '先搜一下');
+  assert.deepEqual(messages.at(-1), { role: 'assistant', content: '答', reasoning_content: '够了' });
+  // 带工具调用的那条 assistant 回到接口时仍带着思考内容（DeepSeek 思考模式缺了它会 400）
+  const sent = fetches[1].body.messages.find((m) => m.tool_calls);
+  assert.equal(sent.reasoning_content, '先搜一下');
+});
+
+test('第 44 条：reasoning 字段与 <think> 标签里的思考只供界面回放，不出网', async (ctx) => {
+  const fetches = scripted(ctx, [
+    reasoned('reasoning', '想', data(deltaChunk('一', 'stop'))),
+    sseResponse([data(deltaChunk('<think>再想</think>二', 'stop')), data('[DONE]')]),
+  ]);
+  const { messages } = await turn();
+  assert.deepEqual(messages.at(-1), { role: 'assistant', content: '一', _reasoning: '想' });
+  messages.push(userMsg('再问'));
+  const second = await turn({ messages });
+  assert.deepEqual(second.messages.at(-1), { role: 'assistant', content: '二', _reasoning: '再想' });
+  const sent = fetches[1].body.messages.find((m) => m.role === 'assistant');
+  assert.deepEqual(sent, { role: 'assistant', content: '一' });
+});
+
+test('第 44 条：上下文估算把带回的思考内容算进去', () => {
+  const base = { profile: PROFILE, actionsEnabled: false, skillId: null, toolsBroken: false, compact: null };
+  const plain = measureNextRequest({ ...base, messages: [userMsg(), { role: 'assistant', content: '答' }] });
+  const withThought = measureNextRequest({
+    ...base, messages: [userMsg(), { role: 'assistant', content: '答', reasoning_content: '想'.repeat(1000) }],
+  });
+  assert.ok(withThought.used > plain.used + 500);
+});
+
+test('第 45 条：输出被长度上限截断时在最终回复上做标记', async (ctx) => {
+  scripted(ctx, [sseResponse([data(deltaChunk('写到一半', 'length')), data('[DONE]')])]);
+  const { messages } = await turn();
+  assert.deepEqual(messages.at(-1), { role: 'assistant', content: '写到一半', _truncated: true });
+});
+
+test('第 45 条：一个字都没吐的 429 / 5xx / 断网自动重试，成功后照常作答', async (ctx) => {
+  const fetches = scripted(ctx, [
+    httpError(503), () => { throw new TypeError('fetch failed'); }, text('答'),
+  ]);
+  const { types, messages, events } = await turn();
+  assert.equal(fetches.length, 3);
+  assert.deepEqual(types, ['request', 'delta', 'segment', 'final']); // 重试不重复发事件
+  assert.equal(messages.at(-1).content, '答');
+  assert.equal(events.at(-1).error, null);
+});
+
+test('第 45 条：重试次数用完后照常报错；401 这类错误不重试', async (ctx) => {
+  let fetches = scripted(ctx, [httpError(429)]);
+  let res = await turn();
+  assert.equal(fetches.length, 3);
+  assert.equal(res.messages.at(-1)._error, t('err.http429'));
+
+  fetches = scripted(ctx, [httpError(401)]);
+  res = await turn();
+  assert.equal(fetches.length, 1);
+  assert.equal(res.messages.at(-1)._error, t('err.http401'));
+});
+
+test('第 45 条：已经吐过字的断流不重试，保留已生成的部分', async (ctx) => {
+  const fetches = scripted(ctx, [sseResponse([data(deltaChunk('半截'))]), text('不该用到')]);
+  const { messages } = await turn();
+  assert.equal(fetches.length, 1);
+  assert.equal(messages.at(-1).content, '半截');
+  assert.equal(messages.at(-1)._error, t('err.stream'));
+});
+
+test('第 45 条：等待重试期间点停止，不再发请求', async (ctx) => {
+  const controller = new AbortController();
+  const fetches = scripted(ctx, [() => { queueMicrotask(() => controller.abort()); return httpError(503); }, text('不该用到')]);
+  const { events } = await turn({ signal: controller.signal, retryDelays: [50, 50] });
   assert.equal(fetches.length, 1);
   assert.equal(events.at(-1).aborted, true);
 });
