@@ -5,8 +5,9 @@
 // 等到接口回来，而不只是 DOM 静下来。
 //
 // 代价是浏览器顶部的「正在调试此浏览器」横幅：一个回合里第一次动作时附加，回合结束（release）
-// 时断开，横幅只在 AI 操作页面期间出现。附加失败、用户点了横幅上的「取消」、或真实点击会点错
-// （中心点被遮挡、落在内部另一个控件上）时，这一步退回合成事件通道，结果里注明 fallback。
+// 时断开，横幅只在 AI 操作页面期间出现。附加失败、用户点了横幅上的「取消」、真实点击会点错
+// （中心点被遮挡、落在内部另一个控件上）、或焦点落不到目标元素上（真实按键与输入会打到实际焦点）时，
+// 这一步退回合成事件通道，结果里注明 fallback。
 //
 // 只接管点击、按键与文字输入；选择原生下拉、滚动、只读提取仍走合成事件通道。
 // 删掉本文件、在 drivers/index.js 里不再创建它，并从 manifest 去掉 debugger 权限，
@@ -103,6 +104,7 @@ export function createCdpDriver({ inject, fallback, debuggerApi = chrome.debugge
   }
 
   async function click(tabId, payload) {
+    // 批准过的点击带着 expect：locate 先复验，没过就不点（退回合成事件时同样会再复验一次）
     const loc = await inject(tabId, performAction, { ...payload, action: 'locate' });
     if (!loc || !loc.ok) return loc;
     if (!loc.safe) return { ...(await fallback.act(tabId, payload)), fallback: 'unsafe-point' };
@@ -119,9 +121,15 @@ export function createCdpDriver({ inject, fallback, debuggerApi = chrome.debugge
     if (payload.ref != null) {
       const focused = await inject(tabId, performAction, { ...payload, action: 'focus' });
       if (!focused || !focused.ok) return focused;
+      // 焦点没落在元素本身：真实按键会打到原来的焦点上（比如刚输入过的聊天框），
+      // 与预检、复验看的不是同一个元素；合成事件直接派发给元素
+      if (!focused.focused) return { ...(await fallback.act(tabId, payload)), fallback: 'unsafe-focus' };
     }
-    const probe = () => inject(tabId, performAction, { session: payload.session, action: 'probe' });
-    const before = await probe();
+    const probe = (extra) => inject(tabId, performAction, { session: payload.session, action: 'probe', ...extra });
+    // 批准过的按键在发真实按键前的最后一次注入里复验（与合成事件通道的 key 分支同一份指纹）；
+    // 复验没过或注入失败都不发按键
+    const before = await probe(payload.expect == null ? {} : { expect: payload.expect, ref: payload.ref, key: payload.key });
+    if (payload.expect != null && !(before && before.ok)) return before;
     const base = { key: payload.key, code: spec.code, windowsVirtualKeyCode: spec.keyCode, nativeVirtualKeyCode: spec.keyCode };
     const command = mac && before && before.ok && before.field ? MAC_FIELD_COMMANDS[payload.key] : '';
     const commands = command ? { commands: [command] } : {};
@@ -142,6 +150,7 @@ export function createCdpDriver({ inject, fallback, debuggerApi = chrome.debugge
     const focused = await inject(tabId, performAction, { ...payload, action: 'focus', select: true });
     if (!focused || !focused.ok) return focused;
     if (!focused.editable) return { ok: false, reason: 'not-editable', name: focused.name };
+    if (!focused.focused) return { ...(await fallback.act(tabId, payload)), fallback: 'unsafe-focus' };
     const text = String(payload.text == null ? '' : payload.text);
     // 内容已全选：有字就整体替换成新文字，空串就删掉选中的内容
     if (text) await send(tabId, 'Input.insertText', { text });

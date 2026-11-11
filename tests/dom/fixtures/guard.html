@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>执行前确认的预检</title>
+<style>
+  body { font: 14px sans-serif; margin: 16px; }
+  .spacer { height: 3000px; }
+</style>
+</head>
+<body>
+  <button id="next">下一步</button>
+
+  <!-- 删除确认框：按钮名称只是泛泛的「确 定」（antd 在两个汉字间插空格），后果写在对话框正文里 -->
+  <div role="dialog" id="dlg">
+    <p id="dlg-text">确定要删除这条记录吗？</p>
+    <button id="cancel">取消</button>
+    <button id="ok">确 定</button>
+  </div>
+
+  <!-- post 表单：回车提交时的默认按钮是第一个提交按钮；表单外的提交按钮用 form 属性关联 -->
+  <form id="claim" method="post" onsubmit="event.preventDefault()">
+    <h3>报销申请</h3>
+    <input id="amount" name="amount" placeholder="金额">
+    <button id="submit">提交</button>
+  </form>
+  <input id="pay" type="submit" value="立即支付" form="claim">
+
+  <form id="search" method="get" onsubmit="event.preventDefault()">
+    <input id="q" type="search" placeholder="搜索">
+    <button id="go">搜索</button>
+  </form>
+
+  <!-- 聊天框：不在表单里，回车由页面脚本发出 -->
+  <div id="composer">
+    <textarea id="chat" placeholder="输入消息">草稿内容</textarea>
+    <button id="emoji">表情</button>
+    <button id="send">发送</button>
+  </div>
+
+  <div id="filter"><input id="find" placeholder="搜索订单"><button id="find-go">筛选</button></div>
+
+  <!-- 默认提交按钮自带 formmethod：浏览器回车提交就是点它，以按钮上的方法为准 -->
+  <form id="lookup" method="post" onsubmit="event.preventDefault()">
+    <input id="code" placeholder="单号">
+    <button id="lookup-go" formmethod="get">提交</button>
+    <input id="lookup-alt" type="submit" value="另存">
+  </form>
+
+  <!-- 同源框架：等待确认期间在框架里的输入也算用户操作 -->
+  <iframe id="frame" srcdoc="<input id='inner' placeholder='备注'>"></iframe>
+
+  <a id="news" href="https://example.com/a">央行发布新规</a>
+  <a id="del-link" href="#" onclick="return false">删除</a>
+  <label><input id="agree" type="checkbox"> 同意协议</label>
+
+  <div class="spacer"></div>
+  <button id="far">删除</button>
+
+  <script>
+    // 记下所有派发到页面的交互事件（捕获阶段，任何目标都记）
+    window.__events = [];
+    for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click', 'keydown', 'keyup', 'focusin']) {
+      document.addEventListener(type, (e) => window.__events.push(type + ':' + (e.target.id || e.target.tagName)), true);
+    }
+    // 提交记提交者：浏览器的隐式提交由默认按钮发起，表单自己提交时没有提交者
+    document.addEventListener('submit', (e) => window.__events.push('submit:' + (e.submitter ? e.submitter.id : 'form')), true);
+  </script>
+</body>
+</html>

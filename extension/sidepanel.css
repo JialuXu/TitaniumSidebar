@@ -725,6 +725,44 @@ body {
   50% { opacity: 0.55; }
 }
 
+/* 执行前确认：挂在等待中的动作行下方。活动行本身不加底色边框，这一块是要用户动手的，
+   用警示色细框与浅底和过程日志区分开；等待期间活动行停止呼吸，按钮才不跟着闪 */
+.tool-activity.waiting { animation: none; }
+
+.guard-ask {
+  margin: 6px 0 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--caution);
+  border-radius: var(--radius-sm);
+  background: var(--caution-soft);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.guard-head {
+  font-weight: 600;
+  color: var(--caution);
+}
+
+.guard-action {
+  margin-top: 4px;
+  font-weight: 500;
+  word-break: break-word;
+}
+
+.guard-line {
+  margin-top: 2px;
+  color: var(--text-2);
+  word-break: break-word;
+}
+
+.guard-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 /* 截图缩略图：默认小图，点击放大 */
 .tool-thumb {
   display: block;

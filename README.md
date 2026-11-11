@@ -66,7 +66,9 @@ Quote pages suggest Market digest. Disclosure sites suggest Financial statements
 
 This is off by default. Turn on **Allow page actions** in settings, or **Page actions** in the **+** menu. Both control the same switch. The first time, confirmation is required.
 
-Once enabled, the model can click, type, select, press keys, scroll, navigate, and open or close tabs. Each action appears as a line in the conversation. **Stop** skips actions that have not yet run. Transfers, payments, orders, approval submissions, and deletions are explained first and wait for explicit agreement. That requirement is part of the prompt. While the switch is off, the model cannot call these tools.
+Once enabled, the model can click, type, select, press keys, scroll, navigate, and open or close tabs. Each action appears as a line in the conversation. **Stop** skips actions that have not yet run. While the switch is off, the model cannot call these tools.
+
+Transfers, payments, orders, approval submissions, deletions, and outbound sends ask for your approval below that line before they run, and run only after you click **Approve**. After **Decline**, the model does not try the same action again. The check looks at the button's name and the text of the dialog it sits in (for example "Delete", or "OK" in a dialog asking "Delete this record?"), plus the model's own judgement. If the button or its dialog changed, or you clicked, pressed keys or typed on the page while the approval was pending, the step does not run; scrolling to look around is fine. Unnamed icon buttons and side effects hidden in page scripts may go unrecognised; see the security policy.
 
 After each action, the extension waits for the page to settle, for up to 5 seconds.
 
@@ -97,7 +99,7 @@ Without the debugger channel, actions are synthetic events (`isTrusted` is false
 
 Contributions follow these constraints: no dependencies and no build step, `core/` does not call `chrome.*`, injected functions stay self-contained, and user-facing and model-facing text lives in `core/i18n.js` in both languages. The `main` branch is protected: fork the repository, then open a PR.
 
-Report vulnerabilities through the [Security tab](https://github.com/JialuXu/TitaniumSidebar/security/advisories/new), not in a public issue. Limited regex redaction, screenshots that are not redacted, and prompt-level confirmation for irreversible actions are described in the security policy.
+Report vulnerabilities through the [Security tab](https://github.com/JialuXu/TitaniumSidebar/security/advisories/new), not in a public issue. Limited regex redaction, screenshots that are not redacted, and what pre-execution approval cannot recognise are described in the security policy.
 
 ---
 

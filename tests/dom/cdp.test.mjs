@@ -6,6 +6,7 @@
 import { describe, test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { snapshotPage } from '../../extension/core/snapshot.js';
+import { performAction } from '../../extension/core/actions.js';
 import { createSyntheticDriver } from '../../extension/drivers/synthetic.js';
 import { createCdpDriver } from '../../extension/drivers/cdp.js';
 import { setLocale, injectedStrings } from '../../extension/core/i18n.js';
@@ -123,6 +124,23 @@ describe('调试通道（真实 DOM）', { skip: !playwright && '未安装 playw
     assert.ok((await log()).includes('input:新值:true'));
   });
 
+  test('按键：元素不可聚焦时不发真实按键（会落在原焦点上），退回合成事件直接发给它', async () => {
+    await page.evaluate(() => document.getElementById('long').focus());
+    const res = await act({ action: 'key', key: 'Enter', ref: await refFor('#plain') });
+    assert.equal(res.ok, true);
+    assert.equal(res.fallback, 'unsafe-focus');
+    assert.deepEqual(await log(), ['plain:Enter:false']);
+  });
+
+  test('输入：聚焦处理器把焦点转走时不发真实输入，退回合成事件写进目标本身', async () => {
+    const res = await act({ action: 'input', ref: await refFor('#bounce'), text: '新值' });
+    assert.equal(res.ok, true);
+    assert.equal(res.fallback, 'unsafe-focus');
+    assert.equal(await page.evaluate(() => document.getElementById('bounce').value), '新值');
+    assert.equal(await page.evaluate(() => document.getElementById('name').value), '旧值');
+    assert.deepEqual(await log(), []);
+  });
+
   test('点「查询」后等到接口返回、结果行画出来才算就位', async () => {
     await act({ action: 'click', ref: await refFor('#query') });
     const settled = await driver.settle(TAB, { quietMs: 300, maxMs: 5000 });
@@ -137,6 +155,34 @@ describe('调试通道（真实 DOM）', { skip: !playwright && '未安装 playw
     const res = await driver.settle(TAB, { quietMs: 300, maxMs: 800 });
     assert.equal(res.settled, false);
     assert.equal(res.requests, 1);
+  });
+
+  test('第 14 条：批准过的点击在 locate 里复验，指纹对不上就不点（也不退回合成事件再点）', async () => {
+    const ref = await refFor('#el-row input');
+    const res = await act({ action: 'click', ref, expect: 'stale-print' });
+    assert.deepEqual(res, { ok: false, reason: 'changed' });
+    assert.deepEqual(await log(), []);
+    const { print } = await inject(page, performAction, { action: 'inspect', of: 'click', ref, session });
+    assert.equal((await act({ action: 'click', ref, expect: print })).channel, 'cdp');
+    assert.deepEqual(await log(), ['row:true:true']);
+  });
+
+  test('第 14 条：批准过的按键在发真实按键前的 probe 里复验，对不上就不发', async () => {
+    const sent = [];
+    const spy = {
+      ...api,
+      sendCommand: (target, method, params) => {
+        if (method === 'Input.dispatchKeyEvent') sent.push(params.key);
+        return api.sendCommand(target, method, params);
+      },
+    };
+    const run = (tabId, fn, args) => inject(page, fn, args);
+    const guarded = createCdpDriver({ inject: run, fallback: synthetic, debuggerApi: spy });
+    const ref = await refFor('#long');
+    const res = await guarded.act(TAB, { action: 'key', key: 'Enter', ref, expect: 'stale-print', session, i18n: injectedStrings() });
+    assert.deepEqual(res, { ok: false, reason: 'changed' });
+    assert.deepEqual(sent, []);
+    await guarded.release();
   });
 
   test('回合结束断开附加；附加失败时退回合成事件', async () => {

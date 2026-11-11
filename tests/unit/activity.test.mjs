@@ -29,6 +29,17 @@ test('第 28 条：未注册的调用显示「未执行」，而不是套用该�
   );
 });
 
+test('第 14 条：执行前确认没通过时写明「未执行」与原因，批量写第几步', () => {
+  assert.equal(describeToolActivity('click_element', { ref: 9 }, 'fail', { ref: 9, reason: 'denied' }), '点击 [9]：你已拒绝，未执行');
+  assert.equal(describeToolActivity('press_key', { key: 'Enter' }, 'fail', { key: 'Enter', reason: 'changed' }), '按 Enter：等待确认期间页面变了，未执行');
+  assert.equal(describeToolActivity('click_element', { ref: 9 }, 'fail', { ref: 9, reason: 'touched' }), '点击 [9]：等待确认期间你操作过页面，未执行');
+  assert.equal(describeToolActivity('batch_actions', { steps: [{}, {}, {}] }, 'fail', { total: 3, done: 1, reason: 'aborted' }), '第 2 步：已停止，未执行');
+  // run_javascript 的中止有自己的文案
+  assert.equal(describeToolActivity('run_javascript', { code: '1' }, 'fail', { reason: 'aborted' }), t('act.code.aborted'));
+  setLocale('en');
+  assert.equal(describeToolActivity('click_element', { ref: 9 }, 'fail', { ref: 9, reason: 'unconfirmed' }), 'Click [9]: could not ask for your approval — not performed');
+});
+
 test('done 阶段以 meta.data 为准', () => {
   assert.equal(describeToolActivity('find_in_page', { query: 'a' }, 'done', { query: 'b', total: 3 }), t('act.find.done', { query: 'b', total: 3 }));
   assert.equal(describeToolActivity('find_in_page', { query: 'a' }, 'done', { query: 'b', total: 0 }), t('act.find.none', { query: 'b', total: 0 }));

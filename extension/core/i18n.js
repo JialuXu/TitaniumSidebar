@@ -125,6 +125,10 @@ const ZH = {
   'ui.imageAlt': '附图',
   'ui.imageView': '查看大图',
   'ui.codeDetail': '代码与结果',
+  // 高风险动作的执行前确认（core/action-guard.js 拼文案，外壳画确认块）
+  'ui.guardHead': '执行前需要你确认',
+  'ui.guardApprove': '批准执行',
+  'ui.guardDeny': '拒绝',
   'ui.codeLabel': '代码',
   'ui.codeResult': '返回给模型的结果',
   'ui.regenConfirm': '上一轮包含页面操作（点击 / 输入 / 跳转等），重新生成会再次真实执行这些操作。确定继续？',
@@ -270,6 +274,7 @@ const ZH = {
   'sys.elementsUnreadable': '无法读取页面元素（页面可能已刷新或受限）。',
   // 没有有效的 ref 映射凭证（恢复历史会话后直接重新生成等路径），动作一律不执行
   'sys.noRefMapping': '当前没有有效的页面元素映射（本轮还没有读取过页面），动作未执行；请先调用 list_elements 读取当前页面并获取最新编号。',
+  'sys.actionsOff': '用户已关闭「允许页面操作」，动作未执行；不要再调用页面操作类工具，需要时请用户自己操作或重新开启。',
   // 历史里被更新版本取代的页面内容：压成一行占位，只保留最新那一份全文（控 token）
   'sys.pageSuperseded': '（此处原有的页面内容已省略：{title}；该页面此后已更新，请以后文最新的页面内容为准）',
   'sys.searchFailed': '无法在当前页面中执行搜索（页面可能已刷新或受限）。',
@@ -386,6 +391,35 @@ const ZH = {
   'act.generic.done': '{name} 完成',
   'act.generic.fail': '{name} 失败',
   'act.notRegistered': '未执行 {name}：本次未开放此工具',
+  'act.what.click': '点击 [{ref}]',
+  'act.what.key': '按 {key}',
+  'act.what.step': '第 {n} 步',
+  'act.guard.denied': '{what}：你已拒绝，未执行',
+  'act.guard.changed': '{what}：等待确认期间页面变了，未执行',
+  'act.guard.touched': '{what}：等待确认期间你操作过页面，未执行',
+  'act.guard.unconfirmed': '{what}：无法请你确认，未执行',
+  'act.guard.aborted': '{what}：已停止，未执行',
+  'guard.click': '点击 [{ref}]{name}',
+  'guard.key': '按 {key}{name}',
+  'guard.on': '（{name}）',
+  'guard.step': '第 {n} 步：',
+  'guard.reason': '可能涉及：{risks}',
+  'guard.sep': '、',
+  'guard.risk.pay': '支付',
+  'guard.risk.transfer': '转账',
+  'guard.risk.order': '下单',
+  'guard.risk.approve': '提交审批',
+  'guard.risk.delete': '删除数据',
+  'guard.risk.send': '对外发送',
+  'guard.risk.publish': '对外发布',
+  'guard.risk.authorize': '授权',
+  'guard.risk.consequence': '页面提示后果不可撤销',
+  'guard.risk.submit': '提交表单',
+  'guard.risk.declared': '模型判断为不可逆操作',
+  'guard.viaSubmit': '回车会提交所在表单（提交按钮：{name}）',
+  'guard.noLabel': '无名称',
+  'guard.viaSend': '回车可能直接把输入框里的内容发出去',
+  'guard.context': '所在对话框或表单：{text}',
   'act.jumped': '，页面已跳转',
 
   /* ---------- 感知数据序列化（core/format.js） ---------- */
@@ -498,6 +532,7 @@ const ZH = {
   'res.keyPrevented': '，页面自己处理了这个按键',
   'res.fallback.unavailable': '（调试通道附加失败，这一步改用合成事件执行）',
   'res.fallback.unsafePoint': '（元素中心点被遮挡或落在内部另一个控件上，这一步改用合成事件点击）',
+  'res.fallback.unsafeFocus': '（焦点落不到这个元素上，这一步改用合成事件直接发给它）',
   'res.keyCaret': '，光标从第 {from} 个字符移到第 {to} 个字符',
   'res.keyCaretMoved': '，光标已移动',
   'res.keyScrolled': '，{where}滚动了 {px} 像素',
@@ -562,6 +597,10 @@ const ZH = {
   'fail.badKey': '不支持的按键。可用按键：{keys}。',
   'fail.badTableIndex': '页面中没有这个序号的表格，当前共有 {total} 个表格。',
   'fail.noBody': '页面尚未加载完成，请稍后重试。',
+  'fail.denied': '用户拒绝了这一步，动作未执行。不要重试，也不要换一种操作达成同一效果；需要的话向用户说明情况并询问下一步。',
+  'fail.changed': '等待用户确认期间，目标元素或它所在的对话框变了，动作未执行。请重新 list_elements 核对；仍要执行就重新发起，系统会再次请用户确认。',
+  'fail.touched': '等待用户确认期间，用户在页面上点击、按键或输入过，页面可能已不是预检时的样子，动作未执行。请重新 list_elements 核对；仍要执行就重新发起，系统会再次请用户确认。',
+  'fail.unconfirmed': '这一步需要用户确认，但当前无法发起确认，动作未执行。请告诉用户需要亲自完成这一步。',
   'fail.default': '动作执行失败，请换一种方式或先重新调用 list_elements 确认页面状态。',
 
   /* ---------- Markdown 渲染 ---------- */
@@ -640,8 +679,9 @@ const ZH = {
     '接口返回前的占位不能说明操作失败或页面没有数据，更不是回退的理由。' +
     '连续填写多个字段、勾选多项时，用 batch_actions 一次执行这些步骤。' +
     '三、涉及不可逆或对外产生影响的操作——转账、支付、下单、提交审批、删除数据、对外发送消息等——' +
-    '必须先停下来，用文字向用户说明你将要点击什么、会产生什么后果，等用户明确同意后再执行；' +
-    '不要在同一轮里既征求同意又把动作做掉。' +
+    '调用 click_element、press_key（或 batch_actions 的对应步骤）时带上 irreversible: true，' +
+    '系统会在执行前请用户确认，你不必先用文字征求同意；拿不准时按不可逆处理。' +
+    '用户拒绝后不要重试，也不要换一种操作达成同一效果。' +
     '四、input_text 会整体替换输入框原值而不是追加；填完通常还需要 press_key 回车或点击提交按钮。' +
     '五、动作失败时按返回的提示自纠：编号过期或元素消失就重新 list_elements，' +
     '元素不可见就先 scroll_page 或展开它，下拉选项不存在就从返回的可选项里挑；' +
@@ -775,6 +815,7 @@ const ZH = {
     '执行后返回页面是否跳转、新出现了哪些可交互元素、哪些已有元素的状态变了；' +
     '勾选框、单选框、开关附带点击后的勾选状态。',
   'tool.click.ref': 'list_elements 中的元素编号',
+  'tool.click.irreversible': '这次点击会造成不可逆或对外的影响（转账、支付、下单、提交审批、删除数据、对外发送或发布等）时设为 true，系统会在执行前请用户确认；拿不准时设为 true',
   'tool.input.d':
     '在指定编号的输入框中填入文本，会先清空原有内容（整体替换，不是追加）。' +
     '支持 React/Vue 等框架的受控组件。填完后通常需要 press_key 回车或 click_element 提交。',
@@ -792,6 +833,7 @@ const ZH = {
     '结果会说明光标移到了哪里、滚动了多少，没有任何变化时也会说明。',
   'tool.key.key': '按键名',
   'tool.key.ref': '可选，先聚焦到该编号的元素',
+  'tool.key.irreversible': '这次按键（如在输入框里回车发送、提交）会造成不可逆或对外的影响时设为 true，系统会在执行前请用户确认；拿不准时设为 true',
   'tool.scroll.d':
     '滚动页面。用于让视口外的内容进入可见区域（列元素时 scope:viewport 只返回可见部分）。' +
     '注意：找文字用 find_in_page、读正文用 read_page_text 都更快，不需要靠滚动去翻。',
@@ -809,6 +851,7 @@ const ZH = {
   'tool.batch.option': 'select 要选的选项文本或 value',
   'tool.batch.key': 'key 要按的键',
   'tool.batch.direction': 'scroll 的方向',
+  'tool.batch.irreversible': 'click 或 key 这一步会造成不可逆或对外的影响时设为 true，系统会在执行这一步前请用户确认',
   'tool.navigate.d': '让当前工作标签页跳转到指定网址（仅支持 http/https）。跳转后元素编号全部重置。',
   'tool.navigate.url': '完整网址，需以 http:// 或 https:// 开头',
   'tool.back.d': '在当前工作标签页执行浏览器后退。',
@@ -866,6 +909,9 @@ const EN = {
   'ui.imageAlt': 'Attached image',
   'ui.imageView': 'View full size',
   'ui.codeDetail': 'Code and result',
+  'ui.guardHead': 'Needs your approval first',
+  'ui.guardApprove': 'Approve',
+  'ui.guardDeny': 'Decline',
   'ui.codeLabel': 'Code',
   'ui.codeResult': 'Result returned to the model',
   'ui.regenConfirm': 'The previous turn performed page actions (clicks / typing / navigation). Regenerating will really run them again. Continue?',
@@ -1009,6 +1055,7 @@ const EN = {
   'sys.tabSwitched': 'The active tab has changed and is no longer the page read for this turn; tell the user to switch back, or to simply ask again about the current page (the next message reads it automatically).',
   'sys.elementsUnreadable': 'Cannot read the page elements (the page may have been reloaded or is restricted).',
   'sys.noRefMapping': 'There is no valid element mapping for the current page (it has not been read in this turn), so the action was not performed; call list_elements first to read the page and get fresh numbers.',
+  'sys.actionsOff': 'The user has turned off "Allow page actions", so the action was not performed; do not call page-action tools again — ask the user to do it themselves or turn the switch back on.',
   'sys.pageSuperseded': '(The page content that was here has been omitted: {title}; that page has since been updated — rely on the latest page content further down.)',
   'sys.searchFailed': 'Cannot search this page (it may have been reloaded or is restricted).',
   'sys.highlightFailed': 'Cannot highlight on this page (it may have been reloaded or is restricted).',
@@ -1122,6 +1169,35 @@ const EN = {
   'act.generic.done': '{name} done',
   'act.generic.fail': '{name} failed',
   'act.notRegistered': 'Skipped {name}: not available in this request',
+  'act.what.click': 'Click [{ref}]',
+  'act.what.key': 'Press {key}',
+  'act.what.step': 'Step {n}',
+  'act.guard.denied': '{what}: you declined — not performed',
+  'act.guard.changed': '{what}: the page changed while waiting for approval — not performed',
+  'act.guard.touched': '{what}: you used the page while approval was pending — not performed',
+  'act.guard.unconfirmed': '{what}: could not ask for your approval — not performed',
+  'act.guard.aborted': '{what}: stopped — not performed',
+  'guard.click': 'Click [{ref}]{name}',
+  'guard.key': 'Press {key}{name}',
+  'guard.on': ' (on {name})',
+  'guard.step': 'Step {n}: ',
+  'guard.reason': 'May involve: {risks}',
+  'guard.sep': ', ',
+  'guard.risk.pay': 'payment',
+  'guard.risk.transfer': 'money transfer',
+  'guard.risk.order': 'placing an order',
+  'guard.risk.approve': 'approval submission',
+  'guard.risk.delete': 'deleting data',
+  'guard.risk.send': 'sending to others',
+  'guard.risk.publish': 'publishing',
+  'guard.risk.authorize': 'granting authorisation',
+  'guard.risk.consequence': 'the page says it cannot be undone',
+  'guard.risk.submit': 'submitting a form',
+  'guard.risk.declared': 'the model judged it irreversible',
+  'guard.viaSubmit': 'Enter submits the surrounding form (submit button: {name})',
+  'guard.noLabel': 'unnamed',
+  'guard.viaSend': 'Enter may send what is in the box straight away',
+  'guard.context': 'Dialog or form says: {text}',
   'act.jumped': ', the page navigated',
 
   /* ---------- Perception serialisation (core/format.js) ---------- */
@@ -1234,6 +1310,7 @@ const EN = {
   'res.keyPrevented': ', the page handled the key itself',
   'res.fallback.unavailable': ' (the debugger channel could not attach, so this step used synthetic events)',
   'res.fallback.unsafePoint': ' (the element\'s center is covered or lands on another control inside it, so this step clicked with synthetic events)',
+  'res.fallback.unsafeFocus': ' (focus could not be moved onto this element, so this step sent synthetic events to it directly)',
   'res.keyCaret': ', caret moved from character {from} to {to}',
   'res.keyCaretMoved': ', caret moved',
   'res.keyScrolled': ', scrolled the {where} by {px}px',
@@ -1297,6 +1374,10 @@ const EN = {
   'fail.badKey': 'Unsupported key. Available keys: {keys}.',
   'fail.badTableIndex': 'There is no table with that index; the page has {total} tables.',
   'fail.noBody': 'The page has not finished loading, please retry shortly.',
+  'fail.denied': 'The user declined this step, so the action was not performed. Do not retry it or reach the same effect another way; if needed, explain the situation to the user and ask what to do next.',
+  'fail.changed': 'The target element or its dialog changed while waiting for the user\'s approval, so the action was not performed. Call list_elements to check again; if it still needs doing, request it again and the user will be asked again.',
+  'fail.touched': 'The user clicked, pressed keys or typed on the page while the approval was pending, so the page may no longer be what was inspected and the action was not performed. Call list_elements to check again; if it still needs doing, request it again and the user will be asked again.',
+  'fail.unconfirmed': 'This step needs the user\'s approval, but no approval can be requested right now, so the action was not performed. Tell the user they need to do this step themselves.',
   'fail.default': 'The action failed; try another approach, or call list_elements again to check the page state.',
 
   /* ---------- Markdown ---------- */
@@ -1372,8 +1453,9 @@ const EN = {
     'a placeholder shown before the backend responds is never evidence that the action failed or the page is empty, and never a reason to go back. ' +
     'When filling several fields or ticking several boxes in a row, run those steps in one batch_actions call. ' +
     '3. For irreversible or outward-facing operations — transfers, payments, orders, approval submissions, deleting data, sending messages to other people — ' +
-    'stop first and explain in words what you are about to click and what will follow, then wait for the user\'s explicit consent before executing; ' +
-    'never ask for consent and perform the action in the same turn. ' +
+    'pass irreversible: true to click_element or press_key (or on the matching batch_actions step); the user is asked to approve before it runs, ' +
+    'so you do not need to ask for consent in words first. When unsure, treat it as irreversible. ' +
+    'If the user declines, do not retry or reach the same effect another way. ' +
     '4. input_text replaces the whole value of a field rather than appending; after filling you usually still need press_key Enter or a click on the submit button. ' +
     '5. When an action fails, self-correct from the returned hint: call list_elements again if numbers are stale or the element is gone, ' +
     'scroll_page or expand first if the element is invisible, pick from the returned options if a dropdown option does not exist; ' +
@@ -1518,6 +1600,7 @@ const EN = {
     'Returns whether the page navigated, which interactive elements newly appeared and which existing elements changed state; ' +
     'checkboxes, radio buttons and switches also report their checked state after the click.',
   'tool.click.ref': 'Element number from list_elements',
+  'tool.click.irreversible': 'Set to true when this click has an irreversible or outward-facing effect (transfer, payment, order, approval submission, deleting data, sending or publishing to others); the user is asked to approve before it runs. When unsure, set it to true',
   'tool.input.d':
     'Type text into the input with the given number, clearing the existing value first (whole-value replacement, not appending). ' +
     'Works with controlled components in React/Vue. Afterwards you usually need press_key Enter or click_element to submit.',
@@ -1535,6 +1618,7 @@ const EN = {
     'The result says where the caret moved and how far things scrolled, and says so when nothing changed.',
   'tool.key.key': 'Key name',
   'tool.key.ref': 'Optional; focus the element with this number first',
+  'tool.key.irreversible': 'Set to true when this key press (such as Enter to send or submit) has an irreversible or outward-facing effect; the user is asked to approve before it runs. When unsure, set it to true',
   'tool.scroll.d':
     'Scroll the page so that content outside the viewport becomes visible (list_elements with scope:viewport only returns the visible part). ' +
     'Note: find_in_page (to locate) and read_page_text (to read) are both faster — do not scroll around looking for text.',
@@ -1553,6 +1637,7 @@ const EN = {
   'tool.batch.option': 'Option text or value for select',
   'tool.batch.key': 'Key to press for key',
   'tool.batch.direction': 'Direction for scroll',
+  'tool.batch.irreversible': 'Set to true when this click or key step has an irreversible or outward-facing effect; the user is asked to approve before that step runs',
   'tool.navigate.d': 'Navigate the current working tab to a URL (http/https only). All element numbers reset afterwards.',
   'tool.navigate.url': 'Complete URL, must start with http:// or https://',
   'tool.back.d': 'Go back in the current working tab.',
