@@ -1,4 +1,4 @@
-// core/masker.js —— 发送前脱敏（验收标准第 4、24 条）
+// core/masker.js —— 发送前脱敏（验收标准第 4、24、46 条）
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -38,6 +38,28 @@ test('多处命中分别计数，打码产物不被二次命中', () => {
   assert.deepEqual(hits, { idCard: 0, bankCard: 1, phone: 2 });
   assert.equal(maskSensitive(text).hits.phone, 0);
   assert.equal(maskSensitive(text).hits.bankCard, 0);
+});
+
+test('第 46 条：带连字符或 +86 前缀的手机号', () => {
+  for (const s of ['138-1234-5678', '+86 13812345678', '+86-138-1234-5678', '+86 138 1234 5678', '8613812345678']) {
+    assert.deepEqual(maskSensitive(s), { text: '1**********', hits: { idCard: 0, bankCard: 0, phone: 1 } }, s);
+  }
+});
+
+test('第 46 条：四位一组的卡号保留后 4 位与分隔符', () => {
+  assert.equal(maskSensitive('卡号 6222 0212 3456 7894').text, '卡号 **** **** **** 7894');
+  assert.equal(maskSensitive('4111-1111-1111-1111').text, '****-****-****-1111');
+  assert.equal(maskSensitive('6222 0212 3456 7890 128').text, '**** **** **** ***0 128'); // 19 位
+  assert.equal(maskSensitive('4111 1111 1111 1111').hits.bankCard, 1);
+});
+
+test('第 46 条：并排的数字不被当成分组写法的号码', () => {
+  const same = (s) => assert.deepEqual(maskSensitive(s), { text: s, hits: { idCard: 0, bankCard: 0, phone: 0 } }, s);
+  same('2021 2022 2023 2024');   // 财报表头的年份
+  same('4111 1111 1111 1112');   // 四位一组但过不了 Luhn 校验
+  same('1200 3400 5600 7800');   // 首位不是发卡行标识
+  same('135 2023 2024');         // 没有前缀的空格分组不当手机号
+  same('营收 1,381,234.5678');
 });
 
 test('空值返回空串', () => {
