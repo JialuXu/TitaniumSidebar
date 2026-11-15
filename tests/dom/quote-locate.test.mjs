@@ -59,9 +59,11 @@ describe('引用定位（真实 DOM）', { skip: !playwright && '未安装 playw
   });
 
   test('第 48 条：覆盖层到时自动移除，再次定位先撤掉上一个', async () => {
-    await inject(page, highlightText, { text: '净利润创历史新高', durationMs: 5000 });
-    await inject(page, highlightText, { text: '请在工作日联系', durationMs: 60 });
+    // 前两次都给足时长：数覆盖层个数时它们不能已经到时消失（慢机器上 60ms 早过了）
+    await inject(page, highlightText, { text: '净利润创历史新高', durationMs: 30000 });
+    await inject(page, highlightText, { text: '请在工作日联系', durationMs: 30000 });
     assert.equal(await page.locator(OVERLAY).count(), 1);
+    await inject(page, highlightText, { text: '请在工作日联系', durationMs: 60 });
     await page.waitForFunction((sel) => !document.querySelector(sel), OVERLAY);
   });
 
