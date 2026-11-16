@@ -77,7 +77,7 @@ export function initialPage() {
     url: '',
     maskedText: '',          // 脱敏后的页面文本：注入 prompt 与引用校验共用同一份
     outlineText: '',         // 脱敏后的结构骨架文本（注入 prompt + 详情面板展示）
-    elementCount: 0,         // 快照时的可交互元素数（状态条展示）
+    elementCount: 0,         // 快照时的可交互元素数（胶囊浮层展示）
     textTotal: 0,            // 完整正文字数（未截断时为 0）：胶囊展示 + 位置漂移判定
     textShown: 0,            // 其中已注入给模型的前多少字
     textCapped: false,       // 正文超出采集上限，总字数只是「至少这么多」

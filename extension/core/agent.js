@@ -196,8 +196,6 @@ export async function* runAgentTurn({
   messages, provider, profile, actionsEnabled, skillId, toolsBroken, perceivable, compact, sentPage, signal,
   retryDelays = RETRY_DELAYS,
 }) {
-  // 开了页面操作的回合允许更多轮：一次表单填写光是「列元素 + 逐个输入 + 提交 + 验证」
-  // 就要八九轮，5 轮必然半途而废
   const roundLimit = actionsEnabled ? MAX_ACTION_ROUNDS : MAX_TOOL_ROUNDS;
   // 本回合的读取账本 + 「模型手里那份页面」的基准。基准取 sentPage 而不是当前页面：
   // 位置是否还作数，要看模型上次实际看到的是哪一页、多长（不变式 6）。

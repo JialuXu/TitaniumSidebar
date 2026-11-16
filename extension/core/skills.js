@@ -31,11 +31,6 @@ export function listSkills() {
   return PRESET_SKILLS.slice();
 }
 
-/** 按 id 取技能，不存在返回 null */
-export function getSkill(id) {
-  return PRESET_SKILLS.find((s) => s.id === id) || null;
-}
-
 /**
  * 取 URL 的 hostname（小写、不含端口）；解析失败或非 http/https 返回 ''。
  * 外壳用它生成建议条的 dismissed key（`host|skillId`），不必自行解析 URL。

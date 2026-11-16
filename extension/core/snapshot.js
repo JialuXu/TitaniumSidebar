@@ -20,7 +20,7 @@
 
 /**
  * 页面快照。三种模式：
- *   mode:'full'     —— 首条消息/「重新读取」：完整遍历，产出文本、结构骨架、元素列表，
+ *   mode:'full'     —— 每条消息发送前的读取：完整遍历，产出文本、结构骨架、元素列表，
  *                      并重建 window.__titanium 的 ref 映射（session 换新）。
  *                      传 inheritRefs 时尝试让新映射继承旧 ref（见下）。
  *   mode:'elements' —— 工具调用（元素列表/截图标注前）：基于既有 ref 映射增量刷新——
@@ -74,7 +74,7 @@ export function snapshotPage(options) {
   const win = doc.defaultView || (typeof window !== 'undefined' ? window : null);
   if (!win) return { ok: false, reason: 'no-window' };
 
-  /* ---------- 公共辅助（两种模式共用，必须定义在模式分支之前） ---------- */
+  /* ---------- 公共辅助（各模式共用，必须定义在模式分支之前） ---------- */
 
   // 遍历黑名单：无文字价值。内嵌框架不在此列，由 frameRoot 决定读不读得到
   const SKIP_TAGS = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, SVG: 1 };
@@ -598,7 +598,7 @@ export function snapshotPage(options) {
 
   /* ---------- mode:'full'：单次递归遍历，三通道同过 ---------- */
 
-  // —— 文本通道（沿用原 extractor 的规则：块级补换行、li 前缀、表格转 Markdown）——
+  // —— 文本通道（块级补换行、li 前缀、表格转 Markdown）——
   const BLOCK_TAGS = new Set([
     'P', 'DIV', 'SECTION', 'ARTICLE', 'MAIN', 'ASIDE', 'UL', 'OL', 'LI',
     'DL', 'DT', 'DD', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE',
@@ -641,7 +641,7 @@ export function snapshotPage(options) {
     if (textLenApprox > MAX_SCAN) textDone = true;
   }
 
-  // 页眉/导航/页脚的文字不进正文（现有行为），但搜索要够得着——文章署名、日期常在
+  // 页眉/导航/页脚的文字不进正文，但搜索要够得着——文章署名、日期常在
   // <header> 里。单独收进旁路缓冲，命中时如实告知模型「不在正文内、没有位置」。
   const chromeOut = [];
   let chromeLen = 0;
@@ -838,7 +838,7 @@ export function snapshotPage(options) {
 
   visit(doc.body, true, 0, '', false, false);
 
-  // 空白压缩（与原 extractor 一致）。这三条正则是全文坐标系的地基，不要改动：
+  // 空白压缩。这三条正则是全文坐标系的地基，不要改动：
   // 哨兵测位置、read_page_text 的 offset、find_in_page 的命中下标都以它的产物为准。
   let text = textOut
     .join('')
@@ -1026,7 +1026,7 @@ export function snapshotPage(options) {
       if (n > DEAD_GRACE) recyclable.push(i);
     }
 
-    // 新元素的编号来源，按序：表尾续编（表长在保险丝以内时与以往完全一致，
+    // 新元素的编号来源，按序：表尾续编（表长在保险丝以内时只走这一步，
     // 死掉的 ref 仍报 gone，最安全）→ 回收死透的空槽 → 续编到 MAX_REFS 硬顶为止。
     const freshRefs = new Set();
     let next = prevStore.elements.length; // 续编从旧映射长度之后开始，绝不与旧 ref 撞号

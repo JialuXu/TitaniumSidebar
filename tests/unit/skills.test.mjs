@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  PRESET_SKILLS, listSkills, getSkill, hostOfUrl, matchSkillsByUrl, suggestSkills, suggestionKey,
+  PRESET_SKILLS, listSkills, hostOfUrl, matchSkillsByUrl, suggestSkills, suggestionKey,
 } from '../../extension/core/skills.js';
 
 const ids = (list) => list.map((s) => s.id);
@@ -11,8 +11,6 @@ const ids = (list) => list.map((s) => s.id);
 test('目录：三个预置技能，listSkills 返回副本', () => {
   assert.deepEqual(ids(listSkills()), ['csv-table', 'fin-report', 'market-brief']);
   assert.notEqual(listSkills(), PRESET_SKILLS);
-  assert.equal(getSkill('fin-report').id, 'fin-report');
-  assert.equal(getSkill('nope'), null);
 });
 
 test('hostOfUrl：小写、去端口；非 http(s) 与非法网址返回空串', () => {
@@ -36,7 +34,7 @@ test('后缀匹配对齐完整域名段，不误伤同尾的其他域名', () =>
 });
 
 test('表格提取没有网址名单，受限页不出建议', () => {
-  assert.deepEqual(getSkill('csv-table').urlHosts, []);
+  assert.deepEqual(PRESET_SKILLS.find((s) => s.id === 'csv-table').urlHosts, []);
   assert.deepEqual(matchSkillsByUrl('chrome://newtab'), []);
   assert.deepEqual(matchSkillsByUrl('https://example.com/'), []);
 });

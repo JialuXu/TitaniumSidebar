@@ -5,7 +5,7 @@
   <title>Titanium</title>
   <link rel="stylesheet" href="sidepanel.css">
 </head>
-<!-- Titanium · Design by Xujl（署名只留在源码里，界面上不再展示） -->
+<!-- Titanium · Design by Xujl（署名只留在源码里） -->
 <!--
   静态文案一律通过 data-i18n* 标注，由 sidepanel.js 的 applyStaticI18n 按当前语言写入：
     data-i18n             → textContent（元素内必须只有文字，图标/输入框旁的文字要单独包 span）
@@ -15,7 +15,7 @@
   HTML 里保留中文原文，只是为了「未执行 JS 时也能看懂」，运行时一定会被覆写。
 -->
 <body>
-  <!-- 头部操作行：左侧页面胶囊 + 右侧新对话胶囊与设置圆钮（产品名由浏览器侧边栏自带标题栏展示，不再重复） -->
+  <!-- 头部操作行：左侧页面胶囊 + 右侧新对话胶囊与设置圆钮（产品名由浏览器侧边栏自带标题栏展示） -->
   <div class="panel-header">
     <!-- 历史会话钮：与右侧设置钮同款圆钮，点开下方浮层列出已保存的会话 -->
     <button id="btn-history" class="round-btn" type="button" data-i18n-title="ui.history" title="历史会话" aria-haspopup="dialog" aria-expanded="false">

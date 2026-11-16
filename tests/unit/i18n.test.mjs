@@ -4,13 +4,13 @@
 
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { setLocale, getLocale, detectLocale, t, q, injectedStrings, LOCALES, HTML_LANG, LOCALE_LABELS } from '../../extension/core/i18n.js';
+import { setLocale, detectLocale, t, q, injectedStrings, LOCALES, HTML_LANG, LOCALE_LABELS } from '../../extension/core/i18n.js';
 
 beforeEach(() => setLocale('zh'));
 
 test('setLocale 非法值回落中文', () => {
   assert.equal(setLocale('en'), 'en');
-  assert.equal(getLocale(), 'en');
+  assert.equal(t('ui.newChat'), 'New chat');
   assert.equal(setLocale('fr'), 'zh');
   assert.equal(setLocale(undefined), 'zh');
 });
