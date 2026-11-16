@@ -107,6 +107,8 @@ export function describeRequest(payload, info, risks, step) {
 /**
  * 门控：需要确认的动作，用户批准后才执行，且执行时复验通过（见 core/actions.js 的 verifyExpect）。
  * 拒绝、中止、没有确认渠道都不调用 execute。批准只放行这一次 await，不留可重放的凭证。
+ * 等待确认不设超时，也不监听等待期间的切页：批准时的标签页守卫、总开关复查、指纹复验与
+ * 用户输入记录已覆盖页面变化。
  * @param {object} o
  * @param {object} o.payload                provider.act 的载荷
  * @param {boolean} [o.declared]            模型声明了 irreversible

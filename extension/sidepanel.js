@@ -1,5 +1,5 @@
 // sidepanel.js —— 扩展外壳：UI 渲染与状态、chrome.* API 接线、把 core 模块串起来。
-// 业务逻辑（提取/脱敏/组装/调用/渲染/校验）全部在 core/，本文件不实现任何业务规则。
+// 业务逻辑（提取/脱敏/组装/调用/渲染/校验）全部在 core/。
 
 import { snapshotPage } from './core/snapshot.js';
 import { highlightElement } from './core/highlight.js';
@@ -88,7 +88,7 @@ const state = {
   },
   abortController: null,
   toolsBroken: false, // 接口不支持 tools（收到过 400/422），本会话降级纯文本；保存配置时重置
-  skillId: null, // 会话级激活技能 id：不入 config、不持久化，「新对话」清空
+  skillId: null, // 会话级激活技能 id：不入 config，随会话记录保存，「新对话」清空
   // 历史会话身份：sessionId 为 null 表示当前会话还没落过库（首次保存时生成）。
   // 每个回合收尾自动保存一次；「新对话」把身份清空，下一段会话另起一条记录。
   sessionId: null,
@@ -1333,7 +1333,7 @@ function attachShotThumbnail(row, src) {
 
 /* ========== 发送前的页面同步（自动完成，用户不需要点任何按钮） ========== */
 
-// 每条消息发送前重新快照当前页面（打开侧边栏依然不读取，承诺不变），
+// 每条消息发送前重新快照当前页面，
 // 再与 state.sentPage 比对决定本条消息携带什么（四种携带方式见 core/page-sync.js）。
 // 快照失败的 unreadable 在这里给出：此前读过页面时 changed 为 true，交代一句免得模型拿旧页当现状。
 async function syncPageForSend() {
@@ -1700,7 +1700,7 @@ function appendContextWarning(usage) {
 
 /* ========== 历史会话 ========== */
 // 机制总览：
-//   - 保存：每个回合收尾（runAgentLoop 结束）把 messages/sentPage/skillId 整体落库；
+//   - 保存：每个回合收尾（runAgentLoop 结束）把 messages/sentPage/skillId/compact 整体落库；
 //     没有任何用户消息不保存；标题取首条用户消息，只在首次保存时确定。
 //   - 恢复：整体替换 state 里的会话数据并重建消息流 UI（replayConversation）。
 //     state.page 归零——下一条消息照常重读页面并与恢复出的 sentPage 比对，
@@ -2017,7 +2017,7 @@ function addImages(files) {
 
 /* ========== 技能（Skill） ========== */
 // 技能 = 会话级的声明式提示词包（core/skills.js 登记目录，指令正文在 i18n）。
-// 状态只存 state.skillId：不入 config、不持久化；chip / 菜单 hint / 建议条三处联动。
+// 状态只存 state.skillId：不入 config，随会话记录保存；chip / 菜单 hint / 建议条三处联动。
 
 // 设定或摘除会话级技能（id 传 null 即摘除）
 function setSkill(id) {
@@ -2064,7 +2064,7 @@ function renderSkillSuggest() {
 }
 
 // 评估当前激活标签页是否命中技能建议。只读 tab.url 元数据，绝不注入脚本读内容——
-// 不违反「发消息才读取页面」的承诺；也不触碰 state.page，与「重新读取」互不干扰。
+// 不违反「发消息才读取页面」的承诺；也不触碰 state.page，与发送前的页面读取互不干扰。
 async function evaluateSkillSuggestion() {
   const tab = await getActiveTab(); // 受限页（chrome:// 等）返回 null → 不建议
   state.suggest.items = tab ? suggestSkills(tab.url, state.suggest.dismissed) : [];
@@ -2079,8 +2079,7 @@ function scheduleSuggestEval() {
 }
 
 /* ========== 「+」功能菜单 ========== */
-// 菜单项登记表：后续新增功能（联网搜索、知识库等）在此补一项即可；
-// 提供 onSelect 回调后自动变为可点击，onSelect 为 null 时显示为置灰占位。
+// 菜单项登记表：新增功能在此补一项，onSelect 是点击后的动作。
 // icon 为内联 SVG 字符串（16×16、stroke:currentColor），与顶部栏图标同一画风。
 // label/hint 均为函数：渲染时才取词，因而语言切换后重渲即生效。
 // keepOpen 为真的项点击后菜单不关闭（如「绑定 Skill」进入二级列表）。
@@ -2106,20 +2105,6 @@ const COMPOSER_MENU_ITEMS = [
       state.ui.plusMenuView = 'skills';
       renderPlusMenu();
     },
-  },
-  {
-    id: 'web-search',
-    label: () => t('ui.menuWebSearch'),
-    hint: () => t('ui.menuComingSoon'),
-    icon: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><ellipse cx="8" cy="8" rx="2.8" ry="6.2"/><path d="M1.8 8h12.4"/></svg>',
-    onSelect: null,
-  },
-  {
-    id: 'knowledge-base',
-    label: () => t('ui.menuKnowledge'),
-    hint: () => t('ui.menuComingSoon'),
-    icon: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 3.2c1.8-1 3.7-1 5.5 0 1.8-1 3.7-1 5.5 0v9.6c-1.8-1-3.7-1-5.5 0-1.8-1-3.7-1-5.5 0z"/><path d="M8 3.2v9.6"/></svg>',
-    onSelect: null,
   },
   {
     id: 'page-actions',
@@ -2158,20 +2143,22 @@ async function togglePageActions() {
 
 // 渲染菜单项：label/hint 取自文案目录，无用户输入，用 textContent/常量 SVG 拼装
 function renderPlusMenu() {
-  els.plusMenu.classList.toggle('skills', state.ui.plusMenuView === 'skills');
   els.plusMenu.innerHTML = '';
+  const title = document.createElement('span');
+  title.className = 'plus-menu-title';
+  els.plusMenu.appendChild(title);
   if (state.ui.plusMenuView === 'skills') {
+    title.textContent = t('ui.skillPickTitle');
     renderSkillMenu();
     return;
   }
+  title.textContent = t('ui.menuTitle');
   for (const item of COMPOSER_MENU_ITEMS) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'plus-menu-item';
     btn.setAttribute('role', 'menuitem');
-    btn.disabled =
-      typeof item.onSelect !== 'function' ||
-      (typeof item.disabled === 'function' && item.disabled());
+    btn.disabled = typeof item.disabled === 'function' && item.disabled();
     if (typeof item.active === 'function' && item.active()) btn.classList.add('active');
     btn.innerHTML = item.icon;
     const label = document.createElement('span');
@@ -2198,12 +2185,8 @@ function renderPlusMenu() {
   }
 }
 
-// 技能二级列表：标题 + 返回 + 「不使用技能」 + 预置技能（当前项高亮并带「使用中」胶囊）
+// 技能二级列表（标题由 renderPlusMenu 写好）：返回 + 「不使用技能」 + 预置技能（当前项高亮并带「使用中」胶囊）
 function renderSkillMenu() {
-  const title = document.createElement('span');
-  title.className = 'plus-menu-title';
-  title.textContent = t('ui.skillPickTitle'); // DOM 取词，不沿用 ::before 硬编码做法
-  els.plusMenu.appendChild(title);
   const addItem = (labelText, selected, hintText, descText, onClick) => {
     const btn = document.createElement('button');
     btn.type = 'button';

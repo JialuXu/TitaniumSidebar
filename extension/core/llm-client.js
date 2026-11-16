@@ -1,6 +1,6 @@
 // core/llm-client.js —— OpenAI 兼容接口调用与 SSE 流式解析（平台无关层）
 //
-// 只依赖标准 fetch，不依赖扩展的 CORS 豁免（接口地址由外壳传入；
+// 只依赖标准 fetch（接口地址由外壳传入；
 // SDK 场景下 CORS 由部署环境放行，或由宿主页面同域反代，core 不关心）。
 // 错误统一抛结构化的 LlmError，可读文案映射在 core/agent.js 的 describeError，
 // 本文件不含任何面向用户的文案——LlmError.message 只是调试串，不进 UI。
@@ -103,7 +103,7 @@ export function createThinkSplitter() {
  *        该事件最多出现一次且出现后流即结束
  *   { type: 'usage', promptTokens, completionTokens } —— 接口在流里报了用量时（可能不出现）
  *     不在请求里加 stream_options.include_usage：严格的后端会因不认识的字段报 400，
- *     而 400 会被外壳当成「不支持 tools」去降级。只被动接收主动报用量的接口（如 DeepSeek）。
+ *     而 400 会被回合编排（core/agent.js）当成「不支持 tools」去降级。只被动接收主动报用量的接口（如 DeepSeek）。
  * @param {{ baseUrl: string, model: string, apiKey?: string }} config
  * @param {Array<object>} messages OpenAI 格式消息数组（可含 tool_calls / role:'tool' / 多模态 content）
  * @param {{ signal?: AbortSignal, tools?: Array<object> }} [options]

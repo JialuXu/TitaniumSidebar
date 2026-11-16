@@ -1,12 +1,12 @@
 // core/i18n.js —— 双语文案目录与取词函数（平台无关层）
 //
 // 本项目的全部文本都集中在这里按 zh / en 两套维护，包括三类：
-//   1. 界面文案（按钮、状态条、设置项、活动行、错误提示）；
+//   1. 界面文案（按钮、页面胶囊、设置项、活动行、错误提示）；
 //   2. 发给模型的文案（system prompt、工具定义、工具结果、页面变化摘要）——
 //      界面切英文时它们必须一起切，否则会出现「英文界面里回中文工具反馈」；
 //   3. 注入函数需要的少量文案（见 injectedStrings）。
 //
-// 注入函数（snapshot/search/highlight/actions）必须完全自包含、不能 import 本模块，
+// 注入函数（snapshot/highlight/actions 等）必须完全自包含、不能 import 本模块，
 // 因此它们的文案由外壳调用 injectedStrings() 取出后经 args 传入（JSON 可序列化）。
 //
 // 当前语言是模块级单例：外壳启动时 setLocale 一次，用户在设置里切换时再设一次。
@@ -24,10 +24,6 @@ let current = 'zh';
 /** 设置当前语言，返回归一化后的值（非法值回落到 zh） */
 export function setLocale(loc) {
   current = LOCALES.includes(loc) ? loc : 'zh';
-  return current;
-}
-
-export function getLocale() {
   return current;
 }
 
@@ -84,7 +80,7 @@ const ZH = {
   /* ---------- 标点 ---------- */
   'punc.q': '「{s}」',
 
-  /* ---------- 界面：顶部栏与状态条 ---------- */
+  /* ---------- 界面：顶部栏与页面胶囊 ---------- */
   'ui.newChat': '新对话',
   'ui.settings': '设置',
   'ui.close': '关闭',
@@ -183,12 +179,11 @@ const ZH = {
   'ui.imageTooLarge': '「{name}」超过 {mb} MB，未添加',
 
   /* ---------- 界面：「+」菜单 ---------- */
+  'ui.menuTitle': '能力开关',
   'ui.menuImage': '添加图片',
   'ui.menuImageHint': '也可粘贴',
   'ui.menuImageNoVision': '需开启视觉',
   'ui.menuSkill': '绑定 Skill',
-  'ui.menuWebSearch': '联网搜索',
-  'ui.menuKnowledge': '知识库',
   'ui.menuPageActions': '页面操作',
   'ui.menuCompact': '压缩上下文',
   'ui.menuCompactHint': '/compact',
@@ -197,7 +192,6 @@ const ZH = {
   'ui.ctxHigh': '上下文已用约 {pct}%（约 {used} / {total} tokens），快到模型上限了。请立即压缩，或点「新对话」重新开始。',
   'ui.ctxOver': '按估算，上下文已超出模型窗口（约 {used} / {total} tokens），下一次请求多半会失败。请立即压缩，或点「新对话」重新开始。',
   'ui.ctxCompactNow': '压缩',
-  'ui.menuComingSoon': '即将上线',
   'ui.menuOn': '已开启',
   'ui.menuOff': '已关闭',
   'ui.debuggerConfirm':
@@ -254,7 +248,7 @@ const ZH = {
   'ui.testNeedFields': '请先填写接口地址与模型名称。',
   'ui.testOk': '连接成功，接口可用。',
 
-  /* ---------- 错误文案（外壳映射 LlmError） ---------- */
+  /* ---------- 错误文案（core/agent.js 的 describeError 映射 LlmError） ---------- */
   'err.badconfig': '尚未配置模型接口：请在设置中填写接口地址与模型名称。',
   'err.network': '网络请求失败：请检查网络连接，以及接口地址是否可达。',
   'err.stream': '响应流中断：回复可能不完整，请重试。',
@@ -872,7 +866,7 @@ const EN = {
   /* ---------- Punctuation ---------- */
   'punc.q': '"{s}"',
 
-  /* ---------- UI: header & context bar ---------- */
+  /* ---------- UI: header & page chip ---------- */
   'ui.newChat': 'New chat',
   'ui.settings': 'Settings',
   'ui.close': 'Close',
@@ -968,12 +962,11 @@ const EN = {
   'ui.imageTooLarge': '"{name}" is over {mb} MB',
 
   /* ---------- UI: "+" menu ---------- */
+  'ui.menuTitle': 'Capabilities',
   'ui.menuImage': 'Add image',
   'ui.menuImageHint': 'or paste',
   'ui.menuImageNoVision': 'Needs vision',
   'ui.menuSkill': 'Attach a Skill',
-  'ui.menuWebSearch': 'Web search',
-  'ui.menuKnowledge': 'Knowledge base',
   'ui.menuPageActions': 'Page actions',
   'ui.menuCompact': 'Compact context',
   'ui.menuCompactHint': '/compact',
@@ -982,7 +975,6 @@ const EN = {
   'ui.ctxHigh': 'Context is about {pct}% full (~{used} / {total} tokens) and close to the model limit. Compact now, or start a New chat.',
   'ui.ctxOver': 'By estimate the context already exceeds the model window (~{used} / {total} tokens), so the next request will probably fail. Compact now, or start a New chat.',
   'ui.ctxCompactNow': 'Compact',
-  'ui.menuComingSoon': 'Coming soon',
   'ui.menuOn': 'On',
   'ui.menuOff': 'Off',
   'ui.debuggerConfirm':

@@ -117,7 +117,7 @@ body {
 
 /* ========== 页面胶囊（顶部栏左侧）与已读取内容浮层 ========== */
 /* 读取状态整个收进一颗胶囊：未读取过时整颗隐藏，读取后只留页面标题一眼可见，
-   字数/元素数/网址/正文预览全部藏进点开才出现的浮层——正文区不再被状态条占走一整行。 */
+   字数/元素数/网址/正文预览全部藏进点开才出现的浮层。 */
 .ctx-chip {
   display: inline-flex;
   align-items: center;
@@ -542,7 +542,6 @@ body {
   margin-bottom: 10px;
 }
 
-/* 一次性提示条：降级说明等（区别于错误，用警示黄） */
 /* 页面变化、已压缩此前对话等过程提示行：一行浅色小字，不属于任何一条消息 */
 .flow-note {
   margin: 2px 0 10px;
@@ -552,6 +551,7 @@ body {
   text-align: center;
 }
 
+/* 一次性提示条：降级说明等（区别于错误，用警示黄） */
 .msg-note {
   margin: 8px 0;
   padding: 7px 12px;
@@ -1041,9 +1041,8 @@ body {
   visibility: visible;
 }
 
-/* 菜单标题：与设计稿的「能力开关」小标一致 */
-.plus-menu::before {
-  content: '能力开关';
+/* 菜单标题：根菜单「能力开关」与技能二级视图「选择技能」共用，文字由 sidepanel.js 按当前语言写入 */
+.plus-menu-title {
   display: block;
   padding: 4px 8px 6px;
   font-size: 10px;
@@ -1100,19 +1099,6 @@ body {
 }
 
 /* ========== 技能（Skill） ========== */
-
-/* 「+」菜单的技能二级视图：压掉 ::before 的「能力开关」小标，
-   标题行改用 DOM 元素（.plus-menu-title）走 t() 取词，不再硬编码在伪元素里 */
-.plus-menu.skills::before { content: none; }
-
-.plus-menu-title {
-  display: block;
-  padding: 4px 8px 6px;
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.12em;
-  color: var(--text-3);
-}
 
 /* 技能建议条：主色浅底左彩边行卡（accent 色系，刻意区别于 caution 黄的 config-hint），
    命中一个技能一行 */
@@ -1461,7 +1447,7 @@ body {
   box-shadow: 0 8px 24px rgba(26, 26, 26, 0.14);
 }
 
-/* 头部一行：标题 + 「清空全部」，不再单占底部横条 */
+/* 头部一行：标题 + 「清空全部」 */
 .history-pop-head {
   display: flex;
   align-items: center;

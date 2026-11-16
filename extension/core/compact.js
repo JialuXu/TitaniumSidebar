@@ -42,9 +42,9 @@ export function buildCompactState(summary, boundary) {
  * 摘要用 role:'user' 而非 assistant——部分后端要求首条非 system 消息必须是 user；
  * 代价是刚压缩完的下一条请求会出现两条连续 user 消息，OpenAI 兼容实现接受。
  *
- * 传入的是未净化的原始消息数组（`_` 前缀字段由外壳在这之后统一剔除）：
+ * 传入的是未净化的原始消息数组（`_` 前缀字段由 sanitizeMessages 在这之后统一剔除）：
  * boundary 是原始数组的下标，必须先裁后净化，否则被过滤掉的消息会让下标漂移。
- * boundary 只会落在「用户消息之前」或「数组末尾」（见外壳的压缩成功与重新生成两处写入），
+ * boundary 只会落在「用户消息之前」或「数组末尾」（压缩成功时取 messages.length，重新生成时由 rewindLastTurn 回退，只有这两处写入），
  * 因此裁剪不会把 assistant(tool_calls) 与其 tool 消息拆散。
  *
  * @param {Array<object>} messages 完整消息数组
